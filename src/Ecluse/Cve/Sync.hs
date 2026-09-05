@@ -17,10 +17,12 @@ module Ecluse.Cve.Sync (
     katipFaultReporter,
     cveSyncReady,
     cveSyncScheduleFor,
+    cveSyncTasks,
+    backgroundLoopBackoff,
 ) where
 
 import Data.Map.Strict qualified as Map
-import Katip (LogEnv, Severity (WarningS), sl)
+import Katip (LogEnv, Severity (WarningS), SimpleLogPayload, runKatipContextT, sl)
 import System.Directory (createDirectoryIfMissing, listDirectory, removeFile)
 import System.FilePath (isExtensionOf, (</>))
 import System.IO.Error (IOError, catchIOError)
@@ -38,9 +40,17 @@ import Ecluse.Core.Cve.Slot (currentAdvisoryEtag, newCveSlot, withSlotLookup)
 import Ecluse.Core.Ecosystem (Ecosystem, ecosystemName)
 import Ecluse.Core.Osv.Schema (osvDbFileName)
 import Ecluse.Core.Rules (FaultReporter (..), RuleDeps (..))
+import Ecluse.Core.Supervision (
+    BackoffSchedule (BackoffSchedule, bsBaseMicros, bsCapMicros),
+    superviseLoop,
+    transientPolicy,
+ )
 import Ecluse.Runtime.Aws.Env (AwsEndpoint)
-import Ecluse.Runtime.Cve.Sync (S3CveSource, SyncEnv (..), SyncSchedule (SyncSchedule, schedBootBackoff, schedPollDelay), bootBackoffDelays, newS3CveSource, s3CveFetchFor)
+import Ecluse.Runtime.Cve.Sync (S3CveSource, SyncEnv (..), SyncSchedule (SyncSchedule, schedBootBackoff, schedPollDelay), bootBackoffDelays, newS3CveSource, runCveSync, s3CveFetchFor)
 import Ecluse.Runtime.Log (logLine, moduleField)
+import Ecluse.Runtime.Telemetry (Telemetry)
+import Ecluse.Runtime.Telemetry.Instruments (Metrics, advisorySyncMetricsPortOf)
+import Ecluse.Runtime.Telemetry.Tracing (advisorySyncTracingPortOf)
 
 {- | The rules' boot-bound capabilities for one mount ecosystem. A mount's rules read only their own
 ecosystem's advisory database, and abstain when the sync plan carries no slot for it.
@@ -81,6 +91,28 @@ cveSyncScheduleFor env =
         { schedBootBackoff = bootBackoffDelays
         , schedPollDelay = round (advPollInterval (cfgAdvisories env)) * 1_000_000
         }
+
+{- | One supervised sync task per configured ecosystem. Each flips its ecosystem's one-way
+readiness flag once its first sync lands, and a restart resumes from the remote artifact. Every
+role that evaluates rules runs these, so the serve path and the sweep read the same generations.
+-}
+cveSyncTasks :: LogEnv -> Metrics -> Telemetry -> SyncSchedule -> Map.Map Ecosystem CveSyncHandle -> [IO ()]
+cveSyncTasks logEnv metrics telemetry schedule plan =
+    [ void . runKatipContextT logEnv (mempty :: SimpleLogPayload) "cve-sync" $
+        superviseLoop
+            (transientPolicy ("cve-sync[" <> show (syncEcosystem (csEnv handle)) <> "]") backgroundLoopBackoff)
+            (runCveSync syncMetrics syncTracing (csEnv handle) schedule (atomically (writeTVar (csReady handle) True)))
+    | handle <- Map.elems plan
+    ]
+  where
+    syncMetrics = advisorySyncMetricsPortOf metrics
+    syncTracing = advisorySyncTracingPortOf telemetry
+
+{- | The pace every shell background loop retries a transient fault at: one second after the
+first failure, doubling to a thirty-second ceiling.
+-}
+backgroundLoopBackoff :: BackoffSchedule
+backgroundLoopBackoff = BackoffSchedule{bsBaseMicros = 1_000_000, bsCapMicros = 30_000_000}
 
 -- | One configured ecosystem's advisory-sync wiring.
 data CveSyncHandle = CveSyncHandle

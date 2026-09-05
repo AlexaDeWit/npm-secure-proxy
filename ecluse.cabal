@@ -153,6 +153,11 @@ library ecluse-core
     Ecluse.Core.Registry.Npm.Wire
     Ecluse.Core.Registry.Origin
     Ecluse.Core.Registry.Publish
+    Ecluse.Core.Registry.Sweep
+    Ecluse.Core.Registry.Sweep.Candidates
+    Ecluse.Core.Registry.Sweep.Package
+    Ecluse.Core.Registry.Sweep.Types
+    Ecluse.Core.Registry.Sweep.Walk
     Ecluse.Core.Registry.PyPI.FirstParty
     Ecluse.Core.Registry.Request
     Ecluse.Core.Registry.WireSupport
@@ -297,6 +302,8 @@ library
     Ecluse.Service
     Ecluse.Pilot
     Ecluse.Pilot.Plan
+    Ecluse.Dredger
+    Ecluse.Dredger.Plan
     Ecluse.Cve.Sync
     Ecluse.Composition
     Ecluse.Composition.BootError
@@ -590,6 +597,7 @@ library ecluse-test-support
     Ecluse.Test.Registry.Rubygems.Wire
     Ecluse.Test.RegistryCapture
     Ecluse.Test.Rules
+    Ecluse.Test.Sweep
     Ecluse.Test.Server.Cache
     Ecluse.Test.Server.Route
     Ecluse.Test.Server.Transform
@@ -700,6 +708,11 @@ test-suite ecluse-core-unit
     Ecluse.Core.Registry.CachedDocumentSpec
     Ecluse.Core.Registry.Maintenance.ProtocolSpec
     Ecluse.Core.Registry.MaintenanceSpec
+    Ecluse.Core.Registry.Sweep.CandidatesSpec
+    Ecluse.Core.Registry.Sweep.PackageSpec
+    Ecluse.Core.Registry.Sweep.TypesSpec
+    Ecluse.Core.Registry.Sweep.WalkSpec
+    Ecluse.Core.Registry.SweepSpec
     Ecluse.Core.Registry.MetadataSpec
     Ecluse.Core.Registry.Npm.CredentialSpec
     Ecluse.Core.Registry.Npm.FilterSpec
@@ -828,6 +841,7 @@ test-suite ecluse-unit
     Ecluse.BenchReportSpec
     Ecluse.BootSpec
     Ecluse.CLISpec
+    Ecluse.Dredger.PlanSpec
     Ecluse.Composition.BootErrorSpec
     Ecluse.Composition.CredentialSpec
     Ecluse.Composition.EndpointsSpec

@@ -112,6 +112,7 @@ documentDecoder =
         <*> nestedKey "advisories" (decodeGroup "advisories" advisoriesDecoder)
         <*> nestedKey "runtime" (decodeGroup "runtime" runtimeDecoder)
         <*> nestedKey "observability" (decodeGroup "observability" observabilityDecoder)
+        <*> nestedKey "dredger" (decodeGroup "dredger" dredgerDecoder)
         <*> optionalKeyOr "mounts" mempty (const parseMounts)
         <* unreadKey "rules"
 
@@ -187,6 +188,15 @@ observabilityDecoder =
         <$> requiredKey "logFormat" (parseEnum parseLogFormat)
         <*> requiredKey "logLevel" (parseEnum parseLogLevel)
         <*> requiredKey "telemetry" (parseEnum parseTelemetrySwitch)
+
+dredgerDecoder :: GroupDecoder DredgerSettings
+dredgerDecoder =
+    DredgerSettings
+        <$> requiredKey "chunkSize" parsePositiveInt
+        <*> requiredKey "chunkPause" parseDelaySeconds
+        <*> requiredKey "cyclePause" parseDelaySeconds
+        <*> requiredKey "deletionCap" parsePositiveInt
+        <*> plainKey "fullWalk"
 
 {- | Parse every mount in the merged @mounts@ object, the shipped per-ecosystem templates
 included. "Ecluse.Config" decides which of them are active and must be complete.

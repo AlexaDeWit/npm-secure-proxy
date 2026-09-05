@@ -52,6 +52,7 @@ module Ecluse.Config.Types (
     AdvisoriesSettings (..),
     RuntimeSettings (..),
     ObservabilitySettings (..),
+    DredgerSettings (..),
     MountRegistries (..),
     MountMode (..),
     MirroredLegs (..),
@@ -308,6 +309,7 @@ data AppConfig = AppConfig
     , cfgAdvisories :: AdvisoriesSettings
     , cfgRuntime :: RuntimeSettings
     , cfgObservability :: ObservabilitySettings
+    , cfgDredger :: DredgerSettings
     , cfgMounts :: Map Ecosystem MountConfig
     }
     deriving stock (Eq, Show)
@@ -420,6 +422,27 @@ data ObservabilitySettings = ObservabilitySettings
     { obsLogFormat :: LogFormat
     , obsLogLevel :: LogLevel
     , obsTelemetry :: TelemetrySwitch
+    }
+    deriving stock (Eq, Show)
+
+{- | The @dredger@ group: how the mirror sweep paces itself, how much one cycle may delete, and
+which names it carries. Only @ecluse dredger@ reads it, and every other role carries it unread.
+-}
+data DredgerSettings = DredgerSettings
+    { drgChunkSize :: Int
+    -- ^ Candidate packages one chunk examines before the sweep pauses.
+    , drgChunkPause :: NominalDiffTime
+    -- ^ Seconds between chunks, which is also the wait a fault advising no delay of its own takes.
+    , drgCyclePause :: NominalDiffTime
+    -- ^ Seconds between the end of one cycle and the start of the next.
+    , drgDeletionCap :: Int
+    {- ^ Versions one cycle may hand over for deletion. Reaching it halts the sweep for the life
+    of the process, which is the breaker against a generation that denies far more than it should.
+    -}
+    , drgFullWalk :: Bool
+    {- ^ Walk every package each cycle rather than the advisory and identity-deny candidates. It
+    covers a rule-configuration change, and it writes one resumption marker to the store.
+    -}
     }
     deriving stock (Eq, Show)
 

@@ -122,10 +122,6 @@ data BootError
       with, carrying why.
       -}
       StoreMaintenanceUnavailable Ecosystem StoreMaintenanceReason
-    | {- | @ecluse dredger@ was launched against a build carrying no sweep, so the role would
-      hold a deleting identity and do nothing with it.
-      -}
-      StorePrunerWithoutSweep
     | {- | An advisory store is configured and no mount is, so @ecluse pilot@ has no ecosystem
       to compile an artifact for and would publish nothing.
       -}
@@ -248,8 +244,6 @@ renderBootError = \case
             <> " has no usable store maintenance backend: "
             <> renderStoreMaintenanceReason eco reason
             <> " (the Dredger deletes from every mount's mirror target, so it refuses rather than starting against a store it cannot sweep)"
-    StorePrunerWithoutSweep ->
-        "this build carries no Dredger sweep, so ecluse dredger refuses to start rather than run idle: run a role this build has work for"
     PilotWithoutEcosystem ->
         "ECLUSE_ADVISORIES__URL is set but no mount is declared, so ecluse pilot has no ecosystem to compile an advisory artifact for: declare the mounts this deployment serves under ECLUSE_MOUNTS__<ECOSYSTEM>__, or run a role this configuration has work for"
 

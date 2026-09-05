@@ -166,7 +166,7 @@ readConfigDocument envVars = do
 {- | Assemble the 'BootEnv' for a role and run @action@ within it. A configuration error refuses
 before the runtime posture applies, and the plan's own refusals follow it.
 -}
-withBootEnv :: BootRole -> (BootEnv -> IO ()) -> IO ()
+withBootEnv :: BootRole -> (BootEnv -> IO a) -> IO a
 withBootEnv role action = do
     rawEnvVars <- getEnvironment
     envVars <- applySecretFileIndirection rawEnvVars >>= orExit id

@@ -121,9 +121,6 @@ renderBootErrorSpec = describe "renderBootError" $
             `shouldSatisfy` infixed "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__CODE_ARTIFACT and ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__VERDACCIO"
         renderBootError (StoreTagConflict Npm "mirrorTarget.codeArtifact" Npm "privateUpstream.verdaccio" "https://one.example.test")
             `shouldSatisfy` infixed "one store has one backend, so declare both endpoints under the same tag"
-        -- The idle-Dredger refusal names the capability this build lacks, not a key to fix.
-        renderBootError StorePrunerWithoutSweep
-            `shouldSatisfy` infixed "this build carries no Dredger sweep, so ecluse dredger refuses to start rather than run idle"
         -- The idle-Pilot refusal names both keys: the one that is set and the ones that are not.
         renderBootError PilotWithoutEcosystem
             `shouldSatisfy` infixed "ECLUSE_ADVISORIES__URL is set but no mount is declared"
