@@ -105,8 +105,8 @@ import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Cve (DbEtag)
 import Ecluse.Core.Fault (TransportFault, tfDetail)
 import Ecluse.Core.Package (
-    Artifact (artUrl),
-    PackageDetails,
+    Artifact (artFilename, artUrl),
+    PackageDetails (pkgArtifacts),
     PackageName,
  )
 import Ecluse.Core.Package.Admission (
@@ -134,13 +134,15 @@ import Ecluse.Core.Rules (renderDecision)
 import Ecluse.Core.Rules.Types (EvalContext, mkEvalContext)
 import Ecluse.Core.Security (
     Origin (TrustedOrigin, UntrustedOrigin),
+    artifactAuthorityHonoured,
     hostPortAddress,
+    thgEcosystemHosts,
     thgPrivateHostPort,
     thgPublicHostPort,
  )
-import UnliftIO (withRunInIO)
+import UnliftIO (tryAny, withRunInIO)
 
-import Ecluse.Core.Registry.Adapter.Capability (AdapterArtifact (artifactByFile, artifactByUrl))
+import Ecluse.Core.Registry.Adapter.Capability (AdapterArtifact (artifactByFile, artifactByUrl, artifactHosts))
 import Ecluse.Core.Server.Conditional (forwardValidators)
 import Ecluse.Core.Server.Context (
     Handler,
@@ -163,7 +165,7 @@ import Ecluse.Core.Server.Pipeline.Internal (
     recordDenials,
     serveDecisionClass,
  )
-import Ecluse.Core.Server.Pipeline.Origin (mountOrigin, withPublicMetadataClient)
+import Ecluse.Core.Server.Pipeline.Origin (mountOrigin, withPrivateMetadataClient, withPublicMetadataClient)
 import Ecluse.Core.Server.Pipeline.Shared
 import Ecluse.Core.Server.Pipeline.Tarball.Relay (
     ArtifactServe (ServeFull, ServeHead),
@@ -273,7 +275,7 @@ serveTarballWithDeps mode replies deps clientToken name version file request res
         -- The client's conditional validators, relayed onto both legs' upstream requests so
         -- upstream can answer a 304 for a pass-through body (the conditional-GET contract).
         let validators = forwardValidators (requestHeaders request)
-        privateHit <- streamPrivateArtifact mode replies rt deps clientToken validators name file respond
+        privateHit <- streamPrivateArtifact mode replies rt deps clientToken validators name version file respond
         case privateHit of
             Just received -> do
                 -- A private hit is an admit from the trusted upstream, and no rule
@@ -288,13 +290,12 @@ serveTarballWithDeps mode replies deps clientToken name version file request res
                     liftIO (respond (artifactError replies deps firstPartyAbsent))
                 | otherwise -> servePublicArtifact mode replies rt deps validators name version file respond
 
-{- Stream the artifact from the trusted private upstream by the requested filename, without
-fetching the private packument first. A 2xx or an upstream 304 yields 'Just' and answers the
-request. Any other status, an unformable URL, or a failure opening the connection yields
-'Nothing', the clean miss the caller falls through on. The request forwards the client's
-credential and never follows a redirect, so a private CDN 302 comes back rather than being
-chased with the credential. This leg applies no serve-time integrity floor, and @npm@ and
-the mirror worker still verify the bytes. -}
+{- Stream the artifact from the trusted private upstream. A 2xx or an upstream 304 yields
+'Just' and answers the request. Any other status, an unformable URL, or a failure opening the
+connection yields 'Nothing', the clean miss the caller falls through on. The request never
+follows a redirect, so a private CDN 302 comes back rather than being chased with the
+credential. This leg applies no serve-time integrity floor, and the client and the mirror
+worker still verify the bytes. -}
 streamPrivateArtifact ::
     ArtifactServe ->
     TarballReplies response ->
@@ -303,33 +304,62 @@ streamPrivateArtifact ::
     Maybe ClientCredential ->
     RequestHeaders ->
     PackageName ->
+    Version ->
     Filename ->
     (response -> IO ResponseReceived) ->
     Handler (Maybe ResponseReceived)
-streamPrivateArtifact mode replies rt deps token validators name file respond =
-    case privateRequest of
+streamPrivateArtifact mode replies rt deps token validators name version file respond =
+    privateArtifactRequest rt deps token name version file >>= \case
         Just req ->
             liftIO $
                 fmap snd
-                    <$> relayUpstreamWhen mode (srPrivateManager rt) req acceptArtifact relayUnjudged (relayResponder replies respond)
+                    <$> relayUpstreamWhen mode (srPrivateManager rt) (withValidators validators (withMethod mode req)) acceptArtifact relayUnjudged (relayResponder replies respond)
         Nothing -> pure Nothing
+
+{- The private artifact request, or 'Nothing' for a private miss: no private upstream, a host
+the artifact-host policy refuses, an unresolvable file, or a URL that will not form.
+
+Which arm runs is the ecosystem's own fact. An ecosystem whose registry serves its own artifact
+bytes declares no artifact host, and its file sits at a conventional path under the private
+base: a blind probe, which costs no metadata read on the private hit path. An ecosystem that
+declares artifact hosts cannot spell that path, because its index names each file's location
+itself, so the file is resolved through the private index and fetched at the location that
+index gave. -}
+privateArtifactRequest ::
+    ServeRuntime ->
+    PackumentDeps ->
+    Maybe ClientCredential ->
+    PackageName ->
+    Version ->
+    Filename ->
+    Handler (Maybe HTTP.Request)
+privateArtifactRequest rt deps token name version file = case pdPrivateBaseUrl deps of
+    Nothing -> pure Nothing
+    Just privateBase
+        | not (tarballHostHonoured TrustedOrigin deps privateHostPort privateHostPort) -> pure Nothing
+        | null (artifactHosts (pdArtifact deps)) -> pure (byConventionalPath privateBase)
+        | otherwise -> byIndexedLocation privateBase
   where
-    -- The private tarball request {base}/{pkg}/-/{file}. 'Nothing' when the mount has no
-    -- private upstream, the host fails the tarball-host policy, or the URL will not form, each
-    -- a private miss. The credential rides with redirectCount = 0, the credential-redirect
-    -- invariant.
-    privateRequest :: Maybe HTTP.Request
-    privateRequest = case pdPrivateBaseUrl deps of
-        Nothing -> Nothing
-        Just privateBase
-            | tarballHostHonoured TrustedOrigin deps privateHostPort privateHostPort ->
-                withValidators validators . withMethod mode
-                    <$> rightToMaybe (artifactByFile (pdArtifact deps) (mountOrigin deps (srPrivateManager rt) privateBase token) name (unFilename file))
-            | otherwise -> Nothing
-      where
-        -- The precomputed private authority. The constructed URL is on the private base, so the
-        -- gate stays applied and trivially satisfied without re-parsing the URL.
-        privateHostPort = thgPrivateHostPort (pdTarballHostGate deps)
+    -- The precomputed private authority. A conventionally-built URL is on the private base, so
+    -- the gate stays applied and trivially satisfied without re-parsing the URL.
+    privateHostPort = thgPrivateHostPort (pdTarballHostGate deps)
+
+    byConventionalPath privateBase =
+        rightToMaybe (artifactByFile (pdArtifact deps) (mountOrigin deps (srPrivateManager rt) privateBase token) name (unFilename file))
+
+    {- Resolve the file through the private index, then fetch it where that index put it. The
+    location is gated to the mount's reference authorities from the same definition the download
+    gate reads, and the mount credential rides only when the location is the private upstream
+    itself: a file the index puts elsewhere is fetched anonymously or not at all. -}
+    byIndexedLocation privateBase = do
+        resolved <- tryAny (withPrivateMetadataClient rt deps privateBase token (\client -> fetchVersionDetails client name version))
+        pure $ do
+            VersionPresent details <- rightToMaybe resolved
+            artifact <- find ((== unFilename file) . artFilename) (pkgArtifacts details)
+            let target = hostPortAddress (artUrl artifact)
+            guard (artifactAuthorityHonoured (thgEcosystemHosts (pdTarballHostGate deps)) privateHostPort target)
+            let carried = if target == privateHostPort then token else Nothing
+            rightToMaybe (artifactByUrl (pdArtifact deps) carried (artUrl artifact))
 
 {- Serve the artifact from the public upstream after a private miss: gate the single
 requested version against the rules. An admit streams the bytes anonymously and enqueues a

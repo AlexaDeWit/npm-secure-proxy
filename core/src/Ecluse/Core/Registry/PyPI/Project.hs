@@ -56,6 +56,7 @@ module Ecluse.Core.Registry.PyPI.Project (
     projectName,
     canonicalName,
     isCanonicalName,
+    pypiNameLeadChars,
 ) where
 
 import Data.Aeson (Value, toJSON)
@@ -329,6 +330,13 @@ refusalText component = \case
     NameEmpty -> ParseError "empty PyPI project name"
     NameNotAscii -> ParseError ("non-ASCII PyPI project name: " <> show component)
     NameUnsafeComponent -> ParseError ("unusable PyPI project name: " <> show component)
+
+{- | The characters a PyPI project name may begin with, in its canonical form. A store walk
+partitions a name space by them, so they are declared here beside the grammar that admits them
+rather than restated at the walk.
+-}
+pypiNameLeadChars :: [Char]
+pypiNameLeadChars = ['a' .. 'z'] <> ['0' .. '9']
 
 {- PEP 508's name grammar on top of the floor: an ASCII alphanumeric at each end, and only
 @-@, @_@ or @.@ between them. -}

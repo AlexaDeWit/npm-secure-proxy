@@ -12,11 +12,18 @@ document it publishes as JSON, so the page and the document always agree.
 
 | Registry | Status |
 | --- | --- |
-| npm | Served |
-| PyPI | Planned |
+| npm | Served, mirrored, and published |
+| PyPI | Served |
 | RubyGems | Planned |
 
-A planned registry is already a valid `mounts` key, but no adapter answers its routes yet,
+A **served** registry answers reads: the metadata a client resolves against and the artifact
+bytes it installs, both gated by the same rules, integrity floors, and egress controls.
+
+A `pypi` mount serves reads and nothing else. It writes nothing, so a `publicationTarget` or a
+`mirrorTarget` on it refuses the boot naming the ecosystem, and its upload endpoint answers
+`405`. Mirroring and first-party publishing for PyPI land in later releases.
+
+A **planned** registry is already a valid `mounts` key, but no adapter answers its routes yet,
 so activating one refuses the boot.
 
 {{ openapi_reference() }}

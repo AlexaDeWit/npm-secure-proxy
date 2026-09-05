@@ -30,6 +30,7 @@ module Ecluse.Test.Server.Mount (
     serveDepsFor,
     inertDepsFor,
     npmServeDeps,
+    pypiServeDeps,
     inertPackumentDeps,
     withPrivateBaseUrl,
     overPrivateBaseUrl,
@@ -40,8 +41,9 @@ module Ecluse.Test.Server.Mount (
 import Data.Time (UTCTime (UTCTime), fromGregorian)
 
 import Ecluse.Core.Package.Merge (DivergencePolicy (Warn))
-import Ecluse.Core.Registry.Adapter.Types (RegistryAdapter (adapterArtifact, adapterMetadata))
+import Ecluse.Core.Registry.Adapter.Types (AdapterArtifact (artifactHosts), RegistryAdapter (adapterArtifact, adapterMetadata))
 import Ecluse.Core.Registry.Npm.Adapter (npmAdapter)
+import Ecluse.Core.Registry.PyPI.Adapter (pypiAdapter)
 import Ecluse.Core.Rules (PreparedRule)
 import Ecluse.Core.Security (defaultLimits)
 import Ecluse.Core.Security.Egress (RegistryUrl, mkRegistryUrl)
@@ -56,7 +58,9 @@ are parameters, and the rest carry defaults.
 serveDepsFor :: RegistryAdapter -> Maybe RegistryUrl -> RegistryUrl -> MirrorServePlan -> [PreparedRule] -> IO UTCTime -> PackumentDeps
 serveDepsFor adapter privateBaseUrl publicBaseUrl mirror rules clock =
     PackumentDeps
-        { pdUpstreams = mountUpstreams [] privateBaseUrl publicBaseUrl mirror
+        { -- The adapter's own declared artifact hosts, so a fixture's gate honours exactly what
+          -- the composition root's would. 'withEcosystemHosts' varies them where a spec must.
+          pdUpstreams = mountUpstreams (artifactHosts (adapterArtifact adapter)) privateBaseUrl publicBaseUrl mirror
         , -- Deny by default, matching a mount that declares no namespaces. A spec pinning the
           -- privilege record-updates this field.
           pdFirstParty = const False
@@ -79,6 +83,10 @@ serveDepsFor adapter privateBaseUrl publicBaseUrl mirror rules clock =
 -- | 'serveDepsFor' over 'Ecluse.Core.Registry.Npm.Adapter.npmAdapter'.
 npmServeDeps :: Maybe RegistryUrl -> RegistryUrl -> MirrorServePlan -> [PreparedRule] -> IO UTCTime -> PackumentDeps
 npmServeDeps = serveDepsFor npmAdapter
+
+-- | 'serveDepsFor' over 'Ecluse.Core.Registry.PyPI.Adapter.pypiAdapter'.
+pypiServeDeps :: Maybe RegistryUrl -> RegistryUrl -> MirrorServePlan -> [PreparedRule] -> IO UTCTime -> PackumentDeps
+pypiServeDeps = serveDepsFor pypiAdapter
 
 {- | A mount's serve dependencies wired to nowhere: a closed loopback port for every base URL, an
 empty rule set, and a fixed clock. It is complete enough to bind a

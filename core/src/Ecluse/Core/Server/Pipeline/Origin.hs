@@ -37,6 +37,7 @@ module Ecluse.Core.Server.Pipeline.Origin (
     fetchPrivateOrigin,
     fetchPublicOrigin,
     withPublicMetadataClient,
+    withPrivateMetadataClient,
 
     -- * One origin's coordinates
     mountOrigin,
@@ -158,10 +159,9 @@ fetchPrivateOrigin deps rt token name = case pdPrivateBaseUrl deps of
     Nothing -> pure OriginAbsent
     Just privateBase -> do
         logFM DebugS (ls ("fetching private origin for " <> renderPackageName name))
-        let origin = mountOrigin deps (srPrivateManager rt) privateBase token
         resolved <-
             tryAny $
-                withMetadataClient rt deps Metric.Private Uncached origin $ \client ->
+                withPrivateMetadataClient rt deps privateBase token $ \client ->
                     fetchFullManifest client name
         pure (originResultOf resolved)
 
@@ -205,6 +205,14 @@ withMetadataClient rt deps upstream caching origin k =
   where
     -- The log lines name the origin, and a diagnostic reads characters, not a witness.
     baseUrl = registryUrlText (ocBaseUrl origin)
+
+{- | The private origin's read handle: __uncached__, carrying the client's own credential. The
+private upstream is the per-client authority for who may read what, and the metadata cache keys
+on the base URL with no credential dimension, so one client's entry must never serve another's.
+-}
+withPrivateMetadataClient :: ServeRuntime -> PackumentDeps -> RegistryUrl -> Maybe ClientCredential -> (MetadataClient -> IO a) -> Handler a
+withPrivateMetadataClient rt deps baseUrl token =
+    withMetadataClient rt deps Metric.Private Uncached (mountOrigin deps (srPrivateManager rt) baseUrl token)
 
 {- | The public origin's read handle: anonymous, resolved through the shared metadata cache
 under the base URL's 'Source'. Both 'fetchFullManifest' and the tarball gate's

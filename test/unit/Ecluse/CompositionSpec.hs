@@ -312,15 +312,15 @@ bootErrorSpec = describe "resolveBootWiring (fail fast at boot)" $ do
     it "fails on a configured mount whose ecosystem has no adapter" $ do
         -- Touching any pypi key activates the mount, so the env fixture must carry
         -- the private upstream the activation contract requires.
-        let pypiEnv =
-                ("ECLUSE_MOUNTS__PYPI__PRIVATE_UPSTREAM__REGISTRY__URL", "https://priv.example.test")
-                    : ("ECLUSE_MOUNTS__PYPI__MIRROR_TARGET__REGISTRY__URL", "https://mir.example.test")
-                    : ("ECLUSE_MOUNTS__PYPI__MIRROR_TARGET__REGISTRY__TOKEN", "t")
+        let unservedEnv =
+                ("ECLUSE_MOUNTS__RUBYGEMS__PRIVATE_UPSTREAM__REGISTRY__URL", "https://priv.example.test")
+                    : ("ECLUSE_MOUNTS__RUBYGEMS__MIRROR_TARGET__REGISTRY__URL", "https://mir.example.test")
+                    : ("ECLUSE_MOUNTS__RUBYGEMS__MIRROR_TARGET__REGISTRY__TOKEN", "t")
                     : staticEnvVars
-        _ <- expectEnv pypiEnv
-        _ <- expectDoc (mountDoc "pypi")
-        planFrom pypiEnv (Just (mountDoc "pypi")) >>= \case
-            Left errs -> errs `shouldBe` [MissingAdapter PyPI]
+        _ <- expectEnv unservedEnv
+        _ <- expectDoc (mountDoc "rubygems")
+        planFrom unservedEnv (Just (mountDoc "rubygems")) >>= \case
+            Left errs -> errs `shouldBe` [MissingAdapter RubyGems]
             Right _ -> expectationFailure "expected boot failure"
 
     it "refuses a leftover write token on a mount that declares no mirror-target url" $ do

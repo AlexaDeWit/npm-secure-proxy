@@ -70,6 +70,10 @@ data BootError
       tells a transient AWS error from a permanent one to fix.
       -}
       CodeArtifactMintFailed Text
+    | {- | A mount declares a mirror target, but this build writes nothing for its ecosystem.
+      The mirror could never publish, so the mount is refused rather than booted half-wired.
+      -}
+      MirrorTargetWithoutPublish Ecosystem
     | {- | A publication target is set and the mount declares no first-party namespaces, so the
       anti-shadowing guard has nothing to enforce and any name could be shadowed.
       -}
@@ -184,6 +188,11 @@ renderBootError = \case
         "mirror-target credential provider codeartifact failed to mint an initial token at boot: "
             <> detail
             <> " (a transient AWS error may clear on retry. A permanent one, such as a bad domain or region or a missing permission, must be fixed)"
+    MirrorTargetWithoutPublish eco ->
+        mountKeyRef eco "mirrorTarget"
+            <> " is set but this build writes nothing for the "
+            <> ecosystemName eco
+            <> " protocol: the mirror would drain its queue with no way to publish, so the mount is refused rather than served with a mirror that fails every job."
     FirstPartyMissing eco ->
         mountKeyRef eco "publicationTarget" <> " is set but " <> mountKeyRef eco "firstParty" <> " is not: a publication target needs the namespaces this deployment owns, written in the ecosystem's own shape (npm scopes such as @acme, PyPI distribution names and acme-* prefixes), for the anti-shadowing guard."
     PublishStaticCredentialNeedsEdge eco tag ->

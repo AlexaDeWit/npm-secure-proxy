@@ -188,6 +188,9 @@ sweepableStore mAdapter eco target = cleared <$> control
         adapter <- maybeToRight NoProtocolMaintenance mAdapter
         listing <- maybeToRight NoProtocolMaintenance (maintenanceListing (adapterMaintenance adapter))
         delete <- maybeToRight NoProtocolMaintenance (maintenanceVersionDelete (adapterMaintenance adapter))
+        -- A protocol-only store is swept through the same write the mirror publishes with, so
+        -- an ecosystem that publishes nothing spells no sweep either.
+        publish <- maybeToRight NoProtocolMaintenance (adapterPublish adapter)
         Right
             ( ClearedProtocol
                 ClearedProtocolStore
@@ -197,7 +200,7 @@ sweepableStore mAdapter eco target = cleared <$> control
                     , cpsEcosystem = eco
                     , cpsListing = listing
                     , cpsDelete = delete
-                    , cpsCodec = publishCodec (adapterPublish adapter)
+                    , cpsCodec = publishCodec publish
                     }
             )
 

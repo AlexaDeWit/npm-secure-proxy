@@ -158,6 +158,7 @@ library ecluse-core
     Ecluse.Core.Registry.Sweep.Package
     Ecluse.Core.Registry.Sweep.Types
     Ecluse.Core.Registry.Sweep.Walk
+    Ecluse.Core.Registry.PyPI.Adapter
     Ecluse.Core.Registry.PyPI.Credential
     Ecluse.Core.Registry.PyPI.Filter
     Ecluse.Core.Registry.PyPI.FirstParty
@@ -737,6 +738,7 @@ test-suite ecluse-core-unit
     Ecluse.Core.Registry.Npm.WireSpec
     Ecluse.Core.Registry.NpmSpec
     Ecluse.Core.Registry.PublishSpec
+    Ecluse.Core.Registry.PyPI.AdapterSpec
     Ecluse.Core.Registry.PyPI.CredentialSpec
     Ecluse.Core.Registry.PyPI.FilterSpec
     Ecluse.Core.Registry.PyPI.FirstPartySpec
@@ -1050,6 +1052,7 @@ test-suite ecluse-integration
     Ecluse.AwsEndToEndIntegrationSpec
     Ecluse.Core.Security.EgressIntegrationSpec
     Ecluse.Core.Server.Pipeline.OriginIntegrationSpec
+    Ecluse.Core.Registry.PyPI.ServeIntegrationSpec
     Ecluse.Core.Server.Pipeline.PackumentIntegrationSpec
     Ecluse.Core.Server.Pipeline.PublishIntegrationSpec
     Ecluse.Core.Server.Pipeline.SharedIntegrationSpec

@@ -18,8 +18,8 @@ spec = describe "adapterFor (the ecosystem adapter registry)" $ do
     it "resolves npm to the adapter registered under its own ecosystem tag" $
         (adapterEcosystem <$> adapterFor Npm) `shouldBe` Just Npm
 
-    it "resolves PyPI to no adapter (unsupported by the build, a loud miss)" $
-        (adapterEcosystem <$> adapterFor PyPI) `shouldBe` Nothing
+    it "resolves PyPI to the adapter registered under its own ecosystem tag" $
+        (adapterEcosystem <$> adapterFor PyPI) `shouldBe` Just PyPI
 
     it "resolves RubyGems to no adapter (unsupported by the build, a loud miss)" $
         (adapterEcosystem <$> adapterFor RubyGems) `shouldBe` Nothing

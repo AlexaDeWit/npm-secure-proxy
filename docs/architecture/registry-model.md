@@ -111,6 +111,25 @@ sequenceDiagram
     Note over E,PubT: write-only from the proxy, read back via the private upstream
 ```
 
+## Where an artifact lives
+
+npm serves a package's bytes from the registry host that served its listing. PyPI does not: a
+Simple index names each file's own location, and public PyPI puts those on
+`files.pythonhosted.org` rather than on `pypi.org`. A client that resolved metadata through
+Écluse and then pulled the bytes from that host directly would be past the gate, so a mount
+rewrites every served location back under its own prefix.
+
+Which locations Écluse will fetch from is not the operator's to widen. An ecosystem declares the
+hosts it serves artifact bytes from by design, and a mount honours a file only on the authority
+that served its listing or on one of those declared hosts. A file anywhere else is **dropped
+from the served listing**, not listed and refused at download, so a client never resolves
+against a file it could not have installed. A release disappears when no file of it survives.
+The same check runs at the download gate from the same definition, so the listing and the gate
+cannot disagree.
+
+For npm this is visible: a packument naming a tarball on a foreign host used to serve the
+rewritten URL and refuse when the client asked for the bytes. That version now does not appear.
+
 ## Serving a tarball
 
 A tarball is one concrete version from one source, so the proxy streams a private-upstream hit

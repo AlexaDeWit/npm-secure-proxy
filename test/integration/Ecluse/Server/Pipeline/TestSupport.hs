@@ -72,6 +72,7 @@ module Ecluse.Server.Pipeline.TestSupport (
 
     -- * Request drivers
     getPath,
+    getPathWith,
     getThing,
     getThingWith,
     headThing,
@@ -695,6 +696,12 @@ requestAt method path base = runSession (request (setPath base path){requestMeth
 -- | A @GET@ at the given path with no credential: the arbitrary-path generalisation of 'getThing'.
 getPath :: ByteString -> Application -> IO SResponse
 getPath path = requestAt methodGet path defaultRequest
+
+{- | A @GET@ at the given path carrying the given request headers, for a path whose answer turns
+on what the client says it accepts.
+-}
+getPathWith :: [Header] -> ByteString -> Application -> IO SResponse
+getPathWith extra path = requestAt methodGet path (headersRequest extra)
 
 -- | A @GET \/npm\/thing@ request carrying the given (optional) bearer credential.
 getThing :: Maybe Text -> Application -> IO SResponse

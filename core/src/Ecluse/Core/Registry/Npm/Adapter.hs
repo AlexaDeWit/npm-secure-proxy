@@ -9,6 +9,7 @@ Pure assembly, with no protocol logic of its own: every field names a function o
 -}
 module Ecluse.Core.Registry.Npm.Adapter (
     npmAdapter,
+    npmPublish,
 ) where
 
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
@@ -56,11 +57,17 @@ npmAdapter =
                 , artifactHosts = NpmRequest.npmArtifactHosts
                 }
         , adapterProjectName = rightToMaybe . projectName
-        , adapterPublish =
-            AdapterPublish
-                { publishRelay = relayPublishDocument
-                , publishDeclaredNames = declaredNames
-                , publishCodec = npmPublishCodec
-                }
+        , adapterPublish = Just npmPublish
         , adapterMaintenance = npmMaintenance
+        }
+
+{- | npm's publish capability, named beside the record that carries it so a consumer needing the
+capability alone reads one definition rather than unwrapping the optional field.
+-}
+npmPublish :: AdapterPublish
+npmPublish =
+    AdapterPublish
+        { publishRelay = relayPublishDocument
+        , publishDeclaredNames = declaredNames
+        , publishCodec = npmPublishCodec
         }
