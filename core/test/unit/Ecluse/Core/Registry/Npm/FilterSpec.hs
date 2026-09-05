@@ -27,8 +27,8 @@ import Ecluse.Core.Package.Filter (fpDecisions, fpSurvivors, restrictToSurvivors
 import Ecluse.Core.Package.Merge (MergePlan (mpSurvivors), Provenance (GatedSource), mergePackuments)
 import Ecluse.Core.Registry.Npm.Filter (
     assembleMergedPackument,
+    npmDocumentName,
     rewriteVersion,
-    safeName,
  )
 import Ecluse.Core.Registry.Npm.Metadata (projectNpmManifest)
 import Ecluse.Core.Rules.Types (
@@ -55,10 +55,10 @@ spec = do
 name grammar read as a predicate, so it agrees with the route and the projection by construction.
 -}
 nameGateSpec :: Spec
-nameGateSpec = describe "safeName -- the one npm name grammar" $
+nameGateSpec = describe "npmDocumentName -- the one npm name grammar" $
     for_ NpmFixture.npmNameVerdicts $ \(raw, valid) ->
         it (NpmFixture.nameVerdictLabel raw valid) $
-            safeName raw `shouldBe` valid
+            isJust (npmDocumentName (KeyMap.singleton "name" (String raw))) `shouldBe` valid
 
 -- | A fixed "now" so the age-based admit/deny axis is deterministic.
 now :: UTCTime

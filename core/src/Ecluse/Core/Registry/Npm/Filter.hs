@@ -29,16 +29,16 @@ surface".
 == URL rewriting
 
 'rewriteVersion' rewrites one version object's @dist.tarball@ to
-@{mount-base}\/{pkg}\/-\/{file}@. A client that resolves metadata /through/ the proxy
-then downloads the bytes through it, rather than going straight to upstream and
-bypassing the gate. See @docs\/architecture\/web-layer.md@ → "Multi-ecosystem mounts",
-whose URL rewriting is load-bearing. Keeping artifacts same-host also keeps
-npm's auth flowing, which a separate artifact host would silently drop. The caller
-__supplies__ the @{mount-base}\/{pkg}@ prefix. 'assembleMergedPackument' derives it
-from the mount base and the document's own safety-gated @name@ as it places each
-surviving version. The transform performs no IO. It is __idempotent__: re-deriving
-@{file}@ from an already-rewritten URL yields the same URL, so applying it more than
-once is safe.
+@{mount-base}\/{pkg}\/-\/{file}@ through the shared
+'Ecluse.Core.Registry.ServedDocument.rebaseArtifactUrl', which owns the file-name
+derivation and its idempotence. npm supplies only the @\/-\/@ spelling. A client that
+resolves metadata /through/ the proxy then downloads the bytes through it, rather than
+going straight to upstream and bypassing the gate. See
+@docs\/architecture\/web-layer.md@ → "Multi-ecosystem mounts", whose URL rewriting is
+load-bearing. Keeping artifacts same-host also keeps npm's auth flowing, which a
+separate artifact host would silently drop. The caller __supplies__ the
+@{mount-base}\/{pkg}@ prefix. 'assembleMergedPackument' derives it from the mount base
+and the document's own safety-gated @name@ as it places each surviving version.
 
 == Assembling the served document
 
@@ -57,9 +57,10 @@ Presence in the packument /is/ availability.
 The fused single pass is deliberate. Restricting, assembling, and rewriting as
 separate whole-document edits would rebuild a many-version packument several times
 per request. This transform sits on the serve path's hot loop. The rewrite gates the
-interpolated name.
-'safeName' reads the base document's own @name@ through the npm name grammar before anything
-interpolates it, and a document with no usable name has no URLs rewritten.
+interpolated name through the shared
+'Ecluse.Core.Registry.ServedDocument.safeDocumentName', which reads the base document's own
+@name@ under the npm grammar before anything interpolates it. A document with no usable name
+has no URLs rewritten.
 -}
 module Ecluse.Core.Registry.Npm.Filter (
     -- * URL rewriting
@@ -67,13 +68,11 @@ module Ecluse.Core.Registry.Npm.Filter (
 
     -- * Assembling the served document
     assembleMergedPackument,
+    npmDocumentName,
 
     -- * The served-document boundary (npm's 'CachedDoc' capabilities)
     assembleMergedDocument,
     serialiseMergedDocument,
-
-    -- * The interpolated-name gate (exported for its spec)
-    safeName,
 ) where
 
 import Data.Aeson (Value (Object, String), encode)
@@ -82,17 +81,18 @@ import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
 
-import Ecluse.Core.Package.Merge (MergePlan (mpDistTags, mpSurvivors, mpTime), SourceId)
+import Ecluse.Core.Package.Merge (MergePlan (mpDistTags, mpTime), SourceId)
 import Ecluse.Core.Registry.CachedDocument (CachedDoc, npmCached)
 import Ecluse.Core.Registry.Npm.Project (projectName)
-import Ecluse.Core.Text (joinUrlPath, renderIso8601Utc, urlFilename)
+import Ecluse.Core.Registry.ServedDocument (overlaySurvivors, rebaseArtifactUrl, safeDocumentName)
+import Ecluse.Core.Text (joinUrlPath, renderIso8601Utc)
 import Ecluse.Core.Version (renderVersion)
 
-{- | Whether an upstream-controlled packument @name@ is safe to interpolate into a rewritten
-@dist.tarball@ path. The projection refuses such a name first, so this gate is defence in depth.
+{- | The packument's own @name@ when it is safe to interpolate into a rewritten
+@dist.tarball@ path, read through the shared gate under npm's name grammar.
 -}
-safeName :: Text -> Bool
-safeName = isRight . projectName
+npmDocumentName :: KeyMap Value -> Maybe Text
+npmDocumentName = safeDocumentName (isRight . projectName)
 
 {- | Rewrite one version object's @dist.tarball@ to @{prefix}\/-\/{file}@, so the client
 fetches the artifact back through this mount. The @{file}@ is the tarball URL's filename,
@@ -102,7 +102,7 @@ Total, lossless, and idempotent: a version with no @dist@, no @tarball@ string, 
 filename segment is left unchanged, and every unmodelled key is relayed.
 
 @prefix@ is the mount's @{base}\/{pkg}@. A @{pkg}@ read from a document's own @name@ is
-upstream-controlled, so the caller must gate it through 'safeName' first.
+upstream-controlled, so the caller must gate it through 'npmDocumentName' first.
 -}
 rewriteVersion :: Text -> Value -> Value
 rewriteVersion prefix = \case
@@ -117,8 +117,8 @@ rewriteDist :: Text -> Value -> Value
 rewriteDist prefix = \case
     Object dist
         | Just url <- stringField "tarball" dist
-        , Just file <- urlFilename url ->
-            Object (KeyMap.insert "tarball" (String (prefix <> "/-/" <> file)) dist)
+        , Just rebased <- rebaseArtifactUrl (\file -> prefix <> "/-/" <> file) url ->
+            Object (KeyMap.insert "tarball" (String rebased) dist)
     other -> other
 
 {- | Assemble the served packument for @mountBase@ from a 'MergePlan' and the raw source
@@ -145,11 +145,10 @@ assembleMergedPackument mountBase bySource plan base =
         Object o -> o
         _ -> mempty
 
-    -- 'safeName' gates the document's own upstream-controlled @name@ before it reaches the URL.
+    -- The shared gate reads the document's own upstream-controlled @name@ before it reaches
+    -- the URL, and a document with no usable name has no version rewritten.
     rewriteSurvivor :: Value -> Value
-    rewriteSurvivor = case stringField "name" baseObject of
-        Just pkg | safeName pkg -> rewriteVersion (joinUrlPath mountBase pkg)
-        _ -> id
+    rewriteSurvivor = maybe id (rewriteVersion . joinUrlPath mountBase) (npmDocumentName baseObject)
 
     -- Each survivor's object is the raw @Value@ of the source that won the key, unmodelled
     -- keys and all. A survivor whose source object is missing drops out, never fabricated.
@@ -157,18 +156,8 @@ assembleMergedPackument mountBase bySource plan base =
     survivingVersions =
         KeyMap.fromList
             [ (Key.fromText version, rewriteSurvivor object)
-            | (version, sid) <- Map.toList (mpSurvivors plan)
-            , Just object <- [versionObjectFrom sid version]
+            | (version, object) <- overlaySurvivors versionObjectIn bySource plan
             ]
-
-    -- Hoisted so each survivor costs one inner lookup. Resolving a source's @versions@ object
-    -- inside 'versionObjectFrom' would re-extract it once per version.
-    versionsBySource :: Map SourceId (KeyMap Value)
-    versionsBySource = Map.mapMaybe versionsObjectOf bySource
-
-    versionObjectFrom :: SourceId -> Text -> Maybe Value
-    versionObjectFrom sid version =
-        Map.lookup sid versionsBySource >>= KeyMap.lookup (Key.fromText version)
 
     -- The plan has already resolved @latest@ and dropped absent-target tags over the union.
     distTags :: KeyMap Value
@@ -222,11 +211,15 @@ serialiseMergedDocument = encode . npmValue
 npmValue :: CachedDoc -> Value
 npmValue = fromMaybe (Object mempty) . snd npmCached
 
--- A source document's raw @versions@ object, when the document carries one.
-versionsObjectOf :: Value -> Maybe (KeyMap Value)
-versionsObjectOf = \case
-    Object o | Just (Object vs) <- KeyMap.lookup "versions" o -> Just vs
-    _ -> Nothing
+{- One source document's version lookup: its raw @versions@ object, resolved once per source
+by 'overlaySurvivors' and then read per survivor. -}
+versionObjectIn :: Value -> Text -> Maybe Value
+versionObjectIn source =
+    \version -> versions >>= KeyMap.lookup (Key.fromText version)
+  where
+    versions = case source of
+        Object o | Just (Object vs) <- KeyMap.lookup "versions" o -> Just vs
+        _ -> Nothing
 
 -- The non-version keys an npm @time@ object carries, which the assembly relays
 -- unchanged.
