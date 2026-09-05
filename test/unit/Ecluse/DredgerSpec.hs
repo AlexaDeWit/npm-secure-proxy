@@ -4,9 +4,12 @@
 
 module Ecluse.DredgerSpec (spec) where
 
+import Control.Exception qualified as Exception
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Test.Hspec
+import UnliftIO (throwIO)
+import UnliftIO.Concurrent (threadDelay)
 
 import Ecluse.Core.Cve (DbEtag (DbEtag))
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
@@ -25,7 +28,7 @@ import Ecluse.Core.Registry.Sweep.Types (
 import Ecluse.Core.Rules.Types (Rule (DenyByIdentity))
 import Ecluse.Core.Telemetry.Metrics (SweepResult (SweepDeleted, SweepExamined, SweepWouldDelete))
 import Ecluse.Core.Version (Version, mkVersion)
-import Ecluse.Dredger (dredgerReady, latchedStep)
+import Ecluse.Dredger (dredgerReady, latchedStep, withSyncTasks)
 import Ecluse.Dredger.Plan (SweepMode (SweepRehearses), rehearsedStore, sweepReportFor)
 import Ecluse.Test.Maintenance (
     FakeStore (fakeMaintenance, readFakeContents, readFakeCursor),
@@ -40,9 +43,33 @@ import Ecluse.Test.Sweep (RecordedSweep (..), recordingPorts, testMount, testPac
 
 spec :: Spec
 spec = do
+    companionSpec
     latchSpec
     probeSpec
     rehearsalSpec
+
+{- The advisory sync runs beside the sweep, never in a race with it: a deployment with no advisory
+store configured has no sync task at all, and a companion that could end the run would cancel the
+sweep before it swept anything. -}
+companionSpec :: Spec
+companionSpec = describe "withSyncTasks" $ do
+    it "lets the sweep finish when there is no sync task to run at all" $ do
+        swept <- newIORef False
+        withSyncTasks [] (threadDelay 1000 >> writeIORef swept True)
+        readIORef swept `shouldReturn` True
+
+    it "lets the sweep finish when a sync task ends before it does" $ do
+        swept <- newIORef False
+        withSyncTasks [pass] (threadDelay 1000 >> writeIORef swept True)
+        readIORef swept `shouldReturn` True
+
+    it "brings the run down when a sync task faults, rather than sweeping on without it" $ do
+        completed <- newIORef False
+        outcome <-
+            Exception.try $
+                withSyncTasks [throwIO (SyncGaveUp "the advisory sync gave up")] (threadDelay 200000 >> writeIORef completed True)
+        outcome `shouldSatisfy` faulted
+        readIORef completed `shouldReturn` False
 
 {- The cap is a breaker, so it stops the Dredger for the life of the process. Nothing clears it,
 and the process stays up, because exiting would restart into the same poisoned generation. -}
@@ -145,3 +172,15 @@ packageName = mkPackageName Npm Nothing
 
 version :: Text -> Version
 version = mkVersion Npm
+
+{- | Whether the run ended on a fault. The linked companion rethrows asynchronously, so the assertion
+reads through the base perimeter rather than the one that rethrows an async exception.
+-}
+faulted :: Either SomeException () -> Bool
+faulted = isLeft
+
+-- A typed fault a spec throws from a sync task, so the case names what it simulated.
+newtype SyncGaveUp = SyncGaveUp Text
+    deriving stock (Show)
+
+instance Exception SyncGaveUp

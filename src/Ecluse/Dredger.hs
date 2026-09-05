@@ -9,6 +9,7 @@ of its ports, the latch a halted cycle sets, and the invocation the command line
 -}
 module Ecluse.Dredger (
     runDredger,
+    withSyncTasks,
     dredgerServerConfig,
     dredgerReady,
     latchedStep,
@@ -17,7 +18,7 @@ module Ecluse.Dredger (
 import Data.Map.Strict qualified as Map
 import Data.Time (getCurrentTime)
 import Katip (LogEnv, Severity (ErrorS, InfoS, WarningS), SimpleLogPayload, runKatipContextT)
-import UnliftIO.Async (mapConcurrently_, race_)
+import UnliftIO.Async (link, mapConcurrently_, withAsync)
 import UnliftIO.Concurrent (threadDelay)
 
 import Ecluse.Boot (BootEnv (..), probeServerConfig)
@@ -100,7 +101,7 @@ runDredger bootEnv opts pruner = do
     moduleLog logEnv dredgerModule InfoS ("Dredger starting up, health probes on port " <> show (scPort (cfg status)))
     raceServerAgainstLoop
         (runWarp (cfg status) probeOnlyApplication)
-        (race_ (sweepTask logEnv opts pacing (portsOver metrics) syncReady status mounts) (syncTasks metrics))
+        (withSyncTasks (syncTasks metrics) (sweepTask logEnv opts pacing (portsOver metrics) syncReady status mounts))
     fmap haltDetail <$> readIORef (stFinal status)
   where
     logEnv = beLogEnv bootEnv
@@ -113,8 +114,7 @@ runDredger bootEnv opts pruner = do
         SweepRehearses -> [mount{smStore = rehearsedStore (smStore mount)} | mount <- pwMounts pruner]
     syncReady = cveSyncReady (pwCveSync pruner)
     cfg status = dredgerServerConfig appConfig (dredgerReady syncReady (readIORef (stLatched status)))
-    syncTasks metrics =
-        mapConcurrently_ id (cveSyncTasks logEnv metrics telemetry (cveSyncScheduleFor appConfig) (pwCveSync pruner))
+    syncTasks metrics = cveSyncTasks logEnv metrics telemetry (cveSyncScheduleFor appConfig) (pwCveSync pruner)
     portsOver metrics = sweepPortsFor logEnv metrics (sweepReportFor (doMode opts)) (pwCveSync pruner)
 
 {- | The Dredger's health surface: the shared @server.port@, and a readiness the advisory sync
@@ -155,6 +155,12 @@ sweepTask logEnv opts pacing ports checkReady status mounts = case doRepetition 
     poll remaining
         | remaining <= (0 :: Int) = pass
         | otherwise = checkReady >>= bool (threadDelay advisoryPollMicros >> poll (remaining - 1)) pass
+
+{- | Run the sweep with the advisory sync tasks beside it. The sweep alone decides when the run
+ends, and a task that faults still brings the run down with it.
+-}
+withSyncTasks :: [IO ()] -> IO a -> IO a
+withSyncTasks tasks act = withAsync (mapConcurrently_ id tasks) (\syncs -> link syncs >> act)
 
 {- | One step of the cycling Dredger: run a cycle, or report the halt that latched instead, then
 wait the cycle pause. A latched Dredger touches no store and keeps reporting until it is restarted.

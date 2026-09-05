@@ -299,11 +299,19 @@ dredgerScenarios =
             survivor <- verdaccioHasVersion e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
             (condemned, survivor) `shouldBe` (True, True)
             run <- runDredgerOnce gdp ["--once"] [("ECLUSE_RULES", identityDenyOf dredgerPkg)]
-            dredgerExit run `shouldBe` ExitSuccess
+            -- The Dredger's own log carries why a cycle swept nothing: a halt, a refused delete,
+            -- an empty candidate set, or a boot it never got past. Report it rather than a bare
+            -- False, so one run is enough to say what happened.
+            unless (dredgerExit run == ExitSuccess) (failWithLog run "the sweep exited non-zero")
             gone <- verdaccioHasVersionNow e2e (psName dredgerPkg) (psVersion dredgerPkg)
-            gone `shouldBe` False
+            when gone (failWithLog run "the condemned version is still served")
             kept <- verdaccioHasVersionNow e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
-            kept `shouldBe` True
+            unless kept (failWithLog run "the version no rule named was deleted too")
+
+-- Fail with what the sweep itself reported, so the next run needs no second look.
+failWithLog :: DredgerRun -> Text -> Expectation
+failWithLog run reason =
+    expectationFailure (toString (reason <> ", and the sweep reported:\n" <> dredgerOutput run))
 
 -- The proxy that seeds the store, beside the data plane the sweep container joins.
 withPlaneAndProxy :: ((GlobalDataPlane, E2E) -> IO ()) -> GlobalDataPlane -> IO ()
