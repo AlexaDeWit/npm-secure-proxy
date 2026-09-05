@@ -63,6 +63,14 @@ change. Against Datadog the node-local Agent resamples, so always-on is not wast
   queue redelivered past its budget. That happens only when no dead-letter queue captured the job
   first (see [cloud backends](cloud-backends.md#the-terminus-for-a-job-that-can-never-succeed)).
   The job and the reason stay on the paired `ERROR` line, never a label.
+- `ecluse.dredger.versions` (a counter) carries (result), one of `examined`, `deleted`,
+  `would_delete`, `kept`, or `guard_skipped`. Every version a sweep cycle examines counts once as
+  `examined` and once more under what the cycle did with it, so deletions read as a fraction of what
+  was seen. A dry run counts under `would_delete` and never `deleted`, so a rehearsal cannot be
+  mistaken for a deletion. A cycle whose `deleted` count jumps is worth an alarm: the deletion cap
+  halts such a cycle for the life of the process, and the halt's `ERROR` line names the cap and the
+  advisory generation. The package, the version, and the denying rule stay on the sweep's audit
+  line, never a label.
 - `ecluse.advisory.sync.attempts` (a counter) and `ecluse.advisory.sync.duration` (a histogram, in
   seconds) both carry (ecosystem, result), where result is one of `swapped`, `unchanged`,
   `none_published`, `fetch_failed`, or `refused`. A run of `fetch_failed` or `refused` means that

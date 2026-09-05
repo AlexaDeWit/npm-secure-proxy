@@ -71,6 +71,7 @@ catalogueSpec = describe "metric-name catalogue" $ do
                             , "ecluse.mirror.enqueue.failures"
                             , "ecluse.mirror.jobs.processed"
                             , "ecluse.mirror.publish.duration"
+                            , "ecluse.dredger.versions"
                             , "ecluse.credential.refresh"
                             , "ecluse.credential.token.ttl.seconds"
                             , "ecluse.advisory.sync.attempts"
