@@ -53,9 +53,7 @@ npmAdapter =
             AdapterArtifact
                 { artifactByFile = \origin -> NpmRequest.artifactRequestByFile (registryUrlText (ocBaseUrl origin)) (ocToken origin)
                 , artifactByUrl = NpmRequest.artifactRequestByUrl
-                , -- npm serves tarball bytes from the registry host itself, so there
-                  -- is no separate canonical files host to admit.
-                  artifactHosts = []
+                , artifactHosts = NpmRequest.npmArtifactHosts
                 }
         , adapterProjectName = rightToMaybe . projectName
         , adapterPublish =

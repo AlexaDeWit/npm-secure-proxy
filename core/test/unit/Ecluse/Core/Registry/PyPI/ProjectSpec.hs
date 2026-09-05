@@ -1,0 +1,297 @@
+-- SPDX-FileCopyrightText: 2026 Alexandra de Wit
+--
+-- SPDX-License-Identifier: MIT
+
+module Ecluse.Core.Registry.PyPI.ProjectSpec (spec) where
+
+import Data.Aeson (Value (Object), object, toJSON, (.=))
+import Data.Aeson.Key (Key)
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
+import Test.Hspec
+
+import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
+import Ecluse.Core.Package (
+    Artifact (..),
+    ArtifactKind (Sdist, Wheel),
+    Availability (Available, Yanked),
+    CodeExecSignal (CodeExecUnknown, NoCodeOnInstall, RunsCodeOnInstall),
+    Hash,
+    HashAlg (SHA256),
+    InvalidEntry (invalidKey, invalidKind, invalidValue),
+    InvalidEntryKind (InvalidIndexFile),
+    PackageDetails (..),
+    PackageInfo (..),
+    PackageName,
+    hashAlg,
+    hashValue,
+    mkPackageName,
+    renderPackageName,
+ )
+import Ecluse.Core.Registry.PyPI.Project (
+    FileCoordinate (..),
+    fileCoordinate,
+    fileVersionKey,
+    isCanonicalName,
+    projectName,
+    projectSimpleIndexFromValue,
+ )
+import Ecluse.Core.Registry.WireSupport (Projection (NameMismatch, Projected))
+import Ecluse.Core.Version (renderVersion)
+
+spec :: Spec
+spec = do
+    projectNameSpec
+    canonicalNameSpec
+    coordinateSpec
+    projectionSpec
+    versionFoldSpec
+
+projectNameSpec :: Spec
+projectNameSpec = describe "projectName" $ do
+    it "parses a canonical project name" $
+        renderPackageName <$> projectName "requests" `shouldBe` Right "requests"
+
+    it "keeps the published spelling while matching on the canonical key" $ do
+        parsed <- shouldParse (projectName "Zope.Interface")
+        renderPackageName parsed `shouldBe` "Zope.Interface"
+        parsed `shouldBe` mkPackageName PyPI Nothing "zope-interface"
+
+    it "refuses an empty name" $
+        projectName "" `shouldSatisfy` isLeft
+
+    it "refuses a non-ASCII name, which renders two projects as one" $
+        projectName "requ\1077sts" `shouldSatisfy` isLeft
+
+    it "refuses a name that is not a safe path component" $
+        projectName "../etc" `shouldSatisfy` isLeft
+
+    it "refuses a name that opens or closes on a separator" $ do
+        projectName "-requests" `shouldSatisfy` isLeft
+        projectName "requests." `shouldSatisfy` isLeft
+
+    it "refuses a name carrying a character outside PEP 508's grammar" $
+        projectName "req~uests" `shouldSatisfy` isLeft
+
+    it "refuses a name over PyPI's own cap" $
+        projectName (T.replicate 101 "a") `shouldSatisfy` isLeft
+
+canonicalNameSpec :: Spec
+canonicalNameSpec = describe "isCanonicalName" $ do
+    it "admits a PEP 503 canonical name" $
+        isCanonicalName "zope-interface" `shouldBe` True
+
+    it "refuses a spelling the route would have to redirect" $ do
+        isCanonicalName "Zope.Interface" `shouldBe` False
+        isCanonicalName "typing_extensions" `shouldBe` False
+
+coordinateSpec :: Spec
+coordinateSpec = describe "fileCoordinate" $ do
+    it "reads a wheel's release and compatibility tag" $
+        fileCoordinate requests "requests-2.34.2-py3-none-any.whl"
+            `shouldBe` Just (FileCoordinate "2.34.2" (Wheel "py3-none-any"))
+
+    it "reads a wheel carrying a build tag" $
+        fileCoordinate requests "requests-2.34.2-1-py3-none-any.whl"
+            `shouldBe` Just (FileCoordinate "2.34.2" (Wheel "py3-none-any"))
+
+    it "cross-normalises a wheel's underscored name onto the PEP 503 canonical key" $
+        fileCoordinate azureStorageBlob "azure_storage_blob-12.14.0-py3-none-any.whl"
+            `shouldBe` Just (FileCoordinate "12.14" (Wheel "py3-none-any"))
+
+    it "reads a source distribution's release" $
+        fileCoordinate requests "requests-2.34.2.tar.gz"
+            `shouldBe` Just (FileCoordinate "2.34.2" Sdist)
+
+    it "takes the longest name part, so a project whose name carries a separator resolves" $
+        fileCoordinate azureStorageBlob "azure-storage-blob-12.14.0.tar.gz"
+            `shouldBe` Just (FileCoordinate "12.14" Sdist)
+
+    it "reads a source distribution whose version carries a separator" $
+        fileCoordinate requests "requests-2.34.2-1.tar.gz"
+            `shouldBe` Just (FileCoordinate "2.34.2.post1" Sdist)
+
+    it "canonicalises the release, so two spellings of it key alike" $
+        fileVersionKey requests "requests-2.34.tar.gz" `shouldBe` fileVersionKey requests "requests-2.34.0.tar.gz"
+
+    it "refuses a file naming another project, which on the artifact route is path confusion" $
+        fileCoordinate requests "urllib3-2.0.0.tar.gz" `shouldBe` Nothing
+
+    it "refuses a file whose name only starts like this project's" $
+        fileCoordinate requests "requests_toolbelt-1.0.0.tar.gz" `shouldBe` Nothing
+
+    it "refuses a version that is not PEP 440, which no resolver could install" $
+        fileCoordinate requests "requests-nightly.tar.gz" `shouldBe` Nothing
+
+    it "refuses an archive form a Python index does not serve" $
+        fileCoordinate requests "requests-2.34.2.egg" `shouldBe` Nothing
+
+    it "refuses a wheel with too few tag parts to be one" $
+        fileCoordinate requests "requests-2.34.2-py3.whl" `shouldBe` Nothing
+
+projectionSpec :: Spec
+projectionSpec = describe "projectSimpleIndexFromValue" $ do
+    it "projects one release per canonical version, carrying every file of it" $ do
+        info <- shouldProject requests (indexOf [sdistFile "2.34.2", wheelFile "2.34.2", wheelFile "2.34.1"])
+        Map.keys (infoVersions info) `shouldBe` ["2.34.1", "2.34.2"]
+        artifactNames info "2.34.2" `shouldBe` Just ["requests-2.34.2.tar.gz", "requests-2.34.2-py3-none-any.whl"]
+
+    it "merges two spellings of one release into one entry" $ do
+        info <- shouldProject requests (indexOf [wheelFile "2.34", wheelFile "2.34.0"])
+        Map.keys (infoVersions info) `shouldBe` ["2.34"]
+
+    it "projects sha256 through the shared hash vocabulary" $ do
+        info <- shouldProject requests (indexOf [wheelFile "2.34.2"])
+        map (\h -> (hashAlg h, hashValue h)) (artifactHashes info "2.34.2") `shouldBe` [(SHA256, sha256Digest)]
+
+    it "drops a digest under an algorithm this build does not know" $ do
+        info <- shouldProject requests (indexOf [fileWith [("hashes", object ["blake2b_256" .= ("ab" :: Text)])] (wheelFile "2.34.2")])
+        artifactHashes info "2.34.2" `shouldBe` []
+
+    it "carries requires-python and the yank marker per file" $ do
+        info <- shouldProject requests (indexOf [fileWith [("yanked", toJSON True)] (wheelFile "2.34.2")])
+        map artInterpreter (artifactsOf info "2.34.2") `shouldBe` [Just ">=3.10"]
+        map artYanked (artifactsOf info "2.34.2") `shouldBe` [True]
+
+    it "points latest at the highest release, preferring a final over a pre-release" $ do
+        info <- shouldProject requests (indexOf [wheelFile "2.34.2", wheelFile "3.0.0rc1"])
+        fmap renderVersion (Map.lookup "latest" (infoDistTags info)) `shouldBe` Just "2.34.2"
+
+    it "drops a file naming no release of this project and records it" $ do
+        info <- shouldProject requests (indexOf [wheelFile "2.34.2", sdistFileNamed "urllib3-2.0.0.tar.gz"])
+        Map.keys (infoVersions info) `shouldBe` ["2.34.2"]
+        map invalidKind (infoInvalidEntries info) `shouldBe` [InvalidIndexFile]
+        map invalidKey (infoInvalidEntries info) `shouldBe` ["urllib3-2.0.0.tar.gz"]
+
+    it "reduces a dropped file's location to its authority, which reaches a log line" $ do
+        info <- shouldProject requests (indexOf [sdistFileNamed "urllib3-2.0.0.tar.gz"])
+        map invalidValue (infoInvalidEntries info) `shouldBe` [toJSON ("files.pythonhosted.org:443" :: Text)]
+
+    it "agrees the index's self-reported name with the request through the shared check" $
+        projectSimpleIndexFromValue requests (indexNamed "Requests" [wheelFile "2.34.2"])
+            `shouldSatisfy` either (const False) isProjected
+
+    it "refuses an index self-reporting another project, carrying the reported name" $
+        projectSimpleIndexFromValue requests (indexNamed "urllib3" [])
+            `shouldBe` Right (NameMismatch "urllib3")
+
+    it "refuses an index that reports no usable name at all" $
+        projectSimpleIndexFromValue requests (indexNamed "" []) `shouldSatisfy` isLeft
+
+versionFoldSpec :: Spec
+versionFoldSpec = describe "the version-level folds over a release's files" $ do
+    it "runs code on install when any file is a source distribution" $ do
+        info <- shouldProject requests (indexOf [wheelFile "2.34.2", sdistFile "2.34.2"])
+        pkgInstallCode <$> Map.lookup "2.34.2" (infoVersions info) `shouldSatisfy` maybe False runsCode
+
+    it "runs no code on install for a release offering wheels alone" $ do
+        info <- shouldProject requests (indexOf [wheelFile "2.34.2"])
+        pkgInstallCode <$> Map.lookup "2.34.2" (infoVersions info) `shouldBe` Just NoCodeOnInstall
+
+    it "ages a release from its newest file, so a late wheel does not shorten the quarantine" $ do
+        info <-
+            shouldProject
+                requests
+                ( indexOf
+                    [ fileWith [("upload-time", toJSON ("2026-01-01T00:00:00Z" :: Text))] (sdistFile "2.34.2")
+                    , fileWith [("upload-time", toJSON ("2026-06-01T00:00:00Z" :: Text))] (wheelFile "2.34.2")
+                    ]
+                )
+        fmap show (pkgPublishedAt =<< Map.lookup "2.34.2" (infoVersions info))
+            `shouldBe` Just ("2026-06-01 00:00:00 UTC" :: Text)
+
+    it "withdraws a release only when every file of it is yanked" $ do
+        partly <- shouldProject requests (indexOf [yanked (sdistFile "2.34.2"), wheelFile "2.34.2"])
+        pkgAvailability <$> Map.lookup "2.34.2" (infoVersions partly) `shouldBe` Just Available
+        wholly <- shouldProject requests (indexOf [yanked (sdistFile "2.34.2"), yanked (wheelFile "2.34.2")])
+        pkgAvailability <$> Map.lookup "2.34.2" (infoVersions wholly) `shouldBe` Just (Yanked (Just "withdrawn"))
+
+-- | The project every example is requested for.
+requests :: PackageName
+requests = mkPackageName PyPI Nothing "requests"
+
+-- | A project whose name carries PEP 503 separators, so a file name must split at the right one.
+azureStorageBlob :: PackageName
+azureStorageBlob = mkPackageName PyPI Nothing "azure-storage-blob"
+
+-- | Project an index for 'requests', failing the example on a refusal or a name mismatch.
+shouldProject :: PackageName -> Value -> IO PackageInfo
+shouldProject name value = case projectSimpleIndexFromValue name value of
+    Left err -> fail (show err)
+    Right (NameMismatch reported) -> fail (toString ("index self-reported " <> reported))
+    Right (Projected info) -> pure info
+
+-- | Unwrap a parse the example expects to succeed.
+shouldParse :: (Show e) => Either e a -> IO a
+shouldParse = either (fail . show) pure
+
+-- | Whether an agreement check carried a projection through.
+isProjected :: Projection a -> Bool
+isProjected = \case
+    Projected _ -> True
+    NameMismatch _ -> False
+
+-- | Whether an install signal says installing the release runs code.
+runsCode :: CodeExecSignal -> Bool
+runsCode = \case
+    RunsCodeOnInstall _ -> True
+    NoCodeOnInstall -> False
+    CodeExecUnknown -> False
+
+-- | One release's artifacts, in the order the projection placed them.
+artifactsOf :: PackageInfo -> Text -> [Artifact]
+artifactsOf info version = maybe [] (toList . pkgArtifacts) (Map.lookup version (infoVersions info))
+
+-- | One release's artifact names.
+artifactNames :: PackageInfo -> Text -> Maybe [Text]
+artifactNames info version = map artFilename . toList . pkgArtifacts <$> Map.lookup version (infoVersions info)
+
+-- | The digests on a release's first artifact.
+artifactHashes :: PackageInfo -> Text -> [Hash]
+artifactHashes info version = concatMap artHashes (take 1 (artifactsOf info version))
+
+-- | An index for @requests@ offering the given file entries.
+indexOf :: [Value] -> Value
+indexOf = indexNamed "requests"
+
+-- | An index reporting the given name and offering the given file entries.
+indexNamed :: Text -> [Value] -> Value
+indexNamed name files = object ["name" .= name, "files" .= files]
+
+-- | A wheel entry for the given release.
+wheelFile :: Text -> Value
+wheelFile version = fileNamed ("requests-" <> version <> "-py3-none-any.whl")
+
+-- | A source-distribution entry for the given release.
+sdistFile :: Text -> Value
+sdistFile version = fileNamed ("requests-" <> version <> ".tar.gz")
+
+-- | A source-distribution entry under a name of the caller's choosing.
+sdistFileNamed :: Text -> Value
+sdistFileNamed = fileNamed
+
+-- | A complete file entry under the given name, on the ecosystem's files host.
+fileNamed :: Text -> Value
+fileNamed filename =
+    object
+        [ "filename" .= filename
+        , "url" .= ("https://files.pythonhosted.org/packages/a0/" <> filename)
+        , "hashes" .= object ["sha256" .= sha256Digest]
+        , "requires-python" .= (">=3.10" :: Text)
+        , "upload-time" .= ("2026-05-14T19:25:26Z" :: Text)
+        ]
+
+-- | A well-formed sha256 digest, which the validating hash builder accepts.
+sha256Digest :: Text
+sha256Digest = "2a0d60c100000000000000000000000000000000000000000000000000000000"
+
+-- | A file entry with the given keys overridden, so an example names only the axis it is about.
+fileWith :: [(Key, Value)] -> Value -> Value
+fileWith overrides = \case
+    Object base -> Object (foldr (uncurry KeyMap.insert) base overrides)
+    other -> other
+
+-- | A file entry PEP 592 withdraws, with a stated reason.
+yanked :: Value -> Value
+yanked = fileWith [("yanked", toJSON ("withdrawn" :: Text))]

@@ -30,6 +30,9 @@ module Ecluse.Core.Registry.Npm.Request (
     -- * Content negotiation
     MetadataForm (..),
 
+    -- * The ecosystem's artifact hosts
+    npmArtifactHosts,
+
     -- * Request building
     metadataRequest,
     artifactRequestByFile,
@@ -73,6 +76,13 @@ metadataAccept :: MetadataForm -> ByteString
 metadataAccept = \case
     Abbreviated -> "application/vnd.npm.install-v1+json"
     Full -> "application/json"
+
+{- | npm's canonical artifact hosts: none, because a registry serves its own tarball bytes.
+The adapter declares it to the tarball-host gate, and the projection reads the same list, so
+an artifact authority has one meaning on both sides.
+-}
+npmArtifactHosts :: [Text]
+npmArtifactHosts = []
 
 {- | Build the metadata @GET@ request for a package at @{baseUrl}/{encoded-name}@.
 

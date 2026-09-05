@@ -288,11 +288,12 @@ whose host is an internal-address literal, and `ECLUSE_EGRESS__ADDITIONAL_BLOCKE
 the block. The trusted private origin (`mounts.npm.privateUpstream`) is deliberately
 **not** subject to it, because a private registry legitimately lives on your internal network.
 
-**The `dist.tarball` host gate.** Upstream chooses `dist.tarball`, so Écluse fetches a tarball only
-from the same allowlisted host that served the listing, comparing host **and port** as a pair. It
-upgrades a plaintext `dist.tarball` to https on its own host. A plaintext URL on any other host
-drops the version from the listing. An https URL on a host the gate does not permit stays listed
-and is refused with a `403` when a client asks for the artifact. No configuration widens that.
+**The artifact host gate.** Upstream chooses where an artifact lives, so Écluse fetches one only
+from the same allowlisted host that served the listing, comparing host **and port** as a pair, or
+from a host the ecosystem serves artifact bytes from by design. It upgrades a plaintext artifact URL
+to https on its own host. A file the gate refuses, for its scheme or for its host, is **dropped from
+the listing** rather than listed and refused at download, so the listing and the download gate agree
+file by file. A release disappears when no file of it survives. No configuration widens that.
 
 **Écluse identifies itself on every registry and mirror-target request.** The `User-Agent` is `ecluse/<version>`,
 naming the running build. An upstream, a WAF, or a forward proxy that filters on the agent has to

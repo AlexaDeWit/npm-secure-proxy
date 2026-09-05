@@ -36,6 +36,9 @@ module Ecluse.Core.Version (
     VersionError (..),
     isStable,
 
+    -- * Canonical PEP 440 spelling
+    canonicalPep440,
+
     -- * Resolving @dist-tags.latest@
     selectLatest,
 ) where
@@ -45,7 +48,7 @@ import Data.List.NonEmpty qualified as NE
 
 import Ecluse.Core.Ecosystem (Ecosystem (..))
 import Ecluse.Core.Version.Gem (GemKey, isGemStable, parseGem)
-import Ecluse.Core.Version.Pep440 (Pep440Key, isPep440Stable, parsePep440)
+import Ecluse.Core.Version.Pep440 (Pep440Key, isPep440Stable, parsePep440, renderPep440)
 import Ecluse.Core.Version.Semver (SemverKey, isSemverStable, parseSemver)
 
 {- | A package version.
@@ -104,6 +107,18 @@ isStable = \case
     NpmKey k -> isSemverStable k
     PyPIKey k -> isPep440Stable k
     RubyGemsKey k -> isGemStable k
+
+{- | The one spelling a PEP 440 version canonicalises to, or 'Nothing' when it does not parse.
+A PyPI projection keys its versions by this, so two spellings of one release merge into one
+entry; the raw spelling survives per artifact through the filename.
+
+>>> canonicalPep440 "1.0.0"
+Just "1"
+>>> canonicalPep440 "not-a-version"
+Nothing
+-}
+canonicalPep440 :: Text -> Maybe Text
+canonicalPep440 = fmap renderPep440 . parsePep440
 
 {- | Resolve @dist-tags.latest@ once the caller has filtered out the denied and
 undecidable versions. This is the keep-unless-denied, stable-preferring rule from

@@ -159,6 +159,8 @@ library ecluse-core
     Ecluse.Core.Registry.Sweep.Types
     Ecluse.Core.Registry.Sweep.Walk
     Ecluse.Core.Registry.PyPI.FirstParty
+    Ecluse.Core.Registry.PyPI.Project
+    Ecluse.Core.Registry.PyPI.Wire
     Ecluse.Core.Registry.Request
     Ecluse.Core.Registry.WireSupport
     Ecluse.Core.Rules
@@ -728,6 +730,8 @@ test-suite ecluse-core-unit
     Ecluse.Core.Registry.NpmSpec
     Ecluse.Core.Registry.PublishSpec
     Ecluse.Core.Registry.PyPI.FirstPartySpec
+    Ecluse.Core.Registry.PyPI.ProjectSpec
+    Ecluse.Core.Registry.PyPI.WireSpec
     Ecluse.Core.Registry.RequestSpec
     Ecluse.Core.Registry.WireSupportSpec
     Ecluse.Core.Rules.EffectfulSpec
