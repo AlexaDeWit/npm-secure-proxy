@@ -62,6 +62,24 @@ lookupContract withLookup = do
     it "returns nothing for a package with no advisories" $
         withLookup (\l -> cveAdvisoriesFor l "no-such-package" `shouldReturn` [])
 
+    it "enumerates every name it holds an advisory against" $
+        withLookup $ \l -> do
+            covered <- cveCoveredNames l
+            filter (`notElem` covered) (ordNub (map fst corpusRows)) `shouldBe` []
+
+    it "enumerates a name carrying several advisories once, so a sweep reads it once" $
+        -- corpus-multi carries two ranges, so a per-row enumeration would name it twice and make
+        -- the store sweep read the same package's metadata twice in one cycle.
+        withLookup $ \l -> do
+            covered <- cveCoveredNames l
+            length covered `shouldBe` length (ordNub covered)
+
+    it "names nothing it holds no advisory against" $
+        withLookup $ \l -> do
+            covered <- cveCoveredNames l
+            ranges <- traverse (cveAdvisoriesFor l) covered
+            filter null ranges `shouldBe` []
+
 withFakeLookup :: (CveLookup -> IO ()) -> IO ()
 withFakeLookup use = use (fakeCveLookup corpusRows)
 

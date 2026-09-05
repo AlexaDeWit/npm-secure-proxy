@@ -54,7 +54,7 @@ module Ecluse.Core.Cve (
 
 import UnliftIO.Exception (catch, catchAny, onException, throwIO)
 
-import Ecluse.Core.Cve.Internal (AdvisoryRange (..), CveDbRejected (..), advisoriesQuery, openHardenedConnection, probeQuery, provenanceQuery)
+import Ecluse.Core.Cve.Internal (AdvisoryRange (..), CveDbRejected (..), advisoriesQuery, coveredNamesQuery, openHardenedConnection, probeQuery, provenanceQuery)
 import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Osv.Types (UpperBound (..))
 import Ecluse.Core.Version (compareVersions, mkVersion)
@@ -78,6 +78,10 @@ data CveLookup = CveLookup
     , cveAdvisoriesFor :: Text -> IO [AdvisoryRange]
     {- ^ Every advisory range recorded against a package name. Rule predicates
     interpret them. A query fault throws the confined 'CveQueryFault'.
+    -}
+    , cveCoveredNames :: IO [Text]
+    {- ^ Every package name this generation records an advisory against. A store sweep
+    intersects it with the store's listing. Throws the confined 'CveQueryFault' on a fault.
     -}
     }
 
@@ -132,6 +136,7 @@ mkCveDb conn meta =
             CveLookup
                 { cveRemediationProbe = \name version -> taggedQuery "remediation-probe" (probeQuery conn name version)
                 , cveAdvisoriesFor = taggedQuery "advisories-for" . advisoriesQuery conn
+                , cveCoveredNames = taggedQuery "covered-names" (coveredNamesQuery conn)
                 }
         , -- Total by construction: the connection is going away either way (see
           -- 'cveDbClose').
