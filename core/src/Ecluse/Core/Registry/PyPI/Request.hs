@@ -37,6 +37,7 @@ module Ecluse.Core.Registry.PyPI.Request (
     -- * URL building
     simpleIndexUrl,
     artifactFileUrl,
+    artifactPath,
 ) where
 
 import Network.HTTP.Client (Request (decompress, requestHeaders))
@@ -123,7 +124,7 @@ written, because the index redirects a request without it and no data-plane requ
 redirect.
 -}
 simpleIndexUrl :: Text -> PackageName -> Either UrlFormationError Text
-simpleIndexUrl baseUrl name = joinPath baseUrl (projectPath name <> "/")
+simpleIndexUrl baseUrl name = joinPath baseUrl (projectPath (canonicalName name) <> "/")
 
 {- | The artifact URL @{baseUrl}\/simple\/{canonical-name}\/{encoded-filename}@, where
 @filename@ is the exact on-the-wire name. It is percent-encoded as a single component, so a
@@ -132,11 +133,17 @@ once-decoded escape in it cannot reach the upstream raw.
 Fails with a 'UrlFormationError' only when the URL cannot be formed.
 -}
 artifactFileUrl :: Text -> PackageName -> Text -> Either UrlFormationError Text
-artifactFileUrl baseUrl name filename =
-    joinPath baseUrl (projectPath name <> "/" <> encodeComponent filename)
+artifactFileUrl baseUrl name filename = joinPath baseUrl (artifactPath (canonicalName name) filename)
+
+{- | The path a distribution file sits at, relative to an index root:
+@simple\/{canonical-project}\/{file}@. The upstream read and the served location are formed from
+this one spelling, so a rebased URL and the route that must claim it cannot drift. Each
+component is percent-encoded, so a reserved byte never reaches a URL raw.
+-}
+artifactPath :: Text -> Text -> Text
+artifactPath project filename = projectPath project <> "/" <> encodeComponent filename
 
 {- The project's index path, @simple\/{canonical-name}@. The canonical spelling is the one the
-index serves without a redirect, and it is percent-encoded so a reserved byte cannot reach the
-upstream URL raw. -}
-projectPath :: PackageName -> Text
-projectPath name = "simple/" <> encodeComponent (canonicalName name)
+index serves without a redirect. -}
+projectPath :: Text -> Text
+projectPath project = "simple/" <> encodeComponent project

@@ -52,7 +52,6 @@ module Ecluse.Core.Server.Pipeline.Internal (
 ) where
 
 import Data.Map.Strict qualified as Map
-import Data.Set qualified as Set
 import Data.Text qualified as T
 import Katip (KatipContext, Severity (WarningS), SimpleLogPayload, katipAddContext, logFM, ls, sl)
 
@@ -66,8 +65,8 @@ import Ecluse.Core.Package (
  )
 import Ecluse.Core.Package.Integrity (
     IntegrityFloor,
-    VersionIntegrity (BelowFloor, MeetsFloor, NoIntegrity),
-    classifyArtifacts,
+    VersionIntegrity (BelowFloor, NoIntegrity),
+    partitionByFloor,
  )
 import Ecluse.Core.Registry (UrlFormationError, renderUrlFormationError)
 import Ecluse.Core.Rules (PreparedRule (prepResilience), cveIdsInReason)
@@ -151,10 +150,14 @@ logUpstreamUnreachable name origin fault =
     message :: Text
     message = "an upstream metadata fetch could not reach the origin; its contribution degrades this request"
 
-{- | Keep the versions whose strongest digest meets the integrity floor, prune @dist-tags@ to
-them, and refuse the rest ('BelowIntegrityFloor' or 'MissingIntegrity'). A version below the
-floor cannot be tied to a tamper-evident fingerprint, so the gate drops it rather than serve
-what a client could never verify.
+{- | Keep each version's artifacts whose strongest digest meets the integrity floor, prune
+@dist-tags@ to the versions that keep at least one, and refuse the rest
+('BelowIntegrityFloor' or 'MissingIntegrity').
+
+The gate partitions __per artifact__. A file below the floor cannot be tied to a tamper-evident
+fingerprint, so it is dropped rather than served to a client that could never verify it, and a
+version drops only when no file of it survives. The surviving set is what the merge plan then
+carries into the served listing, so the listing and the download gate refuse the same files.
 -}
 admitByIntegrity ::
     (IntegrityFloor floor) =>
@@ -168,29 +171,33 @@ admitByIntegrity ::
     (PackageInfo, [ServeDecision])
 admitByIntegrity floorSpec belowFloorRefusal missingRefusal info =
     ( info
-        { infoVersions = Map.restrictKeys (infoVersions info) admissibleKeys
-        , infoDistTags = Map.filter ((`Set.member` admissibleKeys) . renderVersion) (infoDistTags info)
+        { infoVersions = admissible
+        , infoDistTags = Map.filter ((`Map.member` admissible) . renderVersion) (infoDistTags info)
         }
     , refusals
     )
   where
-    -- One walk of an up-to-100k-version map yields the admissible keys and both refusal
-    -- buckets. The class map is that large too.
-    classified :: Map Text VersionIntegrity
-    classified = Map.map (classifyArtifacts floorSpec . pkgArtifacts) (infoVersions info)
+    -- One walk of an up-to-100k-version map yields the surviving versions and both refusal
+    -- buckets. The partitioned map is that large too.
+    partitioned :: Map Text (Either VersionIntegrity PackageDetails)
+    partitioned = Map.map admitArtifacts (infoVersions info)
 
-    admissibleKeys :: Set Text
-    admissibleKeys = Map.keysSet (Map.filter (== MeetsFloor) classified)
+    admitArtifacts details =
+        (\survivors -> details{pkgArtifacts = survivors}) <$> partitionByFloor floorSpec (pkgArtifacts details)
+
+    admissible :: Map Text PackageDetails
+    admissible = Map.mapMaybe rightToMaybe partitioned
 
     -- 'Map.foldr' visits keys in ascending order and each arm prepends, so the below-floor
     -- refusals precede the missing-integrity ones, each in key order.
     refusals :: [ServeDecision]
     refusals = below <> missing
       where
-        (below, missing) = Map.foldr bucket ([], []) classified
-        bucket BelowFloor (b, m) = (belowFloorRefusal : b, m)
-        bucket NoIntegrity (b, m) = (b, missingRefusal : m)
-        bucket MeetsFloor acc = acc
+        (below, missing) = Map.foldr bucket ([], []) partitioned
+        bucket (Left BelowFloor) (b, m) = (belowFloorRefusal : b, m)
+        bucket (Left NoIntegrity) (b, m) = (b, missingRefusal : m)
+        -- 'partitionByFloor' never reports 'MeetsFloor' as a refusal: that arm is the survivors.
+        bucket _ acc = acc
 
 {- | Classify a no-survivors packument outcome into the bounded @ecluse.serve.decision@
 value: a forbidden set is a denial, any other non-served status a transient unavailability.

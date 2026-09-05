@@ -110,6 +110,7 @@ planOver survivors =
     MergePlan
         { mpName = mkPackageName Npm Nothing "lodash"
         , mpSurvivors = survivors
+        , mpArtifacts = Map.map (const ("x.tgz" :| [])) survivors
         , mpDistTags = Map.empty
         , mpTime = Map.empty
         , mpDivergences = mempty

@@ -1,0 +1,221 @@
+-- SPDX-FileCopyrightText: 2026 Alexandra de Wit
+--
+-- SPDX-License-Identifier: MIT
+
+module Ecluse.Core.Registry.PyPI.FilterSpec (spec) where
+
+import Data.Aeson (Value (Array, Number, Object, String), object, (.=))
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Map.Strict qualified as Map
+import Test.Hspec
+
+import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
+import Ecluse.Core.Package (mkPackageName)
+import Ecluse.Core.Package.Merge (MergePlan (..), SourceId)
+import Ecluse.Core.Registry.PyPI.Filter (assembleSimpleIndex)
+
+spec :: Spec
+spec = do
+    relaySpec
+    survivorSpec
+    rebaseSpec
+    sidecarSpec
+
+relaySpec :: Spec
+relaySpec = describe "what the assembly relays from the base document" $ do
+    it "keeps meta, so a mirror still reads the serial it revalidates against" $
+        field "meta" (assembleOne allFiles)
+            `shouldBe` Just (object ["api-version" .= ("1.4" :: Text), "_last-serial" .= (37059094 :: Int)])
+
+    it "keeps the project name the winning document reported" $
+        field "name" (assembleOne allFiles) `shouldBe` Just (String "requests")
+
+    it "keeps a top-level key this build does not model" $
+        field "tracks" (assembleOne allFiles) `shouldBe` Just (Array mempty)
+
+    it "keeps every modelled key on a served file entry, verbatim" $ do
+        let entry = servedEntry (assembleOne allFiles) "requests-2.34.2-py3-none-any.whl"
+        (entry >>= KeyMap.lookup "upload-time") `shouldBe` Just (String "2026-05-14T19:25:26Z")
+        (entry >>= KeyMap.lookup "requires-python") `shouldBe` Just (String ">=3.10")
+        (entry >>= KeyMap.lookup "size") `shouldBe` Just (Number 73075)
+        (entry >>= KeyMap.lookup "yanked") `shouldBe` Just (String "withdrawn")
+        (entry >>= KeyMap.lookup "hashes") `shouldBe` Just (object ["sha256" .= ("2a0d60c1" :: Text)])
+
+    it "keeps an unmodelled key on a served file entry too" $
+        (servedEntry (assembleOne allFiles) "requests-2.34.2-py3-none-any.whl" >>= KeyMap.lookup "provenance")
+            `shouldBe` Just (String "https://pypi.org/integrity/x/provenance")
+
+    it "yields an object even for a base document that is not one" $
+        assembleSimpleIndex mountBase (Map.singleton 0 (indexOf allFiles, fileIndex)) (planOver [("2.34.2", 0)] [("2.34.2", ["requests-2.34.2.tar.gz"])]) (String "not an index")
+            `shouldSatisfy` isObject
+
+survivorSpec :: Spec
+survivorSpec = describe "which releases and files the assembly serves" $ do
+    it "names the surviving releases in the PEP 700 versions array, and no others" $
+        field "versions" (assembleOne allFiles) `shouldBe` Just (Array (fromList [String "2.34.2"]))
+
+    it "omits a release the plan did not keep, files and all" $
+        servedNames (assembleOne allFiles) `shouldNotContain` ["requests-2.34.1.tar.gz"]
+
+    it "omits a file the per-artifact partition dropped from a surviving release" $ do
+        -- The partition keeps a release while dropping the files of it that could not be
+        -- gated, so the listing must name the survivors alone.
+        let served = assemble [("2.34.2", 0)] [("2.34.2", ["requests-2.34.2-py3-none-any.whl"])]
+        servedNames served `shouldBe` ["requests-2.34.2-py3-none-any.whl"]
+
+    it "takes each release's files from the source that won it" $ do
+        let served =
+                assembleSources
+                    [(0, (indexNamed "requests" [privateFile], privateIndex)), (1, (indexOf allFiles, fileIndex))]
+                    [("2.34.2", 0)]
+                    [("2.34.2", ["requests-2.34.2-private.tar.gz"])]
+        servedNames served `shouldBe` ["requests-2.34.2-private.tar.gz"]
+
+    it "drops a named file the winning source does not hold, never fabricating one" $
+        servedNames (assemble [("2.34.2", 0)] [("2.34.2", ["requests-2.34.2-absent.whl"])]) `shouldBe` []
+
+    it "serves nothing at all for a plan with no survivors" $ do
+        let served = assemble [] []
+        field "versions" served `shouldBe` Just (Array mempty)
+        servedNames served `shouldBe` []
+
+rebaseSpec :: Spec
+rebaseSpec = describe "where a served file points" $ do
+    it "rebases a file location onto this mount under the artifact route's own spelling" $
+        (servedEntry (assembleOne allFiles) "requests-2.34.2-py3-none-any.whl" >>= KeyMap.lookup "url")
+            `shouldBe` Just (String "https://ecluse.test/pypi/simple/requests/requests-2.34.2-py3-none-any.whl")
+
+    it "leaves a location alone when the document's own name would not clear the grammar" $ do
+        -- The name reaches an interpolated URL, so a document reporting a spelling the route
+        -- would not claim has nothing rebased under it.
+        let served = assembleSources [(0, (indexNamed "Requests" allFiles, fileIndex))] [("2.34.2", 0)] [("2.34.2", ["requests-2.34.2.tar.gz"])]
+        (servedEntry served "requests-2.34.2.tar.gz" >>= KeyMap.lookup "url")
+            `shouldBe` Just (String "https://files.pythonhosted.org/packages/a0/requests-2.34.2.tar.gz")
+
+sidecarSpec :: Spec
+sidecarSpec = describe "the PEP 658 sidecar keys" $
+    it "drops both spellings, because Écluse serves no .metadata companion" $ do
+        let entry = servedEntry (assembleOne allFiles) "requests-2.34.2-py3-none-any.whl"
+        (entry >>= KeyMap.lookup "core-metadata") `shouldBe` Nothing
+        (entry >>= KeyMap.lookup "data-dist-info-metadata") `shouldBe` Nothing
+
+-- | The mount every example serves under.
+mountBase :: Text
+mountBase = "https://ecluse.test/pypi"
+
+-- | Assemble from one public source holding the given files, keeping @2.34.2@ entire.
+assembleOne :: [Value] -> Value
+assembleOne files =
+    assembleSources [(0, (indexOf files, fileIndex))] [("2.34.2", 0)] [("2.34.2", ["requests-2.34.2.tar.gz", "requests-2.34.2-py3-none-any.whl"])]
+
+-- | Assemble from the standard one-source index with the given survivors and kept files.
+assemble :: [(Text, SourceId)] -> [(Text, [Text])] -> Value
+assemble = assembleSources [(0, (indexOf allFiles, fileIndex))]
+
+-- | Assemble from explicit sources, survivors, and kept files.
+assembleSources :: [(SourceId, (Value, Map Text Text))] -> [(Text, SourceId)] -> [(Text, [Text])] -> Value
+assembleSources sources survivors kept =
+    assembleSimpleIndex mountBase (Map.fromList sources) (planOver survivors kept) (fst (snd (headSource sources)))
+  where
+    headSource = \case
+        source : _ -> source
+        [] -> (0, (Object mempty, mempty))
+
+-- | A merge plan carrying the survivors and the files the partition kept for each.
+planOver :: [(Text, SourceId)] -> [(Text, [Text])] -> MergePlan
+planOver survivors kept =
+    MergePlan
+        { mpName = mkPackageName PyPI Nothing "requests"
+        , mpSurvivors = Map.fromList survivors
+        , mpArtifacts = Map.fromList [(version, fromList files) | (version, files) <- kept, not (null files)]
+        , mpDistTags = Map.empty
+        , mpTime = Map.empty
+        , mpDivergences = mempty
+        }
+
+-- | The index every example reads, under the canonical project name.
+indexOf :: [Value] -> Value
+indexOf = indexNamed "requests"
+
+-- | An index reporting the given name, with a @meta@ object and an unmodelled top-level key.
+indexNamed :: Text -> [Value] -> Value
+indexNamed name files =
+    object
+        [ "name" .= name
+        , "meta" .= object ["api-version" .= ("1.4" :: Text), "_last-serial" .= (37059094 :: Int)]
+        , "tracks" .= Array mempty
+        , "files" .= files
+        ]
+
+-- | The files the standard index offers: two of @2.34.2@ and one of a release that did not survive.
+allFiles :: [Value]
+allFiles =
+    [ fileNamed "requests-2.34.2.tar.gz"
+    , fileNamed "requests-2.34.2-py3-none-any.whl"
+    , fileNamed "requests-2.34.1.tar.gz"
+    ]
+
+-- | The file the private source offers for @2.34.2@.
+privateFile :: Value
+privateFile = fileNamed "requests-2.34.2-private.tar.gz"
+
+-- | Which release each file of the standard index belongs to.
+fileIndex :: Map Text Text
+fileIndex =
+    Map.fromList
+        [ ("requests-2.34.2.tar.gz", "2.34.2")
+        , ("requests-2.34.2-py3-none-any.whl", "2.34.2")
+        , ("requests-2.34.1.tar.gz", "2.34.1")
+        ]
+
+-- | Which release the private source's file belongs to.
+privateIndex :: Map Text Text
+privateIndex = Map.singleton "requests-2.34.2-private.tar.gz" "2.34.2"
+
+{- | A complete file entry, carrying every modelled key, both sidecar spellings, and one key
+this build does not model.
+-}
+fileNamed :: Text -> Value
+fileNamed filename =
+    object
+        [ "filename" .= filename
+        , "url" .= ("https://files.pythonhosted.org/packages/a0/" <> filename)
+        , "hashes" .= object ["sha256" .= ("2a0d60c1" :: Text)]
+        , "requires-python" .= (">=3.10" :: Text)
+        , "size" .= (73075 :: Int)
+        , "upload-time" .= ("2026-05-14T19:25:26Z" :: Text)
+        , "yanked" .= ("withdrawn" :: Text)
+        , "provenance" .= ("https://pypi.org/integrity/x/provenance" :: Text)
+        , "core-metadata" .= object ["sha256" .= ("8c384ba3" :: Text)]
+        , "data-dist-info-metadata" .= object ["sha256" .= ("8c384ba3" :: Text)]
+        ]
+
+-- | One top-level key of an assembled index.
+field :: Text -> Value -> Maybe Value
+field key = \case
+    Object o -> KeyMap.lookup (fromString (toString key)) o
+    _ -> Nothing
+
+-- | The served file entries, in the order the assembly placed them.
+servedFiles :: Value -> [Value]
+servedFiles served = case field "files" served of
+    Just (Array files) -> toList files
+    _ -> []
+
+-- | The names of the served file entries.
+servedNames :: Value -> [Text]
+servedNames = mapMaybe name . servedFiles
+  where
+    name = \case
+        Object entry | Just (String filename) <- KeyMap.lookup "filename" entry -> Just filename
+        _ -> Nothing
+
+-- | The served entry under the given file name.
+servedEntry :: Value -> Text -> Maybe (KeyMap.KeyMap Value)
+servedEntry served filename = listToMaybe [entry | Object entry <- servedFiles served, KeyMap.lookup "filename" entry == Just (String filename)]
+
+-- | Whether an assembled document is a JSON object.
+isObject :: Value -> Bool
+isObject = \case
+    Object _ -> True
+    _ -> False

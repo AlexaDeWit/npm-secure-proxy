@@ -92,8 +92,11 @@ above every allow by default.
 quarantine governs. The off rules opt in by name, and
 [Rule policy](@/docs/configuration.md#rule-policy) has their knobs.
 
-Independent of the rules, Écluse serves a public version only if it carries a digest that meets
-the public integrity floor, `sha256` by default. On a custom or off-spec public upstream this has
-a gotcha: versions without such a digest silently disappear, and their tarballs `403`. To serve
-such a source, give it the private upstream role and loosen the trusted floor below `sha256`. The
-mechanics are in [Integrity floors](https://github.com/AlexaDeWit/Ecluse/blob/main/docs/architecture/security.md#integrity-floors).
+Independent of the rules, Écluse serves a public **file** only if it carries a digest that meets
+the public integrity floor, `sha256` by default. The check runs per file, so a release that ships
+several, as a Python release ships an sdist beside its wheels, keeps the files that clear the
+floor and loses the ones that do not. A release disappears only when no file of it survives. On a
+custom or off-spec public upstream this has a gotcha: files without such a digest silently
+disappear, and downloading one `403`s. To serve such a source, give it the private upstream role
+and loosen the trusted floor below `sha256`. The mechanics are in
+[Integrity floors](https://github.com/AlexaDeWit/Ecluse/blob/main/docs/architecture/security.md#integrity-floors).
