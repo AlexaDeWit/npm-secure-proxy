@@ -18,7 +18,7 @@ import Network.HTTP.Client (Manager, defaultManagerSettings, newManager)
 import Network.HTTP.Types.Status (Status, status200, status201, status404, status500, status503)
 import Test.Hspec
 
-import Ecluse.Core.Credential (mkSecret)
+import Ecluse.Core.Credential (bareCredential, mkSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Fault (TransportCause (TransportUnreachable), tfCause, tfDetail)
 import Ecluse.Core.Package (PackageInfo (infoVersions), PackageName)
@@ -263,7 +263,7 @@ originAt manager limits baseUrl =
     OriginClient
         { ocBaseUrl = loopbackRegistryUrl baseUrl
         , ocManager = manager
-        , ocToken = Just (mkSecret "write-token")
+        , ocToken = Just (bareCredential (mkSecret "write-token"))
         , ocLimits = limits
         }
 

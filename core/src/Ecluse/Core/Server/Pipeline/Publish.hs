@@ -27,7 +27,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Network.HTTP.Types (ResponseHeaders, Status, mkStatus, status401, status403, status405, status413, status500, status502)
 import Network.Wai (Request, RequestBodyLength (ChunkedBody, KnownLength), ResponseReceived, getRequestBodyChunk, requestBodyLength)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential, bareCredential)
 import Ecluse.Core.Package (PackageName, renderPackageName)
 import Ecluse.Core.Registry (FetchFault (FetchBoundExceeded, FetchTransport, FetchUrlUnformable), PublishRelayResponse (PublishRelayResponse))
 import Ecluse.Core.Registry.Adapter.Capability (AdapterPublish (publishDeclaredNames, publishRelay))
@@ -73,7 +73,7 @@ servePublish replies name request respond = do
 publishWithDeps ::
     PublishReplies response ->
     PublishDeps ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     PackageName ->
     Request ->
     (response -> IO ResponseReceived) ->
@@ -117,7 +117,7 @@ publishWithDeps replies deps clientToken name request respond
             (pubLimits deps)
             (srPrivateManager rt)
             (pubTargetUrl deps)
-            (clientToken <|> pubStaticToken deps)
+            (clientToken <|> (bareCredential <$> pubStaticToken deps))
 
     -- The per-request body cap as a 'boundedRead' bound. 'boundedRead' consults only
     -- 'maxBodyBytes', so the response budget's other 'Limits' fields do not matter here.

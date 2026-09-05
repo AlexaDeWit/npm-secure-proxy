@@ -18,7 +18,7 @@ module Ecluse.Core.Registry.Maintenance.Protocol (
 import Data.Conduit (ConduitT, yield)
 import Network.HTTP.Client (Request)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential (credSecret), Secret)
 import Ecluse.Core.Fault (
     TransportCause (TransportProtocol),
     transportFault,
@@ -244,7 +244,7 @@ originBase :: ProtocolStore -> Text
 originBase = registryUrlText . ocBaseUrl . psOrigin
 
 originToken :: ProtocolStore -> Maybe Secret
-originToken = ocToken . psOrigin
+originToken = fmap credSecret . ocToken . psOrigin
 
 -- A store applied what was asked when it answered in the 2xx class, whichever code it chose.
 isApplied :: Int -> Bool

@@ -286,9 +286,11 @@ Inbound auth (client to proxy) is the edge half of the credential model. Écluse
 the upstreams per [Credential flow and authority](registry-model.md#credential-flow-and-authority),
 and the client's credential never reaches the public upstream.
 
-Cloud IAM cannot be the edge: npm clients speak Bearer tokens, not SigV4, mTLS, or OIDC.
+Cloud IAM cannot be the edge: registry clients speak bearer tokens and HTTP Basic, not SigV4,
+mTLS, or OIDC.
 
 Two edge modes ship. The **open** mode leaves `ECLUSE_SERVER__AUTH_TOKEN` unset and delegates
 access to the network layer. The **static token** mode sets `ECLUSE_SERVER__AUTH_TOKEN`, and the
-client presents it as `Bearer <token>` or as an `.npmrc` `_authToken`, which standard npm tooling
-supports.
+client presents it in whichever form its own ecosystem speaks: `Bearer <token>` or an `.npmrc`
+`_authToken` from npm tooling, an HTTP Basic password under any username from Python tooling.
+Écluse compares the secret half, so one token serves every mount.

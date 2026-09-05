@@ -101,7 +101,7 @@ import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Types (RequestHeaders, ResponseHeaders, Status, status401, status403, status500)
 import Network.Wai (Request, ResponseReceived, StreamingBody, requestHeaders)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Cve (DbEtag)
 import Ecluse.Core.Fault (TransportFault, tfDetail)
 import Ecluse.Core.Package (
@@ -257,7 +257,7 @@ serveTarballWithDeps ::
     ArtifactServe ->
     TarballReplies response ->
     PackumentDeps ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     PackageName ->
     Version ->
     Filename ->
@@ -299,7 +299,7 @@ streamPrivateArtifact ::
     TarballReplies response ->
     ServeRuntime ->
     PackumentDeps ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     RequestHeaders ->
     PackageName ->
     Filename ->

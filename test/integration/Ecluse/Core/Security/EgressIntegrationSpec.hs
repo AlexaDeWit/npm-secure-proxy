@@ -11,7 +11,7 @@ import Network.HTTP.Types.Header (hLocation)
 import Network.Wai.Handler.Warp (Port)
 import Test.Hspec
 
-import Ecluse.Core.Credential (mkSecret)
+import Ecluse.Core.Credential (bareCredential, mkSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (PackageName, mkPackageName)
 import Ecluse.Core.Registry (FetchFault, RegistryResponse (responseBody))
@@ -74,7 +74,7 @@ clientConfig manager port token =
     OriginClient
         { ocBaseUrl = loopbackRegistryUrl ("http://127.0.0.1:" <> show port)
         , ocManager = manager
-        , ocToken = mkSecret <$> token
+        , ocToken = bareCredential . mkSecret <$> token
         , ocLimits = defaultLimits
         }
 

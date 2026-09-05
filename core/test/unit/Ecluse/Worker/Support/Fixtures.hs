@@ -77,7 +77,7 @@ import Data.Time (UTCTime (UTCTime), fromGregorian, secondsToDiffTime)
 import Network.HTTP.Client (Request)
 import UnliftIO.Exception (throwIO)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (
     Artifact (..),
@@ -316,7 +316,7 @@ withHostGate gate = Map.map (\p -> p{wpArtifactHostHonoured = gate})
 {- | Override the artifact request formation of every policy in the map, so a refusing builder
 proves which bundle's formation a job rides.
 -}
-withArtifactRequest :: (Maybe Secret -> Text -> Either UrlFormationError Request) -> WorkerPolicies -> WorkerPolicies
+withArtifactRequest :: (Maybe ClientCredential -> Text -> Either UrlFormationError Request) -> WorkerPolicies -> WorkerPolicies
 withArtifactRequest builder = Map.map (\p -> p{wpArtifact = (wpArtifact p){artifactByUrl = builder}})
 
 -- | Set every bundle's artifact fetch cap, so a test drives an over-cap fetch.

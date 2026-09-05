@@ -13,7 +13,7 @@ import Network.HTTP.Client (Manager, Request, RequestBody (RequestBodyBS), defau
 import Network.HTTP.Client qualified as Client
 import Test.Hspec
 
-import Ecluse.Core.Credential (mkSecret)
+import Ecluse.Core.Credential (bareCredential, mkSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (PackageName, mkPackageName, mkScope)
 import Ecluse.Core.Registry (RegistryResponse (RegistryResponse))
@@ -159,7 +159,7 @@ originOver manager =
     OriginClient
         { ocBaseUrl = loopbackRegistryUrl "http://store.test"
         , ocManager = manager
-        , ocToken = Just (mkSecret "write-token")
+        , ocToken = Just (bareCredential (mkSecret "write-token"))
         , ocLimits = defaultLimits
         }
 

@@ -48,7 +48,7 @@ import Network.HTTP.Client (Manager)
 import UnliftIO (withRunInIO)
 import UnliftIO.Exception (tryAny)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Package (PackageInfo (infoVersions), PackageName, renderPackageName)
 import Ecluse.Core.Package.Merge (Provenance)
 import Ecluse.Core.Registry.Adapter.Capability (AdapterMetadata (metadataNewClient))
@@ -151,7 +151,7 @@ The metadata cache keys on the base URL alone, with no credential dimension, so 
 private document would let one client's hit serve another client's document and bypass that
 authorisation.
 -}
-fetchPrivateOrigin :: PackumentDeps -> ServeRuntime -> Maybe Secret -> PackageName -> Handler OriginResult
+fetchPrivateOrigin :: PackumentDeps -> ServeRuntime -> Maybe ClientCredential -> PackageName -> Handler OriginResult
 fetchPrivateOrigin deps rt token name = case pdPrivateBaseUrl deps of
     -- No private upstream on this mount (a serve-only pure public gate): the leg is
     -- structurally absent, so this constructs no client and attempts no fetch.
@@ -219,5 +219,5 @@ withPublicMetadataClient rt deps baseUrl =
 {- | One origin's coordinates for this mount: its own response bound, the leg's manager, and
 the credential posture the caller decided. The artifact path forms its request through it too.
 -}
-mountOrigin :: PackumentDeps -> Manager -> RegistryUrl -> Maybe Secret -> OriginClient
+mountOrigin :: PackumentDeps -> Manager -> RegistryUrl -> Maybe ClientCredential -> OriginClient
 mountOrigin deps = originClient (pdLimits deps)

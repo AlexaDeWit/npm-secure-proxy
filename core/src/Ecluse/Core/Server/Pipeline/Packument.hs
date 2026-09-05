@@ -99,7 +99,7 @@ import Network.Wai (Request, ResponseReceived, requestHeaders)
 import UnliftIO (concurrently)
 import UnliftIO.Exception (catchAny, throwIO)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Package (
     PackageInfo (infoVersions),
     PackageName,
@@ -245,7 +245,7 @@ serveWithDeps ::
     PackumentServe ->
     PackumentReplies response ->
     PackumentDeps ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     PackageName ->
     Request ->
     (response -> IO ResponseReceived) ->
@@ -269,7 +269,7 @@ serveAdmittedPackument ::
     PackumentServe ->
     PackumentReplies response ->
     PackumentDeps ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     PackageName ->
     Request ->
     (response -> IO ResponseReceived) ->
@@ -310,7 +310,7 @@ serveAdmittedPackument mode replies deps clientToken name request respond rt = d
 
 {- Resolve the origins this request may read: a first-party name reads the private origin alone
 and never the public leg. Every other name reads both concurrently. -}
-resolveOrigins :: PackumentDeps -> ServeRuntime -> Maybe Secret -> PackageName -> Handler (OriginResult, OriginResult)
+resolveOrigins :: PackumentDeps -> ServeRuntime -> Maybe ClientCredential -> PackageName -> Handler (OriginResult, OriginResult)
 resolveOrigins deps rt clientToken name
     | pdFirstParty deps name = do
         privResult <- fetchPrivateOrigin deps rt clientToken name

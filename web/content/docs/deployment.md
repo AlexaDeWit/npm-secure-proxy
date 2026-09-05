@@ -163,14 +163,24 @@ Edge authentication to the proxy ships in two modes:
 
 1. **Open**: `ECLUSE_SERVER__AUTH_TOKEN` unset. The network layer (VPC, service mesh) owns access
    control, so this is appropriate only on a closed network.
-2. **Static token**: `ECLUSE_SERVER__AUTH_TOKEN` set. Clients send it as
-   `Authorization: Bearer <token>`. For an npm-protocol client that is the `_authToken` line, keyed
-   by the mount's host and path:
+2. **Static token**: `ECLUSE_SERVER__AUTH_TOKEN` set. Clients send it in whichever form their
+   own ecosystem speaks, and Écluse compares the secret half. An npm-protocol client sends
+   `Authorization: Bearer <token>`, which is the `_authToken` line keyed by the mount's host and
+   path:
 
    ```ini
    # .npmrc
    registry=https://ecluse.example.internal/npm/
    //ecluse.example.internal/npm/:_authToken=${NPM_EDGE_TOKEN}
+   ```
+
+   A Python client sends the same token as an HTTP Basic **password**, under any username it
+   likes, which is how `pip`, `uv`, and `twine` present a credential:
+
+   ```ini
+   # pip.conf
+   [global]
+   index-url = https://__token__:${PYPI_EDGE_TOKEN}@ecluse.example.internal/pypi/simple/
    ```
 
 Écluse holds no read credential of its own. Reads run **passthrough**: Écluse forwards the

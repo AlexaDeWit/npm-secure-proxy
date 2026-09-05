@@ -17,7 +17,7 @@ import Test.Hspec (
  )
 
 import Ecluse.Core.BuildIdentity (userAgent)
-import Ecluse.Core.Credential (Secret, mkSecret, unSecret)
+import Ecluse.Core.Credential (ClientCredential (ClientCredential, credSecret, credUsername), bareCredential, mkSecret, unSecret)
 import Ecluse.Core.Registry (UrlFormationError (EmptyBaseUrl, UnparseableUrl))
 import Ecluse.Core.Registry.Request (
     CredentialMapping,
@@ -48,7 +48,7 @@ spec = do
 credentialMappingSpec :: Spec
 credentialMappingSpec = describe "a credential mapping carries one ecosystem's presentation both ways" $ do
     it "recovers the token text from the header the mapping names" $
-        credentialRecover apiKeyMapping [("X-Api-Key", "tok-abc")] `shouldBe` Just (mkSecret "tok-abc")
+        credentialRecover apiKeyMapping [("X-Api-Key", "tok-abc")] `shouldBe` Just (bareCredential (mkSecret "tok-abc"))
 
     it "recovers nothing when the request presents no credential in that form" $ do
         credentialRecover apiKeyMapping [("Authorization", "Bearer tok-abc")] `shouldBe` Nothing
@@ -56,14 +56,22 @@ credentialMappingSpec = describe "a credential mapping carries one ecosystem's p
 
     it "attaches the credential under the mapping's own header, not an assumed one" $ do
         req <- parseRequestOrFail "https://reg.test/x"
-        let headers = Client.requestHeaders (attachCredential apiKeyMapping (Just (mkSecret "tok-abc")) req)
+        let headers = Client.requestHeaders (attachCredential apiKeyMapping (Just (bareCredential (mkSecret "tok-abc"))) req)
         lookup "X-Api-Key" headers `shouldBe` Just "tok-abc"
         lookup "Authorization" headers `shouldBe` Nothing
 
     it "renders the header value through the mapping's own scheme" $ do
         req <- parseRequestOrFail "https://reg.test/x"
-        lookup "Authorization" (Client.requestHeaders (attachCredential schemedMapping (Just (mkSecret "tok-abc")) req))
+        lookup "Authorization" (Client.requestHeaders (attachCredential schemedMapping (Just (bareCredential (mkSecret "tok-abc"))) req))
             `shouldBe` Just "Token tok-abc"
+
+    it "carries a presentation's username half verbatim, never a rewritten one" $ do
+        -- A private index has username conventions of its own, so a passthrough leg renders the
+        -- pair a client sent rather than substituting a name Écluse chose.
+        req <- parseRequestOrFail "https://reg.test/x"
+        let presented = ClientCredential (Just "__token__") (mkSecret "tok-abc")
+        lookup "Authorization" (Client.requestHeaders (attachCredential basicMapping (Just presented) req))
+            `shouldBe` Just "Basic __token__:tok-abc"
 
     it "attaches no credential header when the request is anonymous" $ do
         req <- parseRequestOrFail "https://reg.test/x"
@@ -72,7 +80,7 @@ credentialMappingSpec = describe "a credential mapping carries one ecosystem's p
 
     it "pins the redirect count with the credential attached (the attach cannot bypass it)" $ do
         req <- parseRequestOrFail "https://reg.test/x"
-        Client.redirectCount (attachCredential apiKeyMapping (Just (mkSecret "tok-abc")) req) `shouldBe` 0
+        Client.redirectCount (attachCredential apiKeyMapping (Just (bareCredential (mkSecret "tok-abc"))) req) `shouldBe` 0
 
     it "pins the redirect count on an anonymous request too" $ do
         req <- parseRequestOrFail "https://reg.test/x"
@@ -134,7 +142,7 @@ artifactByUrlSpec = describe "artifactRequestByUrl (opaque, non-decompressing, b
                 Client.redirectCount req `shouldBe` 0
 
     it "attaches the credential under the mapping's presentation onto the finalised request" $ do
-        case artifactRequestByUrl schemedMapping (Just (mkSecret "tok-xyz")) "https://private.reg/files/thing.tgz" of
+        case artifactRequestByUrl schemedMapping (Just (bareCredential (mkSecret "tok-xyz"))) "https://private.reg/files/thing.tgz" of
             Left err -> fail ("artifactRequestByUrl failed: " <> show err)
             Right req -> lookup "Authorization" (Client.requestHeaders req) `shouldBe` Just "Token tok-xyz"
 
@@ -192,7 +200,7 @@ parseSpec = describe "parseRequestEither maps a parse failure to UrlFormationErr
         case parseRequestEither "https://reg.test/x" of
             Left err -> fail ("expected a parseable URL: " <> show err)
             Right req -> do
-                let credentialed = attachCredential apiKeyMapping (Just (mkSecret "tok-abc")) req
+                let credentialed = attachCredential apiKeyMapping (Just (bareCredential (mkSecret "tok-abc"))) req
                 Client.redirectCount credentialed `shouldBe` 0
                 userAgents credentialed `shouldBe` [userAgent]
                 lookup "X-Api-Key" (Client.requestHeaders credentialed) `shouldBe` Just "tok-abc"
@@ -201,16 +209,25 @@ parseSpec = describe "parseRequestEither maps a parse failure to UrlFormationErr
 therefore drive the mapping vocabulary, not any registered ecosystem's scheme.
 -}
 apiKeyMapping :: CredentialMapping
-apiKeyMapping = credentialMapping recoverApiKey "X-Api-Key" (encodeUtf8 . unSecret)
+apiKeyMapping = credentialMapping recoverApiKey "X-Api-Key" (encodeUtf8 . unSecret . credSecret)
 
-recoverApiKey :: RequestHeaders -> Maybe Secret
-recoverApiKey headers = mkSecret . decodeUtf8 <$> lookup "X-Api-Key" headers
+recoverApiKey :: RequestHeaders -> Maybe ClientCredential
+recoverApiKey headers = bareCredential . mkSecret . decodeUtf8 <$> lookup "X-Api-Key" headers
 
 {- | A presentation on @Authorization@ under a scheme of its own. The rendered value
 therefore comes from the mapping, not from a scheme the code assumes.
 -}
 schemedMapping :: CredentialMapping
-schemedMapping = credentialMapping recoverApiKey "Authorization" (\secret -> "Token " <> encodeUtf8 (unSecret secret))
+schemedMapping = credentialMapping recoverApiKey "Authorization" (\credential -> "Token " <> encodeUtf8 (unSecret (credSecret credential)))
+
+{- | A presentation that carries a username beside its secret, so a case can assert the pair
+travels whole.
+-}
+basicMapping :: CredentialMapping
+basicMapping = credentialMapping recoverApiKey "Authorization" renderPair
+  where
+    renderPair credential =
+        "Basic " <> encodeUtf8 (fromMaybe "" (credUsername credential)) <> ":" <> encodeUtf8 (unSecret (credSecret credential))
 
 -- Every User-Agent a request carries, so a case can assert the header is set exactly once.
 userAgents :: Client.Request -> [ByteString]

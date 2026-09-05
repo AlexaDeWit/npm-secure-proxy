@@ -34,7 +34,7 @@ import Lens.Micro.Aeson (key, _Object)
 import Network.HTTP.Client (Request (method, requestBody, requestHeaders), RequestBody (RequestBodyBS))
 import Network.HTTP.Types.Header (hAccept, hContentType)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential, bareCredential)
 import Ecluse.Core.Package (HashAlg (SHA1, SRI), PackageName, Scope, pkgNamespace, renderPackageName)
 import Ecluse.Core.Registry (
     MirrorArtifact (maFilename),
@@ -56,12 +56,12 @@ publish @PUT@s a single-version packument fragment carrying the artifact's verif
 npmPublishCodec :: PublishCodec
 npmPublishCodec =
     PublishCodec
-        { pcProbeRequest = \targetUrl token -> metadataRequest targetUrl token Abbreviated noValidators
+        { pcProbeRequest = \targetUrl token -> metadataRequest targetUrl (bareCredential <$> token) Abbreviated noValidators
         , pcParseVersionList = Project.parseVersionList
         , pcPublishRequest = \targetUrl token name version artifact bytes ->
             publishRequest
                 targetUrl
-                token
+                (bareCredential <$> token)
                 name
                 (npmPublishDocument name version (unFilename (maFilename artifact)) (firstHashValue SRI artifact) (firstHashValue SHA1 artifact) bytes)
         , pcPublishOutcome = classifyPublish
@@ -80,15 +80,15 @@ never for a write fault, which 'Ecluse.Core.Registry.publishArtifact' reports.
 -}
 publishRequest ::
     Text ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     PackageName ->
     ByteString ->
     Either UrlFormationError Request
-publishRequest baseUrl token name document = do
+publishRequest baseUrl credential name document = do
     url <- packageUrl baseUrl name
     base <- parseRequestEither url
     pure
-        . withToken token
+        . withToken credential
         $ base
             { method = "PUT"
             , requestBody = RequestBodyBS document

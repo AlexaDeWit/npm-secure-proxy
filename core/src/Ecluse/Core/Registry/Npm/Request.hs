@@ -48,7 +48,7 @@ module Ecluse.Core.Registry.Npm.Request (
 import Network.HTTP.Client (Request (decompress, requestHeaders))
 import Network.HTTP.Types.Header (hAccept, hAcceptEncoding)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Package (PackageName, pkgNamespace, renderPackageName, unScope, unscopedName)
 import Ecluse.Core.Registry (UrlFormationError)
 import Ecluse.Core.Registry.Npm.Credential (npmCredential)
@@ -90,7 +90,7 @@ Fails with a 'UrlFormationError' only when the URL cannot be formed (an empty ba
 -}
 metadataRequest ::
     Text ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     MetadataForm ->
     Validators ->
     PackageName ->
@@ -117,7 +117,7 @@ Fails with a 'UrlFormationError' only when the URL cannot be formed.
 -}
 artifactRequestByFile ::
     Text ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     PackageName ->
     Text ->
     Either UrlFormationError Request
@@ -141,7 +141,7 @@ the credential, non-decompression, and redirect pinning to
 Fails with a 'UrlFormationError' only when the @url@ cannot be parsed into a request.
 -}
 artifactRequestByUrl ::
-    Maybe Secret ->
+    Maybe ClientCredential ->
     Text ->
     Either UrlFormationError Request
 artifactRequestByUrl = Request.artifactRequestByUrl npmCredential
@@ -175,5 +175,5 @@ encodePackagePath name = case pkgNamespace name of
 
 -- Attach the injected credential under npm's presentation. The redirect pin and the proxy
 -- identity belong to Ecluse.Core.Registry.Request, which seals every request it parses.
-withToken :: Maybe Secret -> Request -> Request
+withToken :: Maybe ClientCredential -> Request -> Request
 withToken = attachCredential npmCredential

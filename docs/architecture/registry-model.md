@@ -35,7 +35,11 @@ Reads use **passthrough**: Écluse forwards the caller's own credential to the p
 reads the public upstream anonymously.
 
 - **Private upstream (read)**: Écluse forwards the client's credential and the upstream authorises
-  each request. Per request, never cached across clients.
+  each request. Per request, never cached across clients. A credential is a **pair**: a secret and
+  the username half a scheme such as HTTP Basic carries beside it. The pair travels verbatim,
+  because a private registry has username conventions of its own and rewriting one would
+  authenticate as somebody else. The edge gate compares the secret half alone, so one configured
+  edge token serves every ecosystem's presentation.
 - **Public upstream (read/fallback)**: queried anonymously. Any auth a public mirror needs is
   Écluse's own, not the client's.
 - **Mirror target (write)**: always Écluse's own

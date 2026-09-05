@@ -37,7 +37,7 @@ import Network.HTTP.Client (Request (decompress, redirectCount, requestHeaders),
 import Network.HTTP.Types.Header (HeaderName, RequestHeaders, hIfModifiedSince, hIfNoneMatch, hUserAgent)
 
 import Ecluse.Core.BuildIdentity (userAgent)
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Registry (UrlFormationError (EmptyBaseUrl, UnparseableUrl))
 import Ecluse.Core.Text (joinUrlPath)
 
@@ -65,31 +65,32 @@ finaliseRequest :: (Request -> Request) -> Request -> Request
 finaliseRequest attach = sealRequest . attach
 
 {- | One ecosystem's credential presentation: how it recovers a client's credential from
-presented headers, and how it carries one on an outbound request. The recovery yields the token
-__text__, so an attach re-encodes rather than replaying a header verbatim.
+presented headers, and how it carries one on an outbound request. The recovery yields the
+credential as a __value__, so an attach re-encodes rather than replaying a header verbatim.
 
 The constructor is hidden and 'attachCredential' is the only way to run the encoding, so no
 adapter spells its own attach point.
 -}
 data CredentialMapping = CredentialMapping
-    { credentialRecover :: RequestHeaders -> Maybe Secret
-    {- ^ Recover the token text a client presented, or 'Nothing' when the request carries no
-    credential in this ecosystem's form. The edge gate denies a 'Nothing' on a mount with a
-    configured inbound token, so it refuses a foreign presentation rather than half-reading one.
+    { credentialRecover :: RequestHeaders -> Maybe ClientCredential
+    {- ^ Recover the credential a client presented, or 'Nothing' when the request carries none
+    in this ecosystem's form. The edge gate denies a 'Nothing' on a mount with a configured
+    inbound token, so it refuses a foreign presentation rather than half-reading one. It
+    compares the secret half alone, so a scheme carrying a username admits any username.
     -}
     , -- The header that carries an outbound credential: named per ecosystem, never assumed.
       credentialHeader :: HeaderName
-    , -- How a token renders into that header's value (the ecosystem's own scheme).
-      credentialRender :: Secret -> ByteString
+    , -- How a credential renders into that header's value (the ecosystem's own scheme).
+      credentialRender :: ClientCredential -> ByteString
     }
 
 {- | Declare an ecosystem's credential presentation. The constructor is hidden, so this is the
 only way to build a 'CredentialMapping'.
 -}
 credentialMapping ::
-    (RequestHeaders -> Maybe Secret) ->
+    (RequestHeaders -> Maybe ClientCredential) ->
     HeaderName ->
-    (Secret -> ByteString) ->
+    (ClientCredential -> ByteString) ->
     CredentialMapping
 credentialMapping recover header render =
     CredentialMapping
@@ -101,13 +102,13 @@ credentialMapping recover header render =
 {- | Attach a credential to an outbound request under the mapping's own header, then finalise it
 through 'finaliseRequest'. A 'Nothing' attaches no header, and the seal still applies.
 -}
-attachCredential :: CredentialMapping -> Maybe Secret -> Request -> Request
-attachCredential mapping token = finaliseRequest $ case token of
+attachCredential :: CredentialMapping -> Maybe ClientCredential -> Request -> Request
+attachCredential mapping credential = finaliseRequest $ case credential of
     Nothing -> id
-    Just secret -> \request ->
+    Just presented -> \request ->
         request
             { requestHeaders =
-                (credentialHeader mapping, credentialRender mapping secret) : requestHeaders request
+                (credentialHeader mapping, credentialRender mapping presented) : requestHeaders request
             }
 
 {- | The conditional-GET validators to relay on a metadata fetch. Replaying them lets the
@@ -147,10 +148,10 @@ The request is __non-decompressing__ ('decompress' returns 'False'), so nothing 
 opaque tarball in flight and its integrity digest stays valid. It fails with a
 'UrlFormationError' only when the @url@ cannot be parsed.
 -}
-artifactRequestByUrl :: CredentialMapping -> Maybe Secret -> Text -> Either UrlFormationError Request
-artifactRequestByUrl mapping token url = do
+artifactRequestByUrl :: CredentialMapping -> Maybe ClientCredential -> Text -> Either UrlFormationError Request
+artifactRequestByUrl mapping credential url = do
     base <- parseRequestEither url
-    pure . attachCredential mapping token $ base{decompress = const False}
+    pure . attachCredential mapping credential $ base{decompress = const False}
 
 {- Join a base URL and an already-encoded path with exactly one slash, whatever trailing
 slashes the configured base writes.

@@ -54,6 +54,7 @@ module Ecluse.Core.Registry.PyPI.Project (
 
     -- * Name validation
     projectName,
+    canonicalName,
     isCanonicalName,
 ) where
 
@@ -292,7 +293,9 @@ afterProjectName name stem =
 isNameSeparator :: Char -> Bool
 isNameSeparator c = c == '-' || c == '_' || c == '.'
 
--- A package's canonical PEP 503 key as characters, for comparing against a file-name part.
+{- | A project's canonical PEP 503 key as characters: the spelling a file name is compared
+against, and the one segment an upstream Simple-index URL is built from.
+-}
 canonicalName :: PackageName -> Text
 canonicalName = canonicalise PyPI . renderPackageName
 
