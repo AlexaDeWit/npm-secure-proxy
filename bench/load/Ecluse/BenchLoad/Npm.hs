@@ -98,7 +98,7 @@ import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Types (hContentType, status200, status404)
 import Network.HTTP.Types.Header (hETag)
-import Network.Wai (Application, Request, pathInfo, responseLBS)
+import Network.Wai (Application, Request, pathInfo, requestHeaderHost, responseLBS)
 import Network.Wai.Handler.Warp (testWithApplication)
 
 import Ecluse (mountBindingFor)
@@ -347,17 +347,17 @@ stubs torn down on exit.
 withNpmProxy :: LoadKnobs -> NominalDiffTime -> Int -> (Int -> [Text]) -> ([Text] -> IO a) -> IO a
 withNpmProxy knobs ttl maxEntries mkMix body = do
     bodies <- loadServeBodies
+    rewritten <- newIORef mempty
     let bytes = artifactBytes (lkPayloadBytes knobs)
         latency = lkUpstreamLatencyMicros knobs
-    testWithApplication (pure (stubUpstream octetContentType latency bytes)) $ \artPort ->
-        withProxyOverStubs
-            knobs
-            ttl
-            maxEntries
-            (privateOverlayStub artPort latency bytes)
-            (corpusPublicStub latency bodies)
-            mkMix
-            body
+    withProxyOverStubs
+        knobs
+        ttl
+        maxEntries
+        (privateOverlayStub latency bytes)
+        (corpusPublicStub rewritten latency bodies)
+        mkMix
+        body
 
 {- | Boot the composed proxy over the given private and public upstream stubs, the shared
 shell of every HTTP scenario. Admission and the private pool resolve through the
@@ -559,17 +559,44 @@ octetContentType = "application/octet-stream"
 
 -- Serves the real captured packument for the requested package, so each request decodes,
 -- merges, gates, rewrites, and re-serialises a genuinely heterogeneous document.
-corpusPublicStub :: Int -> Map Text LByteString -> Application
-corpusPublicStub latency bodies request respond = do
+corpusPublicStub :: IORef (Map Text LByteString) -> Int -> Map Text LByteString -> Application
+corpusPublicStub rewritten latency bodies request respond = do
     when (latency > 0) (threadDelay latency)
-    respond $ case requestedPackage request >>= (`Map.lookup` bodies) of
+    served <- selfHosted rewritten (stubAuthority request) bodies
+    respond $ case requestedPackage request >>= (`Map.lookup` served) of
         Just packument -> responseLBS status200 [(hContentType, jsonContentType)] packument
         Nothing -> responseLBS status404 [(hContentType, jsonContentType)] "{}"
 
+{- The corpus captures name @registry.npmjs.org@ as their tarball authority, and a stub does
+not serve that host. Écluse honours an artifact location only on the authority that served the
+listing, so a capture replayed verbatim would have every version dropped and the scenario would
+measure a refusal. Point each capture's locations at the stub's own authority instead, which is
+what a real registry does. It is one substitution per capture, memoised on first request. -}
+selfHosted :: IORef (Map Text LByteString) -> Text -> Map Text LByteString -> IO (Map Text LByteString)
+selfHosted rewritten authority bodies =
+    readIORef rewritten >>= \case
+        cached | not (Map.null cached) -> pure cached
+        _ -> do
+            let served = Map.map (rebaseCapture authority) bodies
+            writeIORef rewritten served
+            pure served
+
+-- Replace the captured registry authority with the stub's own, over the raw bytes.
+rebaseCapture :: Text -> LByteString -> LByteString
+rebaseCapture authority = encodeUtf8 . T.replace capturedAuthority authority . decodeUtf8
+
+-- The authority every committed corpus capture names as its tarball host.
+capturedAuthority :: Text
+capturedAuthority = "https://registry.npmjs.org"
+
+-- The stub's own authority, as the request reached it.
+stubAuthority :: Request -> Text
+stubAuthority request = "http://" <> maybe "127.0.0.1" decodeUtf8 (requestHeaderHost request)
+
 -- Serves a small overlay of disjoint versions, so the merge yields a genuine cross-upstream
 -- union, plus the canned artifact bytes for any tarball path under the package.
-privateOverlayStub :: Int -> Int -> LByteString -> Application
-privateOverlayStub artPort latency bytes request respond = do
+privateOverlayStub :: Int -> LByteString -> Application
+privateOverlayStub latency bytes request respond = do
     when (latency > 0) (threadDelay latency)
     let mPkg = requestedPackage request
     case mPkg of
@@ -579,7 +606,7 @@ privateOverlayStub artPort latency bytes request respond = do
                 respond (responseLBS status200 [(hContentType, octetContentType)] bytes)
         -- Packument request: /{pkg}
         Just pkg ->
-            respond (responseLBS status200 [(hContentType, jsonContentType)] (encode (privateOverlay artPort pkg)))
+            respond (responseLBS status200 [(hContentType, jsonContentType)] (encode (privateOverlay (stubAuthority request) pkg)))
         Nothing ->
             respond (responseLBS status404 [(hContentType, jsonContentType)] "{}")
 
@@ -654,24 +681,25 @@ loadServeBodies = Map.fromList <$> traverse load corpusPackages
 {- | A trusted-private overlay for the requested package: three versions disjoint from any
 real version and old enough to clear the quarantine, so the merge serves a genuine union.
 -}
-privateOverlay :: Int -> Text -> Value
-privateOverlay artPort name =
+privateOverlay :: Text -> Text -> Value
+privateOverlay authority name =
     packumentValue
         name
         "9999.0.2"
-        [(version, overlayVersionObject artPort name version) | version <- overlayVersions]
+        [(version, overlayVersionObject authority name version) | version <- overlayVersions]
         (("created" .= publishedLongAgo) : [Key.fromText version .= publishedLongAgo | version <- overlayVersions])
         ["_id" .= name]
   where
     overlayVersions :: [Text]
     overlayVersions = ["9999.0.0", "9999.0.1", "9999.0.2"]
 
--- The integrity digests meet the floor and the tarball URL is rewritable, so the gate
--- admits the version and the serve-time rewrite runs.
-overlayVersionObject :: Int -> Text -> Text -> Value
-overlayVersionObject artPort name version =
+{- The integrity digests meet the floor and the tarball names the stub's own authority, so the
+gate admits the version and the serve-time rewrite runs. The stub serves the bytes for any
+@\/-\/@ path, so one authority answers both the listing and the download. -}
+overlayVersionObject :: Text -> Text -> Text -> Value
+overlayVersionObject authority name version =
     versionValue
-        ( (versionSpec name version (localhost artPort <> "/" <> name <> "/-/" <> unscoped <> "-" <> version <> ".tgz"))
+        ( (versionSpec name version (authority <> "/" <> name <> "/-/" <> unscoped <> "-" <> version <> ".tgz"))
             { vsIntegrity = Just validSha512Sri
             , vsShasum = Just validSha1
             }
