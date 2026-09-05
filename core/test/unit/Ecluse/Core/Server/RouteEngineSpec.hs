@@ -35,6 +35,7 @@ import Ecluse.Core.Server.Contract (
  )
 import Ecluse.Core.Server.Route (
     Capture (Capture),
+    MediaNegotiation (AcceptsAnything),
     MethodMatch (MethodPost, MethodRead),
     PatternSeg (SegCap, SegLit),
     Route (Route, routeName),
@@ -134,6 +135,7 @@ pingRoute =
     Route
         (RouteName "ping")
         MethodRead
+        AcceptsAnything
         [SegLit "-", SegLit "ping"]
         (answering (responseValue [] ()))
         "Liveness probe"
@@ -146,6 +148,7 @@ fileRoute =
     Route
         (RouteName "file")
         MethodRead
+        AcceptsAnything
         [SegCap capName, SegLit "-", SegCap capFile]
         buildFile
         "Fetch a file"
@@ -162,6 +165,7 @@ uploadRoute =
     Route
         (RouteName "upload")
         MethodPost
+        AcceptsAnything
         [SegLit "-", SegLit "upload"]
         (answering (responseValue [] ()))
         "Submit a file"
@@ -177,7 +181,7 @@ capFile = Capture "file" "The file's name." (safeSegment ToyFile)
 
 -- The name of the route that claims a request, or 'Nothing' when none does.
 claimed :: Method -> [Text] -> Maybe RouteName
-claimed method segments = routeName . fst <$> matchRoute toyRoutes method segments
+claimed method segments = routeName . fst <$> matchRoute toyRoutes method [] segments
 
 catchAll :: NonEmpty RouteSpec
 catchAll = catchAllSpecs refusalContract catchAllParam

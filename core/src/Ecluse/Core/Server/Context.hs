@@ -63,6 +63,7 @@ import Katip (Katip, KatipContext, LogEnv, SimpleLogPayload)
 import Katip.Monadic (KatipContextT, runKatipContextT)
 import Network.HTTP.Client (Manager)
 import Network.HTTP.Types (Method)
+import Network.HTTP.Types.Header (RequestHeaders)
 import Network.Wai (ResponseReceived)
 import Network.Wai qualified as Wai
 import UnliftIO (MonadUnliftIO)
@@ -347,10 +348,11 @@ data RouteAction = forall response. RouteAction (ResponseContract response) (Res
 
 The adapter supplies one ('Ecluse.Core.Registry.Adapter.Types.serveRouter'). A path it does not
 recognise yields the deny-by-default @404@. The 'Method' is part of the mapping, and a @HEAD@
-resolves to the head-mode handler of its @GET@. Segments arrive mount-stripped and
-percent-decoded.
+resolves to the head-mode handler of its @GET@. The request headers are part of it too, because
+a route may serve one media type and refuse a client that admits no such thing. Segments arrive
+mount-stripped and percent-decoded.
 -}
-type MountRouter = Method -> [Text] -> RouteAction
+type MountRouter = Method -> RequestHeaders -> [Text] -> RouteAction
 
 {- | A path prefix bound to a registry, carrying that registry's complete ecosystem wiring.
 Dispatch matches a request's leading segments to 'bindingPrefix' and routes the remainder

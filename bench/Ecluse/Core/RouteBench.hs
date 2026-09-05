@@ -57,6 +57,7 @@ classifyDepth :: [(Method, [Text])] -> Int
 classifyDepth = foldl' (\acc (method, segments) -> acc + matchDepth method segments) 0
   where
     matchDepth method segments =
-        maybe 0 (nameLength . routeName . fst) (matchRoute npmRoutes method segments)
+        -- npm's routes negotiate no media type, so the bench routes with no Accept header.
+        maybe 0 (nameLength . routeName . fst) (matchRoute npmRoutes method [] segments)
 
     nameLength (RouteName n) = T.length n

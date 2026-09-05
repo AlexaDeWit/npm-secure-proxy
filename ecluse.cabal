@@ -162,6 +162,7 @@ library ecluse-core
     Ecluse.Core.Registry.PyPI.FirstParty
     Ecluse.Core.Registry.PyPI.Project
     Ecluse.Core.Registry.PyPI.Request
+    Ecluse.Core.Registry.PyPI.Route
     Ecluse.Core.Registry.PyPI.Wire
     Ecluse.Core.Registry.Request
     Ecluse.Core.Registry.WireSupport
@@ -176,6 +177,7 @@ library ecluse-core
     Ecluse.Core.Security.Limits
     Ecluse.Core.Server.Cache
     Ecluse.Core.Server.Cache.Store
+    Ecluse.Core.Server.Accept
     Ecluse.Core.Server.Admission
     Ecluse.Core.Server.Admission.Bytes
     Ecluse.Core.Server.Admission.Weighted
@@ -735,6 +737,7 @@ test-suite ecluse-core-unit
     Ecluse.Core.Registry.PyPI.FirstPartySpec
     Ecluse.Core.Registry.PyPI.ProjectSpec
     Ecluse.Core.Registry.PyPI.RequestSpec
+    Ecluse.Core.Registry.PyPI.RouteSpec
     Ecluse.Core.Registry.PyPI.WireSpec
     Ecluse.Core.Registry.RequestSpec
     Ecluse.Core.Registry.WireSupportSpec
@@ -747,6 +750,7 @@ test-suite ecluse-core-unit
     Ecluse.Core.Security.LimitsSpec
     Ecluse.Core.SecuritySpec
     Ecluse.Core.Server.Admission.BytesSpec
+    Ecluse.Core.Server.AcceptSpec
     Ecluse.Core.Server.AdmissionSpec
     Ecluse.Core.Server.Cache.StoreSpec
     Ecluse.Core.Server.CacheSpec

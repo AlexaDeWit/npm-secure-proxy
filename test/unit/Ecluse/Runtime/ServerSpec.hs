@@ -138,8 +138,8 @@ fakeRouterApp = application (mkServerConfig [mountAt ("npm" :| []) fakeRouter]) 
     -- npm's @is-odd@ would be a packument read. Under this router it is a miss, so the two
     -- routers give observably different answers.
     fakeRouter :: MountRouter
-    fakeRouter _method ["beep"] = RouteAction fakeContract (AnswerLocally (variableResponse status200 [] "{}"))
-    fakeRouter _method _ = npmNotFound
+    fakeRouter _method _headers ["beep"] = RouteAction fakeContract (AnswerLocally (variableResponse status200 [] "{}"))
+    fakeRouter _method _headers _ = npmNotFound
 
     fakeContract :: ResponseContract (VariableResponse LByteString)
     fakeContract = variableOpaqueContract "application/json" "The fake router's response."

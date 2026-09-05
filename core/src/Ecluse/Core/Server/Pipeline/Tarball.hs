@@ -178,12 +178,13 @@ import Ecluse.Core.Server.Pipeline.Tarball.Relay (
  )
 import Ecluse.Core.Server.Response (
     ArtifactStatus (NotFound, Unavailable'),
+    Refusal,
     Rejection (rejectionMessage),
     ServeDecision (Admit, Reject),
     Transience (WontResolve),
-    appendHelp,
     artifactHttpStatus,
     artifactStatus,
+    mkRefusal,
     rejectUnavailable,
     serveDecisionOf,
  )
@@ -199,7 +200,7 @@ pass-through contract fixes the response type, and the pipeline never receives W
 unrestricted responder.
 -}
 data TarballReplies response = TarballReplies
-    { tarballError :: Status -> ResponseHeaders -> Text -> response
+    { tarballError :: Status -> ResponseHeaders -> Refusal -> response
     -- ^ An ecosystem-shaped local error.
     , tarballStream :: Status -> ResponseHeaders -> StreamingBody -> response
     -- ^ A transparent streamed upstream response.
@@ -266,7 +267,7 @@ serveTarballWithDeps ::
     Handler ResponseReceived
 serveTarballWithDeps mode replies deps clientToken name version file request respond
     | not (edgeTokenMatches (pdInboundToken deps) clientToken) =
-        liftIO (respond (tarballError replies status401 [] unauthorisedMessage))
+        liftIO (respond (tarballError replies status401 [] (mkRefusal Nothing unauthorisedMessage)))
     | otherwise = do
         rt <- asks ctxRuntime
         -- The client's conditional validators, relayed onto both legs' upstream requests so
@@ -352,7 +353,7 @@ servePublicArtifact mode replies rt deps validators name version file respond = 
     withAdmissionOrShed
         metrics
         (srAdmission rt)
-        (liftIO (respond (tarballError replies shedStatus [shedRetryAfter] shedMessage)))
+        (liftIO (respond (tarballError replies shedStatus [shedRetryAfter] (mkRefusal Nothing shedMessage))))
         (gatePublicVersion rt deps name version file advisoryEtag)
         $ \case
             Admitted artifact -> do
@@ -553,7 +554,7 @@ a gate denial rather than a rule outcome, and it renders on the same @403@ surfa
 fixed reason. -}
 crossHostRefused :: TarballReplies response -> response
 crossHostRefused replies =
-    tarballError replies status403 [] "the upstream artifact host is not permitted by the tarball-host policy"
+    tarballError replies status403 [] (mkRefusal Nothing "the upstream artifact host is not permitted by the tarball-host policy")
 
 {- | The status a refused artifact request renders. A version-absent miss and a first-party miss
 are the @404@s: every other inability keeps the @503@ or @500@ its transience earns.
@@ -567,7 +568,7 @@ artifactOutcomeStatus decision
 suggested delay, because the single-artifact path has none to offer. -}
 artifactError :: TarballReplies response -> PackumentDeps -> ServeDecision -> response
 artifactError replies deps decision =
-    tarballError replies (artifactHttpStatus status) retryHeaders (appendHelp (pdHelp deps) message)
+    tarballError replies (artifactHttpStatus status) retryHeaders (mkRefusal (pdHelp deps) message)
   where
     status :: ArtifactStatus
     status = artifactOutcomeStatus decision
@@ -587,4 +588,4 @@ decision. The package segment and filename are already known-safe, so only a mis
 base URL reaches here. -}
 internalArtifactError :: TarballReplies response -> response
 internalArtifactError replies =
-    tarballError replies status500 [] "could not form the upstream artifact URL"
+    tarballError replies status500 [] (mkRefusal Nothing "could not form the upstream artifact URL")

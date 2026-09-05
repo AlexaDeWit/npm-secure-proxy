@@ -35,6 +35,7 @@ module Ecluse.Core.Server.Route (
     PatternSeg (..),
     Capture (..),
     MethodMatch (..),
+    MediaNegotiation (..),
 
     -- * Routing a request
     routerOf,
@@ -46,8 +47,10 @@ module Ecluse.Core.Server.Route (
     isHead,
 ) where
 
+import Network.HTTP.Types.Header (RequestHeaders)
 import Network.HTTP.Types.Method (Method, methodDelete, methodGet, methodHead, methodPost, methodPut)
 
+import Ecluse.Core.Server.Accept (acceptsAny)
 import Ecluse.Core.Server.Context (
     MountRouter,
     ResponseAction (AnswerLocally),
@@ -68,6 +71,10 @@ data Route v = forall response. Route
     -}
     , routeMethod :: MethodMatch
     -- ^ The method condition a request must satisfy to match.
+    , routeAccepts :: MediaNegotiation response
+    {- ^ The media types this route serves, and what it answers a request that admits none of
+    them. A route that serves whatever its upstream sends negotiates nothing.
+    -}
     , routeSegs :: [PatternSeg v]
     -- ^ The mount-relative path template: literal segments and named captures, in order.
     , routeBuild :: Method -> [v] -> Maybe (ResponseAction response)
@@ -120,6 +127,20 @@ data Capture v = Capture
     -- ^ Consume the leading segments this capture claims, yielding its value and the tail.
     }
 
+{- | What a route serves, and what it answers a client that will not take it.
+
+The alternative is a value of the route's own 'ResponseContract', so the @406@ a negotiating
+route answers is documented from the same record that serves it and cannot drift from what the
+router emits.
+-}
+data MediaNegotiation response
+    = -- | The route negotiates nothing: every request is admitted whatever it says it accepts.
+      AcceptsAnything
+    | {- | The route serves these media types alone, and answers this value to a request whose
+      @Accept@ admits none of them.
+      -}
+      AcceptsOnly (NonEmpty ByteString) response
+
 {- | The method condition on a route: a closed vocabulary rather than a predicate, so the
 manifest can name the documented method. A method outside it matches no route and denies.
 -}
@@ -147,10 +168,15 @@ request decides what happens to it.
 A request no route claims gets the mount's @404@ 'Answer' (npm's @{"error": "not found"}@), so
 deny-by-default is structural. 'routerOf' has no other way to answer, and there is no catch-all
 branch to forget.
+
+The request headers reach the router because a route may declare the media types it serves. A
+request that admits none of them takes that route's own refusal ('MediaNegotiation'), which is
+decided here rather than inside a handler, so no upstream work is done for a client that will
+not take the answer.
 -}
 routerOf :: RouteAction -> [Route v] -> MountRouter
-routerOf notFound routes method segments =
-    maybe (fallbackFor method notFound) snd (matchRoute routes method segments)
+routerOf notFound routes method headers segments =
+    maybe (fallbackFor method notFound) snd (matchRoute routes method headers segments)
   where
     fallbackFor requested (RouteAction contract action)
         | isHead requested = RouteAction (bodilessContract contract) action
@@ -161,16 +187,25 @@ condition holds, whose segments are consumed exactly, and whose builder accepts 
 'Nothing' when none does. Exported beside 'routerOf' so a route table is testable with no
 server.
 -}
-matchRoute :: [Route v] -> Method -> [Text] -> Maybe (Route v, RouteAction)
-matchRoute routes method segments =
+matchRoute :: [Route v] -> Method -> RequestHeaders -> [Text] -> Maybe (Route v, RouteAction)
+matchRoute routes method headers segments =
     listToMaybe (mapMaybe claim routes)
   where
-    claim route@Route{routeMethod = matchedMethod, routeSegs = patternSegs, routeBuild = build, routeContract = contract}
+    claim route@Route{routeMethod = matchedMethod, routeAccepts = negotiation, routeSegs = patternSegs, routeBuild = build, routeContract = contract}
         | methodMatches matchedMethod method = do
             captures <- consumeSegs patternSegs segments
-            action <- build method captures
+            action <- negotiated negotiation (build method captures)
             pure (route, RouteAction (contractFor method contract) action)
         | otherwise = Nothing
+
+    {- A route the request will not take answers its own refusal, decided before the builder's
+    action is ever run and so before any upstream work. A route that negotiates nothing keeps
+    whatever its builder decided, 'Nothing' included, so matching still falls through. -}
+    negotiated negotiation built = case negotiation of
+        AcceptsAnything -> built
+        AcceptsOnly served refusal
+            | acceptsAny headers served -> built
+            | otherwise -> AnswerLocally refusal <$ built
 
     contractFor requested
         | isHead requested = bodilessContract

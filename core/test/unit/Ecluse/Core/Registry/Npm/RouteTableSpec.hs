@@ -55,7 +55,8 @@ none does (the deny-by-default @404@). These examples assert only which route cl
 request, never what its closure serves.
 -}
 matchedId :: Method -> [Text] -> Maybe RouteName
-matchedId method segments = routeName . fst <$> matchRoute npmRoutes method segments
+-- npm's routes negotiate no media type, so the reference routes with no Accept header.
+matchedId method segments = routeName . fst <$> matchRoute npmRoutes method [] segments
 
 spec :: Spec
 spec = do

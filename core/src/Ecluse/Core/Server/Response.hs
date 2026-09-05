@@ -68,6 +68,11 @@ module Ecluse.Core.Server.Response (
     HelpMessage,
     mkHelpMessage,
     appendHelp,
+
+    -- * A refusal's two parts
+    Refusal (..),
+    mkRefusal,
+    renderRefusal,
 ) where
 
 import Data.Semigroup (Max (Max, getMax))
@@ -327,7 +332,30 @@ mkHelpMessage = HelpMessage . T.strip
 A blank or absent help message contributes nothing.
 -}
 appendHelp :: Maybe HelpMessage -> Text -> Text
-appendHelp help message =
-    case help of
-        Just (HelpMessage h) | not (T.null h) -> T.strip message <> " " <> h
-        _ -> message
+appendHelp help = renderRefusal . mkRefusal help
+
+{- | A refusal's text kept in its two parts: the reason Écluse decided, and the operator help
+message configured beside it.
+
+An ecosystem renders whichever part its own denial surface carries. npm has a JSON envelope with
+room for both, and reads 'renderRefusal'. PyPI answers a bare status, so its body is the help
+message alone ('refusalHelp') and is absent when no operator configured one. Splitting the two
+here is what keeps the help message from being dropped for the ecosystem with no envelope.
+-}
+data Refusal = Refusal
+    { refusalReason :: Text
+    -- ^ Why Écluse refused, in its own words. Always present.
+    , refusalHelp :: Maybe Text
+    -- ^ The operator's help message, absent when none is configured or it is blank.
+    }
+    deriving stock (Eq, Show)
+
+-- | Pair a decided reason with the mount's configured help message, if it has a non-blank one.
+mkRefusal :: Maybe HelpMessage -> Text -> Refusal
+mkRefusal help message = Refusal message (nonBlankHelp =<< help)
+  where
+    nonBlankHelp (HelpMessage h) = if T.null h then Nothing else Just h
+
+-- | The refusal as one line: the reason, with the help message appended after a single space.
+renderRefusal :: Refusal -> Text
+renderRefusal (Refusal reason help) = maybe reason ((T.strip reason <> " ") <>) help

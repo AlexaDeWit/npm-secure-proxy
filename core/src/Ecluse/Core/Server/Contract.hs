@@ -45,6 +45,7 @@ module Ecluse.Core.Server.Contract (
     mediaJsonContract,
     documentedJsonContract,
     mediaContract,
+    optionalBodyContract,
     emptyContract,
 
     -- * Open response leaves
@@ -185,6 +186,23 @@ mediaContract status description schema =
         , contractRender = \(ResponseValue headers bytes) ->
             Answer status headers (maybe NoAnswerBody (`MediaAnswer` bytes) (bodyMediaType schema))
         }
+
+{- | One exact response whose body is optional: the media type its 'BodySchema' names when the
+handler supplies bytes, and no body at all when it supplies none.
+
+It is the refusal shape of an ecosystem whose upstream answers a bare status. The one body such
+a refusal may carry is the operator help message, so both forms are one documented response
+rather than two the caller could answer under different statuses.
+-}
+optionalBodyContract :: Status -> Text -> BodySchema -> ResponseContract (ResponseValue (Maybe LByteString))
+optionalBodyContract status description schema =
+    ResponseContract
+        { contractDocs = [ResponseDoc (ExactResponse status) description schema]
+        , contractRender = \(ResponseValue headers body) ->
+            Answer status headers (maybe NoAnswerBody (mediaAnswer schema) body)
+        }
+  where
+    mediaAnswer bodySchema bytes = maybe NoAnswerBody (`MediaAnswer` bytes) (bodyMediaType bodySchema)
 
 -- The media type a body is served under, absent for a body this leaf does not put on the wire.
 bodyMediaType :: BodySchema -> Maybe ByteString

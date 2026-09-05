@@ -94,7 +94,7 @@ spec = do
         it "a path claimed by no documented route denies by default" $
             -- The catch-all the manifest documents is real: no route in the table claims
             -- this path, so the router answers it with the deny-by-default 404.
-            isJust (matchRoute npmRoutes (renderStdMethod GET) ["not", "a", "known", "route"]) `shouldBe` False
+            isJust (matchRoute npmRoutes (renderStdMethod GET) [] ["not", "a", "known", "route"]) `shouldBe` False
         it "Search carries 501" $
             (statusCodes <$> getOp "/npm/-/v1/search") `shouldBe` Just [501]
         it "the dist-tag read, write, and removal all carry 501" $ do
