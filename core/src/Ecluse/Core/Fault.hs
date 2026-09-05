@@ -70,6 +70,12 @@ data TransportCause
 {- | Is a fault with this cause worth another attempt? A timeout and an unreachable peer
 can clear on their own. A TLS refusal and a protocol fault need an operator or a fix.
 -}
+transportRetryable :: TransportCause -> Bool
+transportRetryable = \case
+    TransportTimeout -> True
+    TransportUnreachable -> True
+    TransportTls -> False
+    TransportProtocol -> False
 
 -- | What a transport cause says happened, for a line an operator reads.
 renderTransportCause :: TransportCause -> Text
@@ -78,13 +84,6 @@ renderTransportCause = \case
     TransportUnreachable -> "the peer could not be reached"
     TransportTls -> "the TLS layer refused the peer"
     TransportProtocol -> "the peer's answer could not be used"
-
-transportRetryable :: TransportCause -> Bool
-transportRetryable = \case
-    TransportTimeout -> True
-    TransportUnreachable -> True
-    TransportTls -> False
-    TransportProtocol -> False
 
 {- | A @Retry-After@ delay, in whole seconds. A 'newtype' so a raw count of seconds is
 never confused with some other integer when it reaches a response header or a sweep's wait.

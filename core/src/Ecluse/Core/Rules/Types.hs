@@ -144,6 +144,16 @@ data DenyIfEpssParams = DenyIfEpssParams
 {- | A stable, human-facing name for a rule: its identity, derived from the data. It is
 the boot-order tiebreak and the credited identity in logs and denial messages.
 -}
+ruleName :: Rule -> Text
+ruleName = \case
+    AllowScope{} -> "AllowScope"
+    AllowIfOlderThan{} -> "AllowIfOlderThan"
+    DenyInstallTimeExecution -> "DenyInstallTimeExecution"
+    DenyByIdentity{} -> "DenyByIdentity"
+    AllowByIdentity{} -> "AllowByIdentity"
+    AllowIfRemediatesCve -> "AllowIfRemediatesCve"
+    DenyIfCve{} -> "DenyIfCve"
+    DenyIfEpss{} -> "DenyIfEpss"
 
 {- | Whether a rule reads the advisory database. A rule set with none never needs one, and a set
 with one is worth waiting a bounded while for the first sync before deciding anything.
@@ -158,17 +168,6 @@ readsAdvisories = \case
     DenyInstallTimeExecution -> False
     DenyByIdentity{} -> False
     AllowByIdentity{} -> False
-
-ruleName :: Rule -> Text
-ruleName = \case
-    AllowScope{} -> "AllowScope"
-    AllowIfOlderThan{} -> "AllowIfOlderThan"
-    DenyInstallTimeExecution -> "DenyInstallTimeExecution"
-    DenyByIdentity{} -> "DenyByIdentity"
-    AllowByIdentity{} -> "AllowByIdentity"
-    AllowIfRemediatesCve -> "AllowIfRemediatesCve"
-    DenyIfCve{} -> "DenyIfCve"
-    DenyIfEpss{} -> "DenyIfEpss"
 
 {- | A 'Rule' paired with the integer precedence at which it competes, higher first.
 'Ecluse.Core.Rules.bootOrder' turns precedence, and at equal precedence the rule name,
