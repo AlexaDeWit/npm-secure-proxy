@@ -18,6 +18,7 @@ module Ecluse.Core.Registry.Adapter (
     AdapterArtifact (..),
     AdapterPublish (..),
     AdapterMaintenance (..),
+    ProjectName,
 
     -- * Registration
     adapterFor,

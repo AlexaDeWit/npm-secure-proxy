@@ -74,6 +74,7 @@ import Ecluse.Core.Registry.Adapter (
     RegistryAdapter,
     adapterArtifact,
     adapterMetadata,
+    adapterProjectName,
     adapterPublish,
     artifactHosts,
  )
@@ -274,6 +275,7 @@ publishDepsFor adapter app limits publishBudget helpMessage publication = do
             , pubBodyBudget = pbBodyBudget budget
             , pubMaxRequestBytes = pbMaxRequestBytes budget
             , pubHelp = helpMessage
+            , pubProjectName = adapterProjectName adapter
             , pubAdapter = adapterPublish adapter
             }
 

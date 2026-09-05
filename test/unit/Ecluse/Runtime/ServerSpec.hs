@@ -25,7 +25,7 @@ import Data.Time (addUTCTime, getCurrentTime)
 
 import Ecluse.Core.Credential (mkSecret)
 import Ecluse.Core.Package (mkScope)
-import Ecluse.Core.Registry.Adapter.Types (AdapterPublish (publishRelay), RegistryAdapter (adapterPublish))
+import Ecluse.Core.Registry.Adapter.Types (AdapterPublish (publishRelay), RegistryAdapter (adapterProjectName, adapterPublish))
 import Ecluse.Core.Registry.Npm.Adapter (npmAdapter)
 import Ecluse.Core.Registry.Npm.Credential (npmCredential)
 import Ecluse.Core.Registry.Npm.Publish qualified as NpmPublish
@@ -117,6 +117,7 @@ basePublishDeps bodyBudget =
         , pubBodyBudget = bodyBudget
         , pubMaxRequestBytes = 26214400
         , pubHelp = Nothing
+        , pubProjectName = adapterProjectName npmAdapter
         , pubAdapter = adapterPublish npmAdapter
         }
 
