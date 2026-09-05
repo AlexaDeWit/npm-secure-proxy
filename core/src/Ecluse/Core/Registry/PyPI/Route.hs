@@ -55,6 +55,9 @@ module Ecluse.Core.Registry.PyPI.Route (
     pypiRoutes,
     pypiRouteSpecs,
 
+    -- * The served file URL (rendered from the route that claims it)
+    distributionPath,
+
     -- * The capture values and leaf parsers (exported for their specs)
     PyPICap (..),
     takeProject,
@@ -62,6 +65,7 @@ module Ecluse.Core.Registry.PyPI.Route (
 ) where
 
 import Data.List.NonEmpty qualified as NE
+import Data.Text qualified as T
 import Network.HTTP.Types (
     Method,
     ResponseHeaders,
@@ -80,7 +84,7 @@ import Network.HTTP.Types (
 
 import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
 import Ecluse.Core.Package (PackageName)
-import Ecluse.Core.Registry.PyPI.Project (FileCoordinate (fcVersionKey), fileCoordinate, isCanonicalName, projectName)
+import Ecluse.Core.Registry.PyPI.Project (FileCoordinate (fcVersionKey), canonicalName, fileCoordinate, isCanonicalName, projectName)
 import Ecluse.Core.Server.Context (
     MountRouter,
     ResponseAction (AnswerLocally, RunPipeline),
@@ -114,6 +118,7 @@ import Ecluse.Core.Server.Route (
     RouteName (RouteName),
     answering,
     isHead,
+    renderRoute,
     routerOf,
     safeSegment,
  )
@@ -351,6 +356,14 @@ data PyPICap
     = PyPIProject PackageName
     | PyPIFile Text
 
+{- | The one segment a capture claims, written back out. A project renders as its canonical
+spelling, the only one 'takeProject' reads back.
+-}
+renderCapture :: PyPICap -> [Text]
+renderCapture = \case
+    PyPIProject name -> [canonicalName name]
+    PyPIFile file -> [file]
+
 {- | The project capture: one PEP 503 canonical project name. A non-canonical spelling matches
 no route, so it takes the structural @404@ rather than a redirect.
 -}
@@ -360,6 +373,7 @@ capProject =
         "project"
         "The project name in PEP 503 canonical form, e.g. `zope-interface`."
         (fmap (first PyPIProject) . takeProject)
+        renderCapture
 
 {- | The distribution-file capture. The coordinate parse (the release and the archive form) is
 'artifactCoordinate''s, applied in 'buildArtifact'.
@@ -370,6 +384,7 @@ capFile =
         "file"
         "The distribution file's on-the-wire name, e.g. `requests-2.34.2-py3-none-any.whl`."
         (safeSegment PyPIFile)
+        renderCapture
 
 {- | Peel the leading project unit off a path, returning its 'PackageName' and the remaining
 segments. The route parses no name of its own: 'projectName' owns the PyPI name grammar, and
@@ -388,6 +403,13 @@ artifactCoordinate :: PackageName -> Text -> Maybe (Version, Filename)
 artifactCoordinate name file = do
     coordinate <- fileCoordinate name file
     (mkVersion PyPI (fcVersionKey coordinate),) <$> mkFilename file
+
+{- | The mount-relative path the distribution route serves one project's file under, rendered
+from that same route record so a served URL and the route that must claim it cannot drift.
+'Nothing' only for a template this build changed without changing the captures beside it.
+-}
+distributionPath :: PackageName -> Text -> Maybe Text
+distributionPath name file = T.intercalate "/" <$> renderRoute artifactRoute [PyPIProject name, PyPIFile file]
 
 {- | PyPI's routes as data for the __OpenAPI spec__: the 'specsOf' projection of the same
 'pypiRoutes' the router runs, plus the synthetic deny-by-default catch-all.

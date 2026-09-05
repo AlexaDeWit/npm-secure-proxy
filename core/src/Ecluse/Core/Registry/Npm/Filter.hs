@@ -81,9 +81,11 @@ import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
 
+import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Package.Merge (MergePlan (mpDistTags, mpTime), SourceId)
 import Ecluse.Core.Registry.CachedDocument (CachedDoc, npmCached)
 import Ecluse.Core.Registry.Npm.Project (projectName)
+import Ecluse.Core.Registry.Npm.Route (tarballPath)
 import Ecluse.Core.Registry.ServedDocument (overlaySurvivors, rebaseArtifactUrl, safeDocumentName)
 import Ecluse.Core.Text (joinUrlPath, renderIso8601Utc)
 import Ecluse.Core.Version (renderVersion)
@@ -91,8 +93,8 @@ import Ecluse.Core.Version (renderVersion)
 {- | The packument's own @name@ when it is safe to interpolate into a rewritten
 @dist.tarball@ path, read through the shared gate under npm's name grammar.
 -}
-npmDocumentName :: KeyMap Value -> Maybe Text
-npmDocumentName = safeDocumentName (isRight . projectName)
+npmDocumentName :: KeyMap Value -> Maybe PackageName
+npmDocumentName = safeDocumentName (rightToMaybe . projectName)
 
 {- | Rewrite one version object's @dist.tarball@ to @{prefix}\/-\/{file}@, so the client
 fetches the artifact back through this mount. The @{file}@ is the tarball URL's filename,
@@ -104,20 +106,20 @@ filename segment is left unchanged, and every unmodelled key is relayed.
 @prefix@ is the mount's @{base}\/{pkg}@. A @{pkg}@ read from a document's own @name@ is
 upstream-controlled, so the caller must gate it through 'npmDocumentName' first.
 -}
-rewriteVersion :: Text -> Value -> Value
-rewriteVersion prefix = \case
-    Object vo -> Object (adjustObject "dist" (rewriteDist prefix) vo)
+rewriteVersion :: (Text -> Maybe Text) -> Value -> Value
+rewriteVersion servedUrl = \case
+    Object vo -> Object (adjustObject "dist" (rewriteDist servedUrl) vo)
     other -> other
 
 {- | Rewrite a @dist@ object's @tarball@ to @{prefix}\/-\/{file}@, where @file@ is
 the existing URL's filename. A @dist@ with no string @tarball@, or a tarball with
 no filename, is left unchanged.
 -}
-rewriteDist :: Text -> Value -> Value
-rewriteDist prefix = \case
+rewriteDist :: (Text -> Maybe Text) -> Value -> Value
+rewriteDist servedUrl = \case
     Object dist
         | Just url <- stringField "tarball" dist
-        , Just rebased <- rebaseArtifactUrl (\file -> prefix <> "/-/" <> file) url ->
+        , Just rebased <- rebaseArtifactUrl servedUrl url ->
             Object (KeyMap.insert "tarball" (String rebased) dist)
     other -> other
 
@@ -148,7 +150,7 @@ assembleMergedPackument mountBase bySource plan base =
     -- The shared gate reads the document's own upstream-controlled @name@ before it reaches
     -- the URL, and a document with no usable name has no version rewritten.
     rewriteSurvivor :: Value -> Value
-    rewriteSurvivor = maybe id (rewriteVersion . joinUrlPath mountBase) (npmDocumentName baseObject)
+    rewriteSurvivor = maybe id (rewriteVersion . servedTarballUrl mountBase) (npmDocumentName baseObject)
 
     -- Each survivor's object is the raw @Value@ of the source that won the key, unmodelled
     -- keys and all. A survivor whose source object is missing drops out, never fabricated.
@@ -234,6 +236,11 @@ adjustObject :: Key.Key -> (Value -> Value) -> KeyMap Value -> KeyMap Value
 adjustObject key f o = case KeyMap.lookup key o of
     Just v -> KeyMap.insert key (f v) o
     Nothing -> o
+
+{- The mount-local URL a served artifact resolves to, rendered from the artifact route that
+must claim it. -}
+servedTarballUrl :: Text -> PackageName -> Text -> Maybe Text
+servedTarballUrl mountBase name file = joinUrlPath mountBase <$> tarballPath name file
 
 -- | The 'Text' at @key@ in an object, if present and a JSON string.
 stringField :: Key.Key -> KeyMap Value -> Maybe Text

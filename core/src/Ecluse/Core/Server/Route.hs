@@ -41,6 +41,9 @@ module Ecluse.Core.Server.Route (
     routerOf,
     matchRoute,
 
+    -- * Rendering a route
+    renderRoute,
+
     -- * Building a route table
     answering,
     safeSegment,
@@ -125,6 +128,10 @@ data Capture v = Capture
     -- ^ A one-line, human-facing description for the documentation.
     , capConsume :: [Text] -> Maybe (v, [Text])
     -- ^ Consume the leading segments this capture claims, yielding its value and the tail.
+    , capRender :: v -> [Text]
+    {- ^ The segments this capture claims, written back out. It is 'capConsume' inverted, so a
+    served URL is built from the same record that must claim it and the two cannot drift.
+    -}
     }
 
 {- | What a route serves, and what it answers a client that will not take it.
@@ -236,6 +243,22 @@ safeSegment :: (Text -> v) -> [Text] -> Maybe (v, [Text])
 safeSegment build = \case
     seg : rest | isSafeComponent seg -> Just (build seg, rest)
     _ -> Nothing
+
+{- | The mount-relative path a route serves one set of captures under: its literal segments
+interleaved with what each capture renders, in template order. 'Nothing' when the captures do
+not fill the template, which is a caller error rather than a request.
+
+A rewritten artifact URL is built through this rather than by hand, so the URL Écluse serves
+and the route that must claim it are two readings of one record. A rewritten URL no route claims
+is a @404@ on every install, and one a /different/ route claims is worse.
+-}
+renderRoute :: Route v -> [v] -> Maybe [Text]
+renderRoute Route{routeSegs = patternSegs} = fill patternSegs
+  where
+    fill [] [] = Just []
+    fill (SegLit lit : ps) vs = (lit :) <$> fill ps vs
+    fill (SegCap capture : ps) (v : vs) = (capRender capture v <>) <$> fill ps vs
+    fill _ _ = Nothing
 
 -- | Whether a request is the bodiless read. A @HEAD@ is a variation of its @GET@, not a route.
 isHead :: Method -> Bool

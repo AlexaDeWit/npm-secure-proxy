@@ -30,11 +30,13 @@ import Ecluse.Bench.Corpus (
     versionKeysOf,
     withLoaded,
  )
+import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.MergeBench qualified as MergeBench
-import Ecluse.Core.Package (infoVersions)
+import Ecluse.Core.Package (infoVersions, mkPackageName)
 import Ecluse.Core.Registry (RegistryResponse (RegistryResponse))
 import Ecluse.Core.Registry.Npm.Filter (rewriteVersion)
 import Ecluse.Core.Registry.Npm.Project (parseVersionList)
+import Ecluse.Core.Registry.Npm.Route (tarballPath)
 import Ecluse.Core.RouteBench qualified as RouteBench
 import Ecluse.Core.RulesBench qualified as RulesBench
 import Ecluse.Core.SecurityBench qualified as SecurityBench
@@ -105,8 +107,9 @@ generatorTests =
                 Object (KeyMap.insert "versions" (Object (fmap (rewriteVersion versionPrefix) versions)) top)
         other -> other
 
-    versionPrefix :: Text
-    versionPrefix = syntheticProxyBase <> "/" <> benchPackageText
+    -- The served-URL renderer the assembly hands the rewrite, rendered from the artifact route.
+    versionPrefix :: Text -> Maybe Text
+    versionPrefix file = (\path -> syntheticProxyBase <> "/" <> path) <$> tarballPath (mkPackageName Npm Nothing benchPackageText) file
 
     rewrittenPrefix :: Text
     rewrittenPrefix = syntheticProxyBase <> "/" <> benchPackageText <> "/-/"

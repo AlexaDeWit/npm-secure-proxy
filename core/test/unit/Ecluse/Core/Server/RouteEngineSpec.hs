@@ -174,10 +174,10 @@ uploadRoute =
         (emptyContract status404 "A refusal.")
 
 capName :: Capture ToyCap
-capName = Capture "name" "The thing's name." (safeSegment ToyName)
+capName = Capture "name" "The thing's name." (safeSegment ToyName) toySegment
 
 capFile :: Capture ToyCap
-capFile = Capture "file" "The file's name." (safeSegment ToyFile)
+capFile = Capture "file" "The file's name." (safeSegment ToyFile) toySegment
 
 -- The name of the route that claims a request, or 'Nothing' when none does.
 claimed :: Method -> [Text] -> Maybe RouteName
@@ -196,3 +196,9 @@ isEmptyBody :: BodySchema -> Bool
 isEmptyBody = \case
     SchemaEmpty -> True
     _ -> False
+
+-- | The one segment a toy capture claims, written back out.
+toySegment :: ToyCap -> [Text]
+toySegment = \case
+    ToyName name -> [name]
+    ToyFile file -> [file]

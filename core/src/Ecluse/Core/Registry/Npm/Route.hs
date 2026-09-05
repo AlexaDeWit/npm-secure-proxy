@@ -58,7 +58,11 @@ module Ecluse.Core.Registry.Npm.Route (
     npmRoutes,
     npmRouteSpecs,
 
-    -- * The leaf parsers (exported for their specs)
+    -- * The served artifact URL (rendered from the route that claims it)
+    tarballPath,
+
+    -- * The capture values and leaf parsers (exported for their specs)
+    NpmCap (..),
     takePackage,
     tarballCoordinate,
 ) where
@@ -81,7 +85,7 @@ import Network.HTTP.Types (
  )
 
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
-import Ecluse.Core.Package (PackageName, unscopedName)
+import Ecluse.Core.Package (PackageName, pkgNamespace, renderPackageName, renderScope, unscopedName)
 import Ecluse.Core.Registry.Npm.Project (projectName)
 import Ecluse.Core.Registry.Npm.Serve (NpmError (NpmError), npmError, npmErrorCodec)
 import Ecluse.Core.Server.Context (
@@ -123,6 +127,7 @@ import Ecluse.Core.Server.Route (
     RouteName (RouteName),
     answering,
     isHead,
+    renderRoute,
     routerOf,
     safeSegment,
  )
@@ -490,6 +495,7 @@ capPackage =
             "-" : _ -> Nothing
             segs -> fmap (first NpmPackage) (takePackage segs)
         )
+        renderPackage
 
 {- | The artifact-file capture. The coordinate parse (the @.tgz@ basename and the version) is
 'tarballCoordinate''s, applied in 'buildTarball'.
@@ -500,6 +506,7 @@ capFilename =
         "filename"
         "The artifact's on-the-wire file name, e.g. `lodash-4.17.21.tgz`."
         (safeSegment NpmFilename)
+        renderSegment
 
 {- | The dist-tag capture: one segment, accepted only when 'safeSegment' admits it. Both tagged
 routes answer @501@, so nothing downstream reads the tag.
@@ -510,6 +517,23 @@ capTag =
         "tag"
         "The dist-tag name, e.g. `latest`."
         (safeSegment NpmTag)
+        renderSegment
+
+{- The segments a package capture claims, written back out. A scoped name takes the two-segment
+encoding, which 'takeScoped' reads back into the one wire name 'projectName' owns. -}
+renderPackage :: NpmCap -> [Text]
+renderPackage = \case
+    NpmPackage name -> case pkgNamespace name of
+        Just scope -> [renderScope scope, unscopedName name]
+        Nothing -> [renderPackageName name]
+    other -> renderSegment other
+
+-- The one segment a raw safety-checked capture claims, written back out.
+renderSegment :: NpmCap -> [Text]
+renderSegment = \case
+    NpmPackage name -> [renderPackageName name]
+    NpmFilename file -> [file]
+    NpmTag tag -> [tag]
 
 {- Peel the leading package unit off a path, returning its 'PackageName' and the remaining
 segments. The route parses no name of its own: 'projectName' owns the npm name grammar. -}
@@ -539,6 +563,13 @@ tarballCoordinate name file =
         Just version
             | not (T.null version) -> (mkVersion Npm version,) <$> mkFilename file
         _ -> Nothing
+
+{- | The mount-relative path the artifact route serves one package's file under, rendered from
+that same route record so a served URL and the route that must claim it cannot drift. 'Nothing'
+only for a template this build changed without changing the captures beside it.
+-}
+tarballPath :: PackageName -> Text -> Maybe Text
+tarballPath name file = T.intercalate "/" <$> renderRoute tarballRoute [NpmPackage name, NpmFilename file]
 
 {- | npm's routes as data for the __OpenAPI spec__: the 'specsOf' projection of the
 same 'npmRoutes' the router runs, plus the synthetic deny-by-default catch-all.

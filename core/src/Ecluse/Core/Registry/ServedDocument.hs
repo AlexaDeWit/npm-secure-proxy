@@ -64,24 +64,25 @@ overlaySurvivors lookupIn bySource plan =
     -- One partially applied lookup per source, so the index each closes over is built once.
     indexed = Map.map lookupIn bySource
 
-{- | The name a document claims for itself, when the ecosystem's grammar admits it. The
-projection refuses such a name before the document is ever served, so this is defence in depth:
-a document whose name does not clear the grammar has no URL rebased under it at all.
+{- | What the ecosystem's own name parser makes of the name a document claims for itself, or
+'Nothing' when the parser refuses it. The projection refuses such a name before the document is
+ever served, so this is defence in depth: a document whose name does not clear the grammar has
+no URL rebased under it at all.
 -}
-safeDocumentName :: (Text -> Bool) -> KeyMap Value -> Maybe Text
-safeDocumentName admits document = case KeyMap.lookup "name" document of
-    Just (String name) | admits name -> Just name
+safeDocumentName :: (Text -> Maybe a) -> KeyMap Value -> Maybe a
+safeDocumentName parse document = case KeyMap.lookup "name" document of
+    Just (String name) -> parse name
     _ -> Nothing
 
 {- | Point an upstream artifact location back through this mount: take the file name the URL
 ends in and render the mount-local URL for it.
 
 The file name goes through verbatim, so the bytes a client integrity-checks do not change.
-'Nothing' when the URL names no file, which leaves the location as it stands rather than
-pointing it somewhere wrong.
+'Nothing' when the URL names no file, or when the renderer declines it, which leaves the
+location as it stands rather than pointing it somewhere wrong.
 
 __Idempotent__: re-deriving the file name from an already-rebased URL yields the same URL, so
 applying it more than once is safe.
 -}
-rebaseArtifactUrl :: (Text -> Text) -> Text -> Maybe Text
-rebaseArtifactUrl renderMountUrl = fmap renderMountUrl . urlFilename
+rebaseArtifactUrl :: (Text -> Maybe Text) -> Text -> Maybe Text
+rebaseArtifactUrl renderMountUrl url = renderMountUrl =<< urlFilename url

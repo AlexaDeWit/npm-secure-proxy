@@ -55,24 +55,28 @@ overlaySpec = describe "overlaySurvivors" $ do
 
 nameGateSpec :: Spec
 nameGateSpec = describe "safeDocumentName" $ do
-    it "reads the name a document claims for itself when the grammar admits it" $
-        safeDocumentName npmName (documentNamed (String "lodash")) `shouldBe` Just "lodash"
+    it "reads the name a document claims for itself when the parser admits it" $
+        safeDocumentName parseName (documentNamed (String "lodash")) `shouldBe` Just "LODASH"
 
-    it "refuses a name the grammar rejects, so nothing interpolates it" $
-        safeDocumentName npmName (documentNamed (String "../etc")) `shouldBe` Nothing
+    it "refuses a name the parser rejects, so nothing interpolates it" $
+        safeDocumentName parseName (documentNamed (String "../etc")) `shouldBe` Nothing
 
     it "refuses a document whose name is not a string" $
-        safeDocumentName npmName (documentNamed (Number 1)) `shouldBe` Nothing
+        safeDocumentName parseName (documentNamed (Number 1)) `shouldBe` Nothing
 
     it "refuses a document that claims no name at all" $
-        safeDocumentName npmName KeyMap.empty `shouldBe` Nothing
+        safeDocumentName parseName KeyMap.empty `shouldBe` Nothing
 
-    it "reads the grammar the caller supplies, not one of its own" $
+    it "reads the parser the caller supplies, not a grammar of its own" $
         -- The gate is shared; which names are legal is each ecosystem's to say.
-        safeDocumentName (const False) (documentNamed (String "lodash")) `shouldBe` Nothing
+        safeDocumentName (const (Nothing :: Maybe Text)) (documentNamed (String "lodash")) `shouldBe` Nothing
 
 rebaseSpec :: Spec
 rebaseSpec = describe "rebaseArtifactUrl" $ do
+    it "declines a location the renderer will not render" $
+        rebaseArtifactUrl (const Nothing) "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
+            `shouldBe` (Nothing :: Maybe Text)
+
     it "points an upstream location back through the mount, keeping the file name verbatim" $
         rebaseArtifactUrl mountUrl "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
             `shouldBe` Just "https://ecluse.test/npm/lodash/-/lodash-4.17.21.tgz"
@@ -120,10 +124,14 @@ planOver survivors =
 documentNamed :: Value -> KeyMap.KeyMap Value
 documentNamed = KeyMap.singleton "name"
 
--- | A grammar standing in for an ecosystem's: a safe path component of ASCII letters.
-npmName :: Text -> Bool
-npmName raw = not (T.null raw) && T.all (`elem` ("abcdefghijklmnopqrstuvwxyz-." :: String)) raw && not (T.isInfixOf ".." raw)
+{- | A parser standing in for an ecosystem's: it admits a safe path component of ASCII letters
+and yields something the raw text is not, so an example can see which half it got.
+-}
+parseName :: Text -> Maybe Text
+parseName raw = do
+    guard (not (T.null raw) && T.all (`elem` ("abcdefghijklmnopqrstuvwxyz-." :: String)) raw && not (T.isInfixOf ".." raw))
+    pure (T.toUpper raw)
 
 -- | The mount-local URL a rebased file resolves to.
-mountUrl :: Text -> Text
-mountUrl file = "https://ecluse.test/npm/lodash/-/" <> file
+mountUrl :: Text -> Maybe Text
+mountUrl file = Just ("https://ecluse.test/npm/lodash/-/" <> file)

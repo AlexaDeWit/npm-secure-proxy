@@ -10,16 +10,29 @@ so take the deny-by-default @404@.
 -}
 module Ecluse.Core.Registry.PyPI.RouteSpec (spec) where
 
+import Hedgehog (Gen, forAll)
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
 import Network.HTTP.Types.Header (RequestHeaders)
 import Network.HTTP.Types.Method (Method, methodDelete, methodGet, methodHead, methodPost, methodPut)
 import Test.Hspec
+import Test.Hspec.Hedgehog (hedgehog)
 
+import Data.Text qualified as T
 import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
 import Ecluse.Core.Package (PackageName, mkPackageName, renderPackageName)
-import Ecluse.Core.Registry.PyPI.Route (artifactCoordinate, pypiRoutes, takeProject)
+import Ecluse.Core.Registry.PyPI.Project (canonicalName, projectName)
+import Ecluse.Core.Registry.PyPI.Route (
+    PyPICap (PyPIFile, PyPIProject),
+    artifactCoordinate,
+    distributionPath,
+    pypiRoutes,
+    takeProject,
+ )
 import Ecluse.Core.Server.Path (Filename, unFilename)
 import Ecluse.Core.Server.Route (Route (routeName), RouteName (RouteName), matchRoute)
 import Ecluse.Core.Version (Version, renderVersion)
+import Ecluse.Test.Server.Route (claimsEveryRendering)
 
 spec :: Spec
 spec = do
@@ -27,6 +40,7 @@ spec = do
     negotiationSpec
     captureSpec
     coordinateSpec
+    renderingSpec
 
 matchingSpec :: Spec
 matchingSpec = describe "which route claims a request" $ do
@@ -130,6 +144,16 @@ coordinateSpec = describe "artifactCoordinate" $ do
     it "refuses a name that is not a distribution at all" $
         artifactCoordinate requests "requests" `shouldSatisfy` isNothing
 
+    it "reads a wheel of a hyphenated project under PEP 427's escaped spelling" $
+        fmap (fst . renderCoordinate) (artifactCoordinate azureStorageBlob "azure_storage_blob-12.14.0-py3-none-any.whl")
+            `shouldBe` Just "12.14"
+
+    it "refuses a wheel whose project part leaves the separator unescaped, as PEP 427 forbids" $
+        -- The wheel grammar splits on the separator, so an unescaped name would read its own
+        -- second half as the release. Refusing it keeps a file off a project it does not name.
+        artifactCoordinate azureStorageBlob "azure-storage-blob-12.14.0-py3-none-any.whl"
+            `shouldSatisfy` isNothing
+
 -- | The route that claims a request, or 'Nothing' when none does (the deny-by-default @404@).
 claimed :: Method -> RequestHeaders -> [Text] -> Maybe RouteName
 claimed method headers segments = routeName . fst <$> matchRoute pypiRoutes method headers segments
@@ -146,6 +170,10 @@ htmlOnlyAccept = [("Accept", "text/html")]
 requests :: PackageName
 requests = mkPackageName PyPI Nothing "requests"
 
+-- | A project whose canonical name carries the separator a wheel name must escape.
+azureStorageBlob :: PackageName
+azureStorageBlob = mkPackageName PyPI Nothing "azure-storage-blob"
+
 -- | A parsed project name as it renders.
 renderProject :: PackageName -> Text
 renderProject = renderPackageName
@@ -153,3 +181,37 @@ renderProject = renderPackageName
 -- | A parsed coordinate as its rendered release and file name.
 renderCoordinate :: (Version, Filename) -> (Text, Text)
 renderCoordinate (version, file) = (renderVersion version, unFilename file)
+
+renderingSpec :: Spec
+renderingSpec = describe "every rendered file URL is one this table claims" $ do
+    it "claims the distribution route's own rendering, for any canonical project and safe file" $
+        -- A rewritten file URL no route claims is a 404 on every install, and one a different
+        -- route claims is worse. The render and the match are one record, held together here.
+        -- The file name is one the route's own coordinate check accepts, because a rendering
+        -- for a name it refuses is a URL this mount would never have served.
+        hedgehog $ do
+            project <- forAll genCanonicalProject
+            file <- forAll (genDistributionName project)
+            claimsEveryRendering pypiRoutes (RouteName "distribution") [PyPIProject project, PyPIFile file]
+
+    it "renders the path the served index rebases a file onto" $
+        distributionPath requests "requests-2.34.2-py3-none-any.whl"
+            `shouldBe` Just "simple/requests/requests-2.34.2-py3-none-any.whl"
+
+-- | A project name in the canonical spelling the route claims.
+genCanonicalProject :: Gen PackageName
+genCanonicalProject = do
+    raw <- Gen.text (Range.linear 1 12) (Gen.frequency [(8, Gen.lower), (2, Gen.element ['-', '0', '9'])])
+    maybe genCanonicalProject pure (rightToMaybe (projectName (T.dropWhileEnd (== '-') (T.dropWhile (== '-') raw))))
+
+{- | A distribution file name for one project, in either archive form PyPI serves. It is what a
+real index entry names, and what the route's cross-capture check accepts. A wheel escapes the
+separator in the project part, as PEP 427 requires, because that part is split on it.
+-}
+genDistributionName :: PackageName -> Gen Text
+genDistributionName project = do
+    version <- Gen.element ["1.0.0", "2.34.2", "0.1", "1.0rc1"]
+    Gen.element
+        [ canonicalName project <> "-" <> version <> ".tar.gz"
+        , T.replace "-" "_" (canonicalName project) <> "-" <> version <> "-py3-none-any.whl"
+        ]

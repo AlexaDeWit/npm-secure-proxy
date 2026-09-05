@@ -31,6 +31,8 @@ import Ecluse.Core.Registry.Npm.Filter (
     rewriteVersion,
  )
 import Ecluse.Core.Registry.Npm.Metadata (projectNpmManifest)
+import Ecluse.Core.Registry.Npm.Project (projectName)
+import Ecluse.Core.Registry.Npm.Route (tarballPath)
 import Ecluse.Core.Rules.Types (
     Decision,
     EvalContext (EvalContext),
@@ -83,8 +85,21 @@ base :: Text
 base = "https://proxy.test/npm"
 
 -- | The @{base}\/{pkg}@ prefix the assembly derives for the unscoped fixture package.
-thingPrefix :: Text
-thingPrefix = base <> "/thing"
+
+{- | The served-URL renderer the assembly hands the rewrite: the artifact route's own path for
+@thing@, joined onto the mount base.
+-}
+thingPrefix :: Text -> Maybe Text
+thingPrefix = servedUrlFor base "thing"
+
+{- | The served-URL renderer for one package under one mount base: the artifact route's own
+path, so a rewritten URL is the one the route claims.
+-}
+servedUrlFor :: Text -> Text -> Text -> Maybe Text
+servedUrlFor mountBase package file = do
+    name <- rightToMaybe (projectName package)
+    path <- tarballPath name file
+    pure (joinUrlPath mountBase path)
 
 rewriteSpec :: Spec
 rewriteSpec = describe "rewriteVersion" $ do
@@ -253,7 +268,7 @@ propertiesSpec = describe "properties" $ do
             spec' <- forAll genPackumentSpec
             v <- decodeOrFail (renderPackument spec')
             b <- forAll genBase
-            let p = joinUrlPath b (specName spec')
+            let p = servedUrlFor b (specName spec')
                 versions = objKeys "versions" (asObject v)
                 once = fmap (rewriteVersion p) versions
             fmap (rewriteVersion p) once === once
