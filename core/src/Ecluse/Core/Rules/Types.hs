@@ -19,6 +19,7 @@ module Ecluse.Core.Rules.Types (
     DenyIfCveParams (..),
     DenyIfEpssParams (..),
     ruleName,
+    readsAdvisories,
 
     -- * Precedence
     PrecededRule (..),
@@ -143,6 +144,21 @@ data DenyIfEpssParams = DenyIfEpssParams
 {- | A stable, human-facing name for a rule: its identity, derived from the data. It is
 the boot-order tiebreak and the credited identity in logs and denial messages.
 -}
+
+{- | Whether a rule reads the advisory database. A rule set with none never needs one, and a set
+with one is worth waiting a bounded while for the first sync before deciding anything.
+-}
+readsAdvisories :: Rule -> Bool
+readsAdvisories = \case
+    AllowIfRemediatesCve -> True
+    DenyIfCve{} -> True
+    DenyIfEpss{} -> True
+    AllowScope{} -> False
+    AllowIfOlderThan{} -> False
+    DenyInstallTimeExecution -> False
+    DenyByIdentity{} -> False
+    AllowByIdentity{} -> False
+
 ruleName :: Rule -> Text
 ruleName = \case
     AllowScope{} -> "AllowScope"

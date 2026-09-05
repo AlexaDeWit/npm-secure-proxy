@@ -10,6 +10,9 @@ module Ecluse.Test.Sweep (
     -- * Recording ports
     RecordedSweep (..),
     recordingPorts,
+    recordingPortsUnder,
+    deletingReport,
+    rehearsingReport,
 
     -- * What a cycle runs over
     testPacing,
@@ -24,15 +27,16 @@ import Ecluse.Core.Registry.Adapter (adapterProjectName)
 import Ecluse.Core.Registry.Maintenance (StoreMaintenance)
 import Ecluse.Core.Registry.Npm.Adapter (npmAdapter)
 import Ecluse.Core.Registry.Sweep.Types (
-    SweepAudit (SweepAudit, auditError, auditInfo),
+    SweepAudit (SweepAudit, auditError, auditInfo, auditWarn),
     SweepMount (..),
     SweepPacing (SweepPacing, swpChunkPause, swpChunkSize, swpCyclePause, swpDeletionCap, swpShape),
-    SweepPorts (SweepPorts, sweepAdvisoryEtag, sweepAudit, sweepDelay, sweepMetrics, sweepNow),
+    SweepPorts (SweepPorts, sweepAdvisoryEtag, sweepAudit, sweepDelay, sweepMetrics, sweepNow, sweepReport),
+    SweepReport (SweepReport, reportCapHalts, reportOpening, reportRemoval),
     SweepShape (SweepCandidates),
  )
 import Ecluse.Core.Rules (PreparedRule)
 import Ecluse.Core.Rules.Types (Rule)
-import Ecluse.Core.Telemetry.Metrics (SweepResult)
+import Ecluse.Core.Telemetry.Metrics (SweepResult (SweepDeleted, SweepWouldDelete))
 import Ecluse.Core.Telemetry.Record (DredgerMetricsPort (DredgerMetricsPort, dmpSweptVersion))
 import Ecluse.Test.Rules (inertRuleDeps)
 
@@ -45,6 +49,8 @@ data RecordedSweep = RecordedSweep
     -- ^ The lines an operator must act on, oldest first.
     , recResults :: IO [SweepResult]
     -- ^ Every disposition the sweep counted, in the order it counted them.
+    , recWarnings :: IO [Text]
+    -- ^ The lines that may clear on their own, oldest first.
     , recDelays :: IO Int
     -- ^ How many times the sweep paused. The pause itself returns at once.
     }
@@ -53,8 +59,13 @@ data RecordedSweep = RecordedSweep
 and the advisory generation is whatever the case names.
 -}
 recordingPorts :: Maybe DbEtag -> IO RecordedSweep
-recordingPorts etag = do
+recordingPorts = recordingPortsUnder deletingReport
+
+-- | 'recordingPorts' over a chosen report, for a case about a rehearsal's own counters.
+recordingPortsUnder :: SweepReport -> Maybe DbEtag -> IO RecordedSweep
+recordingPortsUnder report etag = do
     info <- newIORef []
+    warnings <- newIORef []
     errors <- newIORef []
     results <- newIORef []
     delays <- newIORef (0 :: Int)
@@ -67,9 +78,12 @@ recordingPorts etag = do
                     , sweepAdvisoryEtag = const (pure etag)
                     , sweepDelay = const (modifyIORef' delays (+ 1))
                     , sweepMetrics = DredgerMetricsPort{dmpSweptVersion = push results}
-                    , sweepAudit = SweepAudit{auditInfo = push info, auditError = push errors}
+                    , sweepAudit =
+                        SweepAudit{auditInfo = push info, auditWarn = push warnings, auditError = push errors}
+                    , sweepReport = report
                     }
             , recInfo = reverse <$> readIORef info
+            , recWarnings = reverse <$> readIORef warnings
             , recErrors = reverse <$> readIORef errors
             , recResults = reverse <$> readIORef results
             , recDelays = readIORef delays
@@ -105,3 +119,16 @@ testMount store rules configured =
         , smProjectName = adapterProjectName npmAdapter
         , smFirstParty = const False
         }
+
+{- | The report a real run carries: a removal counts as a deletion, and reaching the cap stops the
+cycle. A case about a rehearsal builds its own through 'Ecluse.Dredger.Plan.sweepReportFor'.
+-}
+deletingReport :: SweepReport
+deletingReport = SweepReport{reportRemoval = SweepDeleted, reportOpening = "deleting ", reportCapHalts = True}
+
+{- | The report a rehearsal carries: a removal counts under its own arm, and the cap only logs, so
+the run reports the full reach a real one would have.
+-}
+rehearsingReport :: SweepReport
+rehearsingReport =
+    SweepReport{reportRemoval = SweepWouldDelete, reportOpening = "dry run, would delete ", reportCapHalts = False}

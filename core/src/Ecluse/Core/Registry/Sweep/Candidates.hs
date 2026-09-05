@@ -22,16 +22,14 @@ import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Registry.Adapter.Capability (ProjectName)
 import Ecluse.Core.Rules.Types (Rule (DenyByIdentity))
 
-{- | The names one cycle decides, canonical under the ecosystem's own parser. The advisory
-database records OSV's spelling and a store lists the backend's, so both sides are projected
-through that one parser before they are compared.
+{- | The names one cycle decides, canonical under the ecosystem's own parser: the advisory database
+records OSV's spelling and a store lists the backend's, so both go through that parser first.
 -}
 newtype CandidateSet = CandidateSet (Set PackageName)
     deriving stock (Eq, Show)
 
-{- | The names to sweep: every name the loaded advisory generation covers, plus every name an
-identity deny pins. Read it inside the generation's own bracket, so the set and the verdicts
-taken against it come from one generation.
+{- | Every name the loaded advisory generation covers, plus every name an identity deny pins. Read
+it inside the generation's own bracket, so the set and its verdicts come from one generation.
 -}
 candidateSet :: ProjectName -> [Rule] -> Maybe CveLookup -> IO CandidateSet
 candidateSet project rules mLookup = do

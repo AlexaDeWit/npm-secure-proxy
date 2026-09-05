@@ -23,6 +23,7 @@ module Ecluse.Core.Fault (
     TransportFault (..),
     transportFault,
     TransportCause (..),
+    renderTransportCause,
     transportRetryable,
 
     -- * Retry delays
@@ -69,6 +70,15 @@ data TransportCause
 {- | Is a fault with this cause worth another attempt? A timeout and an unreachable peer
 can clear on their own. A TLS refusal and a protocol fault need an operator or a fix.
 -}
+
+-- | What a transport cause says happened, for a line an operator reads.
+renderTransportCause :: TransportCause -> Text
+renderTransportCause = \case
+    TransportTimeout -> "the peer did not answer in time"
+    TransportUnreachable -> "the peer could not be reached"
+    TransportTls -> "the TLS layer refused the peer"
+    TransportProtocol -> "the peer's answer could not be used"
+
 transportRetryable :: TransportCause -> Bool
 transportRetryable = \case
     TransportTimeout -> True

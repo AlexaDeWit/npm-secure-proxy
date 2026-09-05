@@ -4,14 +4,15 @@
 
 {- | Walking a store's whole name space, bucket by bucket, and remembering where the walk got to.
 
-No store this build reaches documents a listing order, and none offers a start-after cursor, so
-a walk cannot resume at a name. What every store does offer is a name-prefix filter, so the walk
-partitions the name space into prefix buckets and resumes at a bucket boundary: a restart re-does
-at most the bucket that was in flight. A bucket whose listing outgrows the memory budget is
-replaced by the narrower buckets that cover it.
+No store this build reaches documents a listing order, and none offers a start-after cursor, so a
+walk cannot resume at a name. What every store does offer is a name-prefix filter, so the walk
+partitions the name space into prefix buckets and resumes at a bucket boundary. A bucket whose
+listing outgrows the memory budget is replaced by the narrower buckets that cover it, down to a
+depth bound past which narrowing has stopped helping.
 -}
 module Ecluse.Core.Registry.Sweep.Walk (
     bucketNameBudget,
+    bucketDepthLimit,
     walkBuckets,
     resumeAfter,
     BucketNames (..),
@@ -19,6 +20,8 @@ module Ecluse.Core.Registry.Sweep.Walk (
 ) where
 
 import Data.Conduit (ConduitT, await, fuseBothMaybe, runConduit)
+import Data.Conduit.List qualified as CL
+import Data.Text qualified as T
 
 import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Registry.Maintenance (
@@ -27,34 +30,49 @@ import Ecluse.Core.Registry.Maintenance (
     StoreFault,
     extendBucket,
     initialBuckets,
+    renderNamePrefix,
  )
 
 {- | How many names one bucket may hold before it is split. A held name costs about 96 bytes, so
-this is roughly a megabyte, and a store that outgrows it is walked in narrower buckets instead.
+this is roughly a megabyte.
 -}
 bucketNameBudget :: Int
 bucketNameBudget = 10000
 
-{- | The buckets a walk covers, in the order it covers them. A bucket that overflowed is replaced
-in place by the narrower buckets covering it, so the sequence stays lexicographically ordered and
-the cursor's own ordering still decides what a resumption has already done.
+{- | How far a bucket may be narrowed. Past it the names share a prefix this long and narrowing
+has stopped dividing them, so the walk reports rather than descending without end.
 -}
-walkBuckets :: NameAlphabet -> [NamePrefix]
-walkBuckets alphabet = toList (initialBuckets alphabet)
+bucketDepthLimit :: Int
+bucketDepthLimit = 4
 
-{- | The buckets still to do after a recorded one. The sequence is lexicographically ordered and
-a split only ever refines a prefix in place, so dropping every bucket at or before the record is
-correct whether or not the recorded bucket was itself a split one.
+-- | The buckets a walk covers, in the order it covers them.
+walkBuckets :: NameAlphabet -> [NamePrefix]
+walkBuckets = toList . initialBuckets
+
+{- | The buckets still to cover, given the one last completed. A bucket the record falls inside is
+kept, because the walk stopped part way through that bucket's own split.
 -}
 resumeAfter :: Maybe NamePrefix -> [NamePrefix] -> [NamePrefix]
-resumeAfter = maybe id (\done -> dropWhile (<= done))
+resumeAfter = maybe id (filter . stillToDo)
+
+{- A bucket is done when it sorts at or before the record without containing it. Containing it
+means the record is a narrower bucket inside this one, so this one is only part done. -}
+stillToDo :: NamePrefix -> NamePrefix -> Bool
+stillToDo done bucket = bucket > done || properlyCovers bucket done
+
+properlyCovers :: NamePrefix -> NamePrefix -> Bool
+properlyCovers bucket done = raw /= renderNamePrefix done && raw `T.isPrefixOf` renderNamePrefix done
+  where
+    raw = renderNamePrefix bucket
 
 -- | What reading one bucket's listing produced.
 data BucketNames
     = -- | The bucket was read whole, its names sorted.
       BucketRead [PackageName]
-    | -- | The bucket holds more names than the budget, so these narrower ones cover it instead.
-      BucketOverflowed [NamePrefix]
+    | -- | The bucket outgrew the budget, so these narrower ones cover it instead.
+      BucketOverflowed (NonEmpty NamePrefix)
+    | -- | The bucket outgrew the budget and nothing narrows it further.
+      BucketUnsplittable
     | -- | The listing stopped on a fault, and nothing was read.
       BucketFaulted StoreFault
 
@@ -66,14 +84,34 @@ collectBucket ::
     NamePrefix ->
     ConduitT () [PackageName] IO (Maybe StoreFault) ->
     IO BucketNames
-collectBucket alphabet prefix source = outcome <$> runConduit (fuseBothMaybe source takeToBudget)
+collectBucket alphabet prefix source = case narrowerBuckets alphabet prefix of
+    -- A store whose listing carries no filter to partition by, and a bucket already at the depth
+    -- bound, both have no split to fall back on, so neither takes the budget.
+    Nothing -> unbudgeted <$> runConduit (fuseBothMaybe source CL.consume)
+    Just narrower -> outcome narrower <$> runConduit (fuseBothMaybe source takeToBudget)
   where
+    unbudgeted = \case
+        (Just (Just fault), _) -> BucketFaulted fault
+        (_, pages) -> BucketRead (sort (concat pages))
+
     -- The budget is read first: it is the arm that abandons the stream, so the listing has no
     -- result of its own to report when it fires.
-    outcome = \case
-        (_, Nothing) -> BucketOverflowed (extendBucket alphabet prefix)
+    outcome narrower = \case
+        (_, Nothing) -> overflowed narrower
         (Just (Just fault), _) -> BucketFaulted fault
         (_, Just names) -> BucketRead (sort names)
+
+    overflowed = maybe BucketUnsplittable BucketOverflowed . nonEmpty
+
+{- The buckets covering this one, or nothing where none can. An alphabet with no characters can
+narrow nothing, and past the depth bound a further character has stopped dividing the names. -}
+narrowerBuckets :: NameAlphabet -> NamePrefix -> Maybe [NamePrefix]
+narrowerBuckets alphabet prefix
+    | T.length (renderNamePrefix prefix) >= bucketDepthLimit = Just []
+    | null narrower = Nothing
+    | otherwise = Just narrower
+  where
+    narrower = extendBucket alphabet prefix
 
 {- Fold the pages until the bucket is read or the budget is crossed. 'Nothing' means the budget
 went first, which abandons the stream where it stands. -}

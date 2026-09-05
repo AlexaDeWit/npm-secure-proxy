@@ -198,9 +198,8 @@ planPrunerWiring logEnv tracing buildCredentials buildStore bootPlan = do
     validated = bpValidated bootPlan
     prunerMounts = map vmMount (vpMounts validated)
 
-{- What decides for one mount's store: its own rule set, prepared once as the serve path prepares
-its, and the shared first-party predicate. Deny by default: a mount declaring no namespaces owns
-none, so its belt shields nothing. -}
+{- What decides for one mount's store: its own rule set, prepared as the serve path prepares its,
+and the shared first-party predicate. A mount declaring no namespaces owns none. -}
 sweepPolicyFor :: (Ecosystem -> RuleDeps) -> VettedMount -> IO (Ecosystem, SweepPolicy)
 sweepPolicyFor ruleDepsFor vetted = do
     prepared <- prepare deps configured
@@ -212,9 +211,8 @@ sweepPolicyFor ruleDepsFor vetted = do
     project = adapterProjectName (vmAdapter vetted)
     firstParty = maybe (const False) firstPartyName (mntFirstParty (vmConfig vetted))
 
-{- One mount's half of a sweepable store, held apart from the handle the live environment settles.
-The configured rules ride beside the prepared ones because a prepared rule no longer carries the
-identity a deny names, which is half the candidate set. -}
+{- One mount's half of a sweepable store. The configured rules ride beside the prepared ones,
+because a prepared rule no longer carries the identity a deny names. -}
 data SweepPolicy = SweepPolicy
     { spRules :: [PreparedRule]
     , spConfigured :: [Rule]

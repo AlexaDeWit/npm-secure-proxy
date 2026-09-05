@@ -12,9 +12,9 @@ import Options.Applicative
 
 import Ecluse.Composition.Types (MirrorRole (MirrorOnly, ServeAndMirror, ServeOnly))
 import Ecluse.Core.BuildIdentity (productVersion)
-import Ecluse.Core.Registry.Sweep.Types (SweepMode (SweepDeletes, SweepRehearses))
 import Ecluse.Dredger.Plan (
     DredgerOptions (DredgerOptions),
+    SweepMode (SweepDeletes, SweepRehearses),
     SweepRepetition (SweepContinuously, SweepOnce),
  )
 import Ecluse.Pilot (PilotCompileOptions (..))

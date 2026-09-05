@@ -325,15 +325,22 @@ dockerRun name net image =
 labels. It fails the test loudly on a non-zero exit.
 -}
 runDetached :: [String] -> DockerRun -> IO ()
-runDetached labelArgs spec =
-    dockerOk $
-        ["run", "--rm", "-d", "--name", drName spec, "--network", drNetwork spec]
-            <> concatMap (\a -> ["--network-alias", a]) (drAliases spec)
-            <> concatMap (\p -> ["-p", p]) (drPorts spec)
-            <> concatMap (\(h, c) -> ["-v", h <> ":" <> c]) (drMounts spec)
-            <> concatMap (\(k, v) -> ["-e", toString (k <> "=" <> v)]) (drEnv spec)
-            <> labelArgs
-            <> (drImage spec : drCmd spec)
+runDetached labelArgs = dockerOk . runArgs ["-d"] labelArgs
+
+{- | The @docker run@ arguments one spec renders to, with whatever extra flags the caller needs.
+A detached run passes @-d@ and a run waited on passes none, so both render the same spec.
+-}
+runArgs :: [String] -> [String] -> DockerRun -> [String]
+runArgs extra labelArgs spec =
+    ["run", "--rm"]
+        <> extra
+        <> ["--name", drName spec, "--network", drNetwork spec]
+        <> concatMap (\a -> ["--network-alias", a]) (drAliases spec)
+        <> concatMap (\p -> ["-p", p]) (drPorts spec)
+        <> concatMap (\(h, c) -> ["-v", h <> ":" <> c]) (drMounts spec)
+        <> concatMap (\(k, v) -> ["-e", toString (k <> "=" <> v)]) (drEnv spec)
+        <> labelArgs
+        <> (drImage spec : drCmd spec)
 
 {- | Run a detached container for the duration of the action, force-removing it on every
 exit path. It yields the container name the caller chose.
@@ -461,17 +468,8 @@ runDredgerOnce gdp flags extraEnv = do
                 , drEnv = dredgerEnv <> extraEnv
                 , drCmd = "dredger" : map toString flags
                 }
-    (code, out, err) <- readProcess (proc "docker" (foregroundArgs labelArgs run))
+    (code, out, err) <- readProcess (proc "docker" (runArgs [] labelArgs run))
     pure DredgerRun{dredgerExit = code, dredgerOutput = decodeUtf8 (LBS.toStrict (out <> err))}
-
--- The same render as a detached run, without @-d@, so the caller waits for the cycle to end.
-foregroundArgs :: [String] -> DockerRun -> [String]
-foregroundArgs labelArgs spec =
-    ["run", "--rm", "--name", drName spec, "--network", drNetwork spec]
-        <> concatMap (\(h, c) -> ["-v", h <> ":" <> c]) (drMounts spec)
-        <> concatMap (\(k, v) -> ["-e", toString (k <> "=" <> v)]) (drEnv spec)
-        <> labelArgs
-        <> (drImage spec : drCmd spec)
 
 {- | The Dredger's own environment. Its mirror target is the store the proxy mirrors into, and it
 carries the operator consent that store's tag admits. Its private upstream is a registry of its

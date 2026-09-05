@@ -9,9 +9,9 @@ import Test.Hspec
 
 import Ecluse.CLI (AppCommand (..), commandParser)
 import Ecluse.Composition.Types (MirrorRole (MirrorOnly, ServeAndMirror, ServeOnly))
-import Ecluse.Core.Registry.Sweep.Types (SweepMode (SweepDeletes, SweepRehearses))
 import Ecluse.Dredger.Plan (
     DredgerOptions (DredgerOptions, doMode, doRepetition),
+    SweepMode (SweepDeletes, SweepRehearses),
     SweepRepetition (SweepContinuously, SweepOnce),
  )
 import Ecluse.Pilot (PilotCompileOptions (..))

@@ -42,6 +42,7 @@ import Ecluse.Core.Osv.Schema (osvDbFileName)
 import Ecluse.Core.Rules (FaultReporter (..), RuleDeps (..))
 import Ecluse.Core.Supervision (
     BackoffSchedule (BackoffSchedule, bsBaseMicros, bsCapMicros),
+    secondsToMicros,
     superviseLoop,
     transientPolicy,
  )
@@ -89,12 +90,11 @@ cveSyncScheduleFor :: AppConfig -> SyncSchedule
 cveSyncScheduleFor env =
     SyncSchedule
         { schedBootBackoff = bootBackoffDelays
-        , schedPollDelay = round (advPollInterval (cfgAdvisories env)) * 1_000_000
+        , schedPollDelay = secondsToMicros (advPollInterval (cfgAdvisories env))
         }
 
-{- | One supervised sync task per configured ecosystem. Each flips its ecosystem's one-way
-readiness flag once its first sync lands, and a restart resumes from the remote artifact. Every
-role that evaluates rules runs these, so the serve path and the sweep read the same generations.
+{- | One supervised sync task per configured ecosystem, each flipping its own one-way readiness
+flag once its first sync lands. Every role that evaluates rules runs these.
 -}
 cveSyncTasks :: LogEnv -> Metrics -> Telemetry -> SyncSchedule -> Map.Map Ecosystem CveSyncHandle -> [IO ()]
 cveSyncTasks logEnv metrics telemetry schedule plan =

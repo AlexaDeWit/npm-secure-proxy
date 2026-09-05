@@ -841,6 +841,7 @@ test-suite ecluse-unit
     Ecluse.BenchReportSpec
     Ecluse.BootSpec
     Ecluse.CLISpec
+    Ecluse.DredgerSpec
     Ecluse.Dredger.PlanSpec
     Ecluse.Composition.BootErrorSpec
     Ecluse.Composition.CredentialSpec

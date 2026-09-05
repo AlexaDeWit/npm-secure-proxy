@@ -10,11 +10,13 @@ of its ports, the latch a halted cycle sets, and the invocation the command line
 module Ecluse.Dredger (
     runDredger,
     dredgerServerConfig,
+    dredgerReady,
+    latchedStep,
 ) where
 
 import Data.Map.Strict qualified as Map
 import Data.Time (getCurrentTime)
-import Katip (LogEnv, Severity (ErrorS, InfoS), SimpleLogPayload, runKatipContextT)
+import Katip (LogEnv, Severity (ErrorS, InfoS, WarningS), SimpleLogPayload, runKatipContextT)
 import UnliftIO.Async (mapConcurrently_, race_)
 import UnliftIO.Concurrent (threadDelay)
 
@@ -33,17 +35,16 @@ import Ecluse.Core.Registry.Sweep (sweepCycle)
 import Ecluse.Core.Registry.Sweep.Types (
     CycleHalt,
     CycleOutcome (outcomeHalt),
-    SweepAudit (SweepAudit, auditError, auditInfo),
-    SweepMode (SweepDeletes, SweepRehearses),
+    SweepAudit (SweepAudit, auditError, auditInfo, auditWarn),
     SweepMount (smEcosystem, smStore),
     SweepPacing (swpCyclePause, swpShape),
-    SweepPorts (SweepPorts, sweepAdvisoryEtag, sweepAudit, sweepDelay, sweepMetrics, sweepNow),
+    SweepPorts (SweepPorts, sweepAdvisoryEtag, sweepAudit, sweepDelay, sweepMetrics, sweepNow, sweepReport),
+    SweepReport,
     SweepShape (SweepCandidates, SweepEverything),
     latches,
     renderCycleHalt,
-    sweepDelayMicros,
  )
-import Ecluse.Core.Supervision (superviseLoop, transientPolicy)
+import Ecluse.Core.Supervision (secondsToMicros, superviseLoop, transientPolicy)
 import Ecluse.Cve.Sync (
     CveSyncHandle (csEnv),
     backgroundLoopBackoff,
@@ -53,9 +54,15 @@ import Ecluse.Cve.Sync (
  )
 import Ecluse.Dredger.Plan (
     DredgerOptions (doMode, doRepetition),
+    SweepMode (SweepDeletes, SweepRehearses),
     SweepRepetition (SweepContinuously, SweepOnce),
+    advisoryPollMicros,
+    advisoryWaitAttempts,
     haltDetail,
+    rehearsedStore,
     sweepPacingFor,
+    sweepReportFor,
+    waitsForAdvisories,
  )
 import Ecluse.Runtime.Cve.Sync (SyncEnv (syncSlot))
 import Ecluse.Runtime.Log (moduleLog)
@@ -68,9 +75,8 @@ import Ecluse.Runtime.Server (
 import Ecluse.Runtime.Telemetry.Instruments (Metrics, dredgerMetricsPortOf, newMetrics)
 import Ecluse.Runtime.Telemetry.Reporters (installMetrics)
 
-{- | What a running Dredger keeps between cycles: the halt that latched it, which only the
-deletion cap sets and nothing clears, and the halt a one-shot run ended on, which becomes that
-invocation's exit status.
+{- | What a running Dredger keeps between cycles: the halt that latched it, which only the cap
+sets, and the halt a one-shot run ended on, which becomes that invocation's exit status.
 -}
 data SweepStatus = SweepStatus
     { stLatched :: IORef (Maybe CycleHalt)
@@ -80,9 +86,8 @@ data SweepStatus = SweepStatus
 newSweepStatus :: IO SweepStatus
 newSweepStatus = SweepStatus <$> newIORef Nothing <*> newIORef Nothing
 
-{- | Run the Dredger. Under the shipped invocation the sweep and the sync tasks never return, so
-the probe server's graceful return on shutdown cancels them. Under @--once@ the sweep returns and
-the race ends with it, carrying the halt that cycle raised, which is what makes the role scriptable.
+{- | Run the Dredger. Under @--once@ the sweep returns and the race ends with it, carrying the halt
+that cycle raised, which is what makes the role scriptable.
 -}
 runDredger :: BootEnv -> DredgerOptions -> PrunerWiring -> IO (Maybe Text)
 runDredger bootEnv opts pruner = do
@@ -91,53 +96,77 @@ runDredger bootEnv opts pruner = do
     -- effectful rules' deferred reporters live for the rest of the run.
     installMetrics (pwDeferredMetrics pruner) metrics
     status <- newSweepStatus
-    traverse_ (logBlastRadius logEnv opts pacing) (pwMounts pruner)
+    traverse_ (logBlastRadius logEnv opts pacing) mounts
     moduleLog logEnv dredgerModule InfoS ("Dredger starting up, health probes on port " <> show (scPort (cfg status)))
     raceServerAgainstLoop
         (runWarp (cfg status) probeOnlyApplication)
-        (race_ (sweepTask logEnv opts pacing (portsOver metrics) status (pwMounts pruner)) (syncTasks metrics))
+        (race_ (sweepTask logEnv opts pacing (portsOver metrics) syncReady status mounts) (syncTasks metrics))
     fmap haltDetail <$> readIORef (stFinal status)
   where
     logEnv = beLogEnv bootEnv
     telemetry = beTelemetry bootEnv
     appConfig = configApp (beConfig bootEnv)
     pacing = sweepPacingFor appConfig
-    cfg status = dredgerServerConfig appConfig (dredgerReady (pwCveSync pruner) status)
+    -- A dry run holds a store that cannot delete, so the loop never asks which run it is in.
+    mounts = case doMode opts of
+        SweepDeletes -> pwMounts pruner
+        SweepRehearses -> [mount{smStore = rehearsedStore (smStore mount)} | mount <- pwMounts pruner]
+    syncReady = cveSyncReady (pwCveSync pruner)
+    cfg status = dredgerServerConfig appConfig (dredgerReady syncReady (readIORef (stLatched status)))
     syncTasks metrics =
         mapConcurrently_ id (cveSyncTasks logEnv metrics telemetry (cveSyncScheduleFor appConfig) (pwCveSync pruner))
-    portsOver metrics = sweepPortsFor logEnv metrics (pwCveSync pruner)
+    portsOver metrics = sweepPortsFor logEnv metrics (sweepReportFor (doMode opts)) (pwCveSync pruner)
 
-{- | The Dredger's health surface: no mount, the shared @server.port@, and a readiness that the
-advisory sync opens and a latched halt closes for good. A latch never fails liveness, because an
-orchestrator restart would start sweeping the same poisoned generation again.
+{- | The Dredger's health surface: the shared @server.port@, and a readiness the advisory sync
+opens and a latched halt closes for good. A latch never fails liveness, so nothing restarts it.
 -}
 dredgerServerConfig :: AppConfig -> IO Bool -> ServerConfig
 dredgerServerConfig appConfig checkReady = (probeServerConfig appConfig){scCheckReady = checkReady}
 
--- Ready once the advisory sync has landed, and never again after a halt latched.
-dredgerReady :: Map Ecosystem CveSyncHandle -> SweepStatus -> IO Bool
-dredgerReady cveSync status = (&&) <$> cveSyncReady cveSync <*> (isNothing <$> readIORef (stLatched status))
+{- | Ready once the advisory sync has landed, and never again after a halt latched. Liveness stays
+untouched, because a restart would begin sweeping the generation that latched it.
+-}
+dredgerReady :: IO Bool -> IO (Maybe CycleHalt) -> IO Bool
+dredgerReady checkReady readLatched = (&&) <$> checkReady <*> (isNothing <$> readLatched)
 
 {- Run the sweep on the invocation's repetition. A cycle is one supervised step, so a fault that
-escapes a store handle's typed contract backs off and the next cycle runs, rather than ending the
-role. A single cycle runs unsupervised: its fault is the command's own non-zero exit. -}
-sweepTask :: LogEnv -> DredgerOptions -> SweepPacing -> SweepPorts -> SweepStatus -> [SweepMount] -> IO ()
-sweepTask logEnv opts pacing ports status mounts = case doRepetition opts of
-    SweepOnce -> oneCycle
+escapes a store handle's typed contract backs off and the next cycle runs. -}
+sweepTask :: LogEnv -> DredgerOptions -> SweepPacing -> SweepPorts -> IO Bool -> SweepStatus -> [SweepMount] -> IO ()
+sweepTask logEnv opts pacing ports checkReady status mounts = case doRepetition opts of
+    SweepOnce -> awaitAdvisories >> onceCycle
     SweepContinuously ->
-        void . runKatipContextT logEnv (mempty :: SimpleLogPayload) "dredger" $
+        void . runKatipContextT logEnv (mempty :: SimpleLogPayload) "dredger" $ do
+            liftIO awaitAdvisories
             superviseLoop (transientPolicy "dredger-sweep" backgroundLoopBackoff) (liftIO step)
   where
-    oneCycle = do
-        halt <- outcomeHalt <$> sweepCycle (doMode opts) pacing ports mounts
+    -- Only a one-shot run reports its cycle's halt as the process ending. A cycling Dredger stops
+    -- by being asked to, whatever its last cycle did, so a supervisor does not restart it.
+    onceCycle = do
+        halt <- outcomeHalt <$> sweepCycle pacing ports mounts
         writeIORef (stFinal status) halt
         when (any latches halt) (writeIORef (stLatched status) halt)
 
-    {- A latched halt runs no further cycle and touches no store. It repeats its own line at each
-    cycle interval instead, so a halted Dredger keeps reporting until an operator restarts it. -}
-    step = do
-        readIORef (stLatched status) >>= maybe oneCycle (reportLatched ports)
-        sweepDelay ports (swpCyclePause pacing)
+    step = latchedStep pacing ports mounts (stLatched status)
+
+    {- Give the first advisory sync a bounded chance to land before the first cycle decides
+    anything, where a rule reads the database at all. Past the bound the cycle runs regardless. -}
+    awaitAdvisories = when (waitsForAdvisories mounts) (poll (advisoryWaitAttempts pacing))
+
+    poll remaining
+        | remaining <= (0 :: Int) = pass
+        | otherwise = checkReady >>= bool (threadDelay advisoryPollMicros >> poll (remaining - 1)) pass
+
+{- | One step of the cycling Dredger: run a cycle, or report the halt that latched instead, then
+wait the cycle pause. A latched Dredger touches no store and keeps reporting until it is restarted.
+-}
+latchedStep :: SweepPacing -> SweepPorts -> [SweepMount] -> IORef (Maybe CycleHalt) -> IO ()
+latchedStep pacing ports mounts latched = do
+    readIORef latched >>= maybe runCycle (reportLatched ports)
+    sweepDelay ports (swpCyclePause pacing)
+  where
+    runCycle = do
+        halt <- outcomeHalt <$> sweepCycle pacing ports mounts
+        when (any latches halt) (writeIORef latched halt)
 
 reportLatched :: SweepPorts -> CycleHalt -> IO ()
 reportLatched ports halt =
@@ -145,24 +174,25 @@ reportLatched ports halt =
 
 {- The effects behind the sweep's ports: the process clock, the advisory slots the sync tasks
 fill, the delay, the instruments, and the process log stream. -}
-sweepPortsFor :: LogEnv -> Metrics -> Map Ecosystem CveSyncHandle -> SweepPorts
-sweepPortsFor logEnv metrics cveSync =
+sweepPortsFor :: LogEnv -> Metrics -> SweepReport -> Map Ecosystem CveSyncHandle -> SweepPorts
+sweepPortsFor logEnv metrics report cveSync =
     SweepPorts
         { sweepNow = getCurrentTime
         , sweepAdvisoryEtag = \eco ->
             maybe (pure Nothing) (currentAdvisoryEtag . syncSlot . csEnv) (Map.lookup eco cveSync)
-        , sweepDelay = threadDelay . sweepDelayMicros
+        , sweepDelay = threadDelay . secondsToMicros
         , sweepMetrics = dredgerMetricsPortOf metrics
         , sweepAudit =
             SweepAudit
                 { auditInfo = moduleLog logEnv dredgerModule InfoS
+                , auditWarn = moduleLog logEnv dredgerModule WarningS
                 , auditError = moduleLog logEnv dredgerModule ErrorS
                 }
+        , sweepReport = report
         }
 
-{- One boot line per store, putting the Dredger's blast radius on record before it deletes
-anything: which backend holds it, whether a deleted version can come back, what this run does,
-and whether a full walk over it resumes after a restart. -}
+{- One boot line per store, putting the Dredger's blast radius on record: which backend holds it,
+whether a deleted version can come back, what this run does, and whether a walk over it resumes. -}
 logBlastRadius :: LogEnv -> DredgerOptions -> SweepPacing -> SweepMount -> IO ()
 logBlastRadius logEnv opts pacing mount =
     moduleLog logEnv dredgerModule InfoS $

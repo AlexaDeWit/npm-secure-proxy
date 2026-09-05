@@ -181,8 +181,7 @@ startPlannedRole dredgerOptions bootEnv = do
         PilotWiring exportPlan -> shutdownAfter (runPilot bootEnv exportPlan)
 
 {- Run the Dredger and report what it ended on. A one-shot cycle that halted is a service ending
-rather than a shutdown, so a scheduler reads the outcome from the exit status and the reason from
-the line beside it. -}
+rather than a shutdown, so a scheduler reads the outcome from the exit status. -}
 sweepUnder :: BootEnv -> PrunerWiring -> DredgerOptions -> IO ProcessOutcome
 sweepUnder bootEnv pruner opts = maybe ShutdownRequested ServiceExited <$> runDredger bootEnv opts pruner
 

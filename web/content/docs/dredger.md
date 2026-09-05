@@ -21,7 +21,8 @@ The **default cycle** covers the first two, and it is what runs unless you turn 
 Each cycle:
 
 1. Reads the store's consent marker and its classification. Both are read again every cycle, so
-   withdrawing either stops the next cycle without a restart.
+   withdrawing either stops the next cycle without a restart. Where a rule reads the advisory
+   database, the first cycle also waits for the first advisory sync, for at most one `cyclePause`.
 2. Lists the store's package names, a page at a time.
 3. Keeps only the names the synced advisory database covers, plus the names an identity-deny rule
    pins. Both sides are read through the ecosystem's own name parser, so a spelling difference
@@ -31,8 +32,8 @@ Each cycle:
 5. Deletes only what a named decisive deny condemns.
 
 A cycle is therefore bounded by the listing for store size, and by advisory hits for metadata
-reads. It finishes in minutes to an hour on a large store, a restart re-runs a cheap listing, and
-every advisory reaches every affected mirrored version within one cycle of landing.
+reads. A restart re-runs a cheap listing, and every advisory reaches every affected mirrored
+version within one cycle of landing.
 
 Set the pace with the `dredger` group in your configuration. `chunkSize` and `chunkPause` set how
 many packages one chunk examines and how long it waits between chunks. `cyclePause` sets the wait
@@ -81,10 +82,11 @@ legitimate deployment and is not refused.
 `deletionCap` bounds how many versions one cycle may hand over for deletion. It is the breaker
 against an advisory database that denies far more than it should.
 
-Reaching it **halts the Dredger for the life of the process**. No further cycle runs, the readiness
-probe answers `503`, and an error line repeats at each cycle interval naming the advisory
-generation and the count. The process stays up on purpose: exiting would bring a pod restart, and
-the restart would begin sweeping the same poisoned generation again.
+Reaching it **halts the Dredger for the life of the process**, whether or not there was more it
+would have deleted. No further cycle runs, the readiness probe answers `503`, liveness stays
+healthy, and an error line repeats at each cycle interval naming the advisory generation and the
+count. The process stays up on purpose: exiting would bring a pod restart, and the restart would
+begin sweeping the same poisoned generation again.
 
 Investigate the generation that filled the cap. Then either restart the Dredger, or raise the cap
 deliberately and restart it.
@@ -101,7 +103,9 @@ Turn it off once a walk has completed, and the Dredger drops back to candidate c
 lost.
 
 The walk covers the name space in prefix buckets, and records each completed bucket in the store
-itself, so a restart re-does at most one bucket. **Enabling the full walk is also your decision to
+itself, so a restart re-does at most one bucket. A bucket holding more names than the walk may hold
+at once is split into narrower ones; where no narrower bucket divides them, the cycle halts naming
+that bucket rather than skipping it. **Enabling the full walk is also your decision to
 let the Dredger write one thing to your store.** A `codeArtifact` store keeps the record in one
 repository tag per ecosystem. A `verdaccio` store has nowhere to keep one, so a walk over it starts
 from the beginning after every restart, and the Dredger says so at boot.
@@ -115,9 +119,9 @@ indefinitely.
 carries the backend's own rehearsal where one exists, and a call-nothing stub where none does, so
 the run cannot delete because nothing it holds can.
 
-It reads consent and classification and reports them. The belt and the cap apply as logging only,
-so a rehearsal reports the full count a real run would reach. It writes no walk marker. Its counter
-is `would_delete`, never `deleted`.
+It reads consent and classification and reports them. The cap applies as logging only, so a
+rehearsal reports the full count a real run would reach rather than stopping at the breaker. It
+writes no walk marker. Its counter is `would_delete`, never `deleted`.
 
 Use it before the first real sweep of a store, and after any rule change you are unsure of.
 
@@ -125,7 +129,11 @@ Use it before the first real sweep of a store, and after any rule change you are
 
 `ecluse dredger --once` runs one cycle and exits. It exits `0` when the cycle completed and `1`
 when it halted, with the reason on the same line, so a scheduler reads the outcome from the status.
-It composes with `--dry-run`.
+It composes with `--dry-run`, where only a store fault can halt the cycle.
+
+A **cycling** Dredger reports nothing through its exit status. It stops when it is asked to,
+whatever its last cycle did, so a restart-on-failure supervisor does not resume dredging on its
+own after a halt.
 
 ## What the Dredger tells you
 
@@ -137,9 +145,10 @@ Whatever stops a cycle repeats an error line at **each cycle interval** until it
 operator restarts the Dredger. Nothing halts silently. That covers a withheld consent marker, a
 store that refills itself, a store that stopped answering, and the latched deletion cap.
 
-A store fault is retried once after the delay the fault itself advises, and a fault that survives
-that retry halts the cycle. The next cycle re-attempts, so an outage reports once per cycle
-interval for as long as it lasts and the sweep resumes on its own when the store answers.
+A store fault is retried once after the delay the fault itself advises. That retry logs at `WARN`,
+because it may clear on its own. A fault that survives it halts the cycle and logs at `ERROR`. The
+next cycle re-attempts, so an outage reports once per cycle interval for as long as it lasts and
+the sweep resumes on its own when the store answers.
 
 A delete the backend refuses, or one that never reached it, leaves the version in the store. It
 counts as kept and writes an error line carrying the backend's own code and message.

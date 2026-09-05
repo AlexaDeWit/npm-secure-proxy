@@ -10,8 +10,8 @@ module Ecluse.Core.Registry.Sweep.Types (
     -- * What a sweep runs over
     SweepMount (..),
     SweepPacing (..),
-    SweepMode (..),
     SweepShape (..),
+    SweepReport (..),
     SweepPorts (..),
     SweepAudit (..),
 
@@ -21,6 +21,7 @@ module Ecluse.Core.Registry.Sweep.Types (
     CycleOutcome (..),
     latches,
     renderCycleHalt,
+    renderGeneration,
     renderTally,
     renderStoreFault,
 
@@ -28,16 +29,13 @@ module Ecluse.Core.Registry.Sweep.Types (
     SweepState (..),
     newSweepState,
     record,
-
-    -- * Pacing arithmetic
-    sweepDelayMicros,
 ) where
 
 import Data.Time (NominalDiffTime, UTCTime)
 
 import Ecluse.Core.Cve (DbEtag (DbEtag))
 import Ecluse.Core.Ecosystem (Ecosystem, ecosystemName)
-import Ecluse.Core.Fault (TransportFault (tfCause, tfDetail))
+import Ecluse.Core.Fault (TransportFault (tfCause, tfDetail), renderTransportCause)
 import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Registry.Adapter.Capability (ProjectName)
 import Ecluse.Core.Registry.Maintenance (StoreFault (faultTransport), StoreMaintenance)
@@ -101,13 +99,19 @@ data SweepShape
       SweepEverything
     deriving stock (Eq, Show)
 
--- | Whether the sweep deletes, or rehearses and deletes nothing.
-data SweepMode
-    = -- | Versions a named decisive deny condemns are deleted.
-      SweepDeletes
-    | -- | Nothing is deleted, and no cursor is written.
-      SweepRehearses
-    deriving stock (Eq, Show)
+{- | How one run reports a removal, and whether its cap stops the cycle. A dry run holds a handle
+with no real delete, so the loop reads these rather than asking which mode it is in.
+-}
+data SweepReport = SweepReport
+    { reportRemoval :: SweepResult
+    -- ^ What a removal the backend accepted counts as.
+    , reportOpening :: Text
+    -- ^ How a removal's audit line opens.
+    , reportCapHalts :: Bool
+    {- ^ Whether reaching the cap stops the cycle. A rehearsal counts past it instead, so it
+    reports the full reach a real run would have.
+    -}
+    }
 
 {- | Where the sweep reports. The two severities are separate fields rather than a level
 argument, so a caller cannot log a halt as routine.
@@ -115,6 +119,8 @@ argument, so a caller cannot log a halt as routine.
 data SweepAudit = SweepAudit
     { auditInfo :: Text -> IO ()
     -- ^ One routine line: a deletion, a rehearsal, a completed cycle.
+    , auditWarn :: Text -> IO ()
+    -- ^ One line that may clear on its own: a store call being retried.
     , auditError :: Text -> IO ()
     -- ^ One line an operator must act on: a halt, a refused deletion, a store fault.
     }
@@ -131,6 +137,8 @@ data SweepPorts = SweepPorts
     -- ^ Where each version's disposition is counted.
     , sweepAudit :: SweepAudit
     -- ^ Where the sweep's own lines go.
+    , sweepReport :: SweepReport
+    -- ^ How this run reports a removal, and whether its cap stops the cycle.
     }
 
 -- | What one cycle did with the versions it examined.
@@ -165,7 +173,11 @@ data CycleHalt
       -}
       HaltDeletionCap Int Int (Maybe DbEtag)
     | -- | A store call produced no answer and its retry advice ran out, carrying the fault.
-      HaltStoreFault Ecosystem Text
+      HaltStoreFault Ecosystem Text Text
+    | {- | A bucket outgrew the memory budget and nothing narrows it further, so the walk cannot
+      read it without holding more than the budget allows.
+      -}
+      HaltBucketUnsplittable Ecosystem Text Text
     deriving stock (Eq, Show)
 
 -- | One cycle's result: what it did, and why it stopped early if it did.
@@ -175,9 +187,8 @@ data CycleOutcome = CycleOutcome
     }
     deriving stock (Eq, Show)
 
-{- | Whether a halt stops the Dredger for the life of the process. Only the cap does: a
-breaker that re-closes itself is not a breaker, and every other halt is a condition an
-operator clears without a restart, so the next cycle re-reads it.
+{- | Whether a halt stops the Dredger for the life of the process. Only the cap does, because a
+breaker that re-closes itself is not a breaker; every other halt is re-read next cycle.
 -}
 latches :: CycleHalt -> Bool
 latches = \case
@@ -185,6 +196,7 @@ latches = \case
     HaltConsentWithheld{} -> False
     HaltStorePreserved{} -> False
     HaltStoreFault{} -> False
+    HaltBucketUnsplittable{} -> False
 
 -- | The operator-facing text of a halt, naming the backend that raised it and what to fix.
 renderCycleHalt :: CycleHalt -> Text
@@ -201,8 +213,14 @@ renderCycleHalt = \case
             <> " under advisory generation "
             <> renderGeneration etag
             <> ", so the Dredger runs no further cycle until it is restarted deliberately"
-    HaltStoreFault eco fault ->
-        "a call against the " <> ecosystemName eco <> " mirror store produced no answer: " <> fault
+    HaltStoreFault eco backend fault ->
+        "a call against " <> storeSubject eco backend <> " produced no answer: " <> fault
+    HaltBucketUnsplittable eco backend bucket ->
+        "the walk over "
+            <> storeSubject eco backend
+            <> " cannot read the bucket of names beginning \""
+            <> bucket
+            <> "\": it holds more names than one bucket may, and no narrower bucket divides them"
 
 -- | The advisory generation an audit line names, or that none was loaded.
 renderGeneration :: Maybe DbEtag -> Text
@@ -225,7 +243,7 @@ renderTally tally =
 
 -- | A store fault as an operator reads it: the transport's own cause and its bounded detail.
 renderStoreFault :: StoreFault -> Text
-renderStoreFault fault = show (tfCause transport) <> ": " <> tfDetail transport
+renderStoreFault fault = renderTransportCause (tfCause transport) <> ": " <> tfDetail transport
   where
     transport = faultTransport fault
 
@@ -255,9 +273,3 @@ tallyOf = \case
     SweepWouldDelete -> mempty{tallyDeleted = 1}
     SweepKept -> mempty{tallyKept = 1}
     SweepGuardSkipped -> mempty{tallyGuardSkipped = 1}
-
-{- | The pause in microseconds, which is what a delay primitive takes. The config decoder bounds
-every pause to a positive number of seconds, so the conversion cannot wrap.
--}
-sweepDelayMicros :: NominalDiffTime -> Int
-sweepDelayMicros pause = round pause * 1_000_000

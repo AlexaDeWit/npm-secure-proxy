@@ -23,6 +23,7 @@ plus whichever faults a step's policy deliberately classifies 'Permanent'.
 module Ecluse.Core.Supervision (
     -- * The combinator
     superviseLoop,
+    secondsToMicros,
     SupervisionPolicy (..),
     transientPolicy,
     FaultDisposition (..),
@@ -36,6 +37,7 @@ module Ecluse.Core.Supervision (
 ) where
 
 import Control.Retry (RetryPolicyM, RetryStatus (rsIterNumber), retryPolicy)
+import Data.Time (NominalDiffTime)
 import Katip (KatipContext, Severity (ErrorS), logFM, ls)
 import UnliftIO (MonadUnliftIO)
 import UnliftIO.Concurrent (threadDelay)
@@ -129,3 +131,9 @@ superviseLoop policy step = go 0
                     logFM ErrorS (ls (spLabel policy <> ": iteration faulted (retrying in " <> show delay <> "µs): " <> displayExceptionT fault))
                     threadDelay delay
                     go (consecutiveFaults + 1)
+
+{- | A delay in seconds as the microseconds a delay primitive takes. Every config decoder that
+spells a pause bounds it below @maxBound `div` 1_000_000@, so the conversion cannot wrap.
+-}
+secondsToMicros :: NominalDiffTime -> Int
+secondsToMicros seconds = round seconds * 1_000_000

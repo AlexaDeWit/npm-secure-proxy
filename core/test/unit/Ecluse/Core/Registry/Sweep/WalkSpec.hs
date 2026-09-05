@@ -5,6 +5,7 @@
 module Ecluse.Core.Registry.Sweep.WalkSpec (spec) where
 
 import Data.Conduit (ConduitT, yield)
+import Data.Text qualified as T
 import Test.Hspec
 
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
@@ -19,7 +20,8 @@ import Ecluse.Core.Registry.Maintenance (
     renderNamePrefix,
  )
 import Ecluse.Core.Registry.Sweep.Walk (
-    BucketNames (BucketFaulted, BucketOverflowed, BucketRead),
+    BucketNames (BucketFaulted, BucketOverflowed, BucketRead, BucketUnsplittable),
+    bucketDepthLimit,
     bucketNameBudget,
     collectBucket,
     resumeAfter,
@@ -56,16 +58,20 @@ resumeSpec = describe "resumeAfter" $ do
         withBucket "c" $
             \c -> resumeAfter (Just c) buckets `shouldBe` []
 
-    it "resumes correctly past a split bucket, because the sequence stays ordered" $
-        -- "aa" sorts after "a" and before "b", so a walk that split "a" and completed "aa"
-        -- resumes at "ab" rather than skipping to the next whole bucket.
-        withBucket "aa" $ \aa ->
-            map renderNamePrefix (resumeAfter (Just aa) splitBuckets) `shouldBe` ["ab", "b", "c"]
+    it "keeps the bucket a record falls inside, so a split walk does not skip its remainder" $
+        -- A record of "ab" means the walk split "a" and got as far as "ab" inside it. Dropping
+        -- "a" outright would skip "ac" onward and then clear the marker as though complete.
+        withBucket "ab" $ \ab ->
+            map renderNamePrefix (resumeAfter (Just ab) buckets) `shouldBe` ["a", "b", "c"]
+
+    it "drops the completed narrower buckets when that kept bucket is split again" $
+        -- The same record is applied to the narrower sequence, which is what makes keeping the
+        -- parent safe: "aa" and "ab" are done, and the walk resumes at "ac".
+        withBucket "ab" $ \ab ->
+            map renderNamePrefix (resumeAfter (Just ab) (spelledBuckets ["aa", "ab", "ac"]))
+                `shouldBe` ["ac"]
   where
     buckets = walkBuckets (mkNameAlphabet "abc")
-
-    -- The sequence a walk holds after "a" was split, which is what a cursor is read against.
-    splitBuckets = spelledBuckets ["a", "aa", "ab", "b", "c"]
 
 collectSpec :: Spec
 collectSpec = describe "collectBucket" $ do
@@ -88,14 +94,29 @@ collectSpec = describe "collectBucket" $ do
         -- partial listing rather than the whole of it.
         outcome <- withBucket "a" $ \a -> collectBucket (mkNameAlphabet "ab") a (pagesOf [oversized])
         case outcome of
-            BucketOverflowed narrower -> map renderNamePrefix narrower `shouldBe` ["aa", "ab"]
+            BucketOverflowed narrower -> map renderNamePrefix (toList narrower) `shouldBe` ["aa", "ab"]
             _ -> expectationFailure "expected the oversized bucket to be split"
 
     it "reads a bucket exactly at the budget rather than splitting it" $ do
         outcome <- withBucket "a" $ \a -> collectBucket alphabet a (pagesOf [atBudget])
         fmap length (namesOf outcome) `shouldBe` Just bucketNameBudget
+
+    it "takes no budget at all on a store its listing cannot partition" $ do
+        -- Such a store is walked as one bucket and its leaf reads the document whole anyway, so a
+        -- budget could only abandon the read and skip the store's whole contents.
+        outcome <- withBucket "" $ \everything -> collectBucket noNameAlphabet everything (pagesOf [oversized])
+        fmap length (namesOf outcome) `shouldBe` Just (bucketNameBudget + 1)
+
+    it "reports a bucket that outgrew the budget at the depth narrowing stops at" $ do
+        -- Past the depth bound a further character has stopped dividing the names, so the walk
+        -- says so rather than descending without end or skipping the bucket in silence.
+        outcome <- withBucket deepest $ \deep -> collectBucket alphabet deep (pagesOf [oversized])
+        case outcome of
+            BucketUnsplittable -> pass
+            _ -> expectationFailure "expected the deepest bucket to report that nothing narrows it"
   where
     alphabet = mkNameAlphabet "abcz"
+    deepest = T.replicate bucketDepthLimit "a"
     oversized = [show n | n <- [1 .. bucketNameBudget + 1 :: Int]]
     atBudget = [show n | n <- [1 .. bucketNameBudget :: Int]]
 
