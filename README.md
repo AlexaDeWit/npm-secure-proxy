@@ -44,6 +44,12 @@ outage or yank. You declare each registry under a tag that names the store behin
 target under the `codeArtifact` tag mints its own short-lived write token, and the other tags take
 a static token you supply. Écluse hosts no packages itself.
 
+A mirror keeps what it was given, so a version your rules later deny stays until something removes
+it. `ecluse dredger` is that role: it walks each mirror store, re-evaluates the versions a new
+advisory or an operator deny can have changed, and deletes only what a named rule condemns. It is
+the only role that deletes, and it does so only from a store carrying the operator's own consent
+marker, under a per-cycle cap.
+
 The [operator manual](https://ecluse-proxy.com/docs/) covers running Écluse.
 [`docs/architecture.md`](docs/architecture.md) has the design: the registry roles, the rules
 engine, and the mirror queue. The threat model (OWASP Threat Dragon, STRIDE) lives in

@@ -28,8 +28,8 @@ other tags take a static token you supply. Écluse hosts no packages itself.
 - `ecluse proxy` serves clients and runs the mirror worker.
 - `ecluse mirror` runs the mirror worker alone, when you want to scale it apart from the proxy.
 - `ecluse pilot` compiles the advisory database the fast lane reads.
-- `ecluse dredger` is the mirror-store pruning role. This build carries no sweep, so it refuses
-  to start rather than run idle.
+- `ecluse dredger` deletes mirrored versions your rules now deny. It is the only role that
+  deletes, and [Running the Dredger](@/docs/dredger.md) covers it.
 
 [Deploying Écluse](@/docs/deployment.md) covers all four.
 
