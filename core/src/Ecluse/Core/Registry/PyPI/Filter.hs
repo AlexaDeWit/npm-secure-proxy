@@ -39,9 +39,13 @@ cannot disagree.
 module Ecluse.Core.Registry.PyPI.Filter (
     -- * Assembling the served index
     assembleSimpleIndex,
+
+    -- * The served-document boundary (PyPI's 'CachedDoc' capabilities)
+    assembleSimpleDocument,
+    serialiseSimpleDocument,
 ) where
 
-import Data.Aeson (Value (Array, Object, String))
+import Data.Aeson (Value (Array, Object, String), encode)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -50,6 +54,7 @@ import Data.Set qualified as Set
 import Data.Vector qualified as V
 
 import Ecluse.Core.Package.Merge (MergePlan (mpArtifacts, mpSurvivors), SourceId)
+import Ecluse.Core.Registry.CachedDocument (CachedDoc, FileVersionIndex, pypiSimpleCached)
 import Ecluse.Core.Registry.PyPI.Project (isCanonicalName)
 import Ecluse.Core.Registry.PyPI.Request (artifactPath)
 import Ecluse.Core.Registry.ServedDocument (rebaseArtifactUrl, safeDocumentName)
@@ -63,7 +68,7 @@ documents, each paired with the file-to-version index its fetch computed.
 release. A named file the winning source does not hold drops out, never a fabricated one. The
 result is always an object, even for an empty plan or a non-object base document.
 -}
-assembleSimpleIndex :: Text -> Map SourceId (Value, Map Text Text) -> MergePlan -> Value -> Value
+assembleSimpleIndex :: Text -> Map SourceId (Value, FileVersionIndex) -> MergePlan -> Value -> Value
 assembleSimpleIndex mountBase bySource plan base =
     Object
         ( baseObject
@@ -90,9 +95,8 @@ assembleSimpleIndex mountBase bySource plan base =
         , Map.lookup version (mpSurvivors plan) == Just sid
         ]
 
-    -- Every file the per-artifact partition kept, across every surviving release.
     keptFiles :: Set Text
-    keptFiles = Set.fromList (concatMap toList (Map.elems (mpArtifacts plan)))
+    keptFiles = allKeptFiles plan
 
     {- One served entry: its location rebased onto this mount, and the sidecar keys dropped. A
     document whose own name does not clear the grammar has nothing interpolated under it, so its
@@ -147,3 +151,36 @@ stringField :: Key.Key -> KeyMap Value -> Maybe Text
 stringField key o = case KeyMap.lookup key o of
     Just (String s) -> Just s
     _ -> Nothing
+
+{- | PyPI's served-document __assemble__ capability
+('Ecluse.Core.Registry.Adapter.Types.metadataAssemble'). The neutral pipeline threads the
+documents opaquely, so projecting them into PyPI's own representation and injecting the result
+back is PyPI's boundary. A source another ecosystem injected projects as 'Nothing' and
+contributes nothing, the same rule the assembly applies to a survivor whose source holds no
+entry for it.
+-}
+assembleSimpleDocument :: Text -> Map SourceId CachedDoc -> MergePlan -> Maybe CachedDoc -> CachedDoc
+assembleSimpleDocument mountBase bySource plan base =
+    fst pypiSimpleCached (assembleSimpleIndex mountBase sources plan baseValue, servedIndex)
+  where
+    sources = Map.mapMaybe (snd pypiSimpleCached) bySource
+    baseValue = maybe (Object mempty) fst (snd pypiSimpleCached =<< base)
+
+    {- The assembled document's own file-to-version index: the entries the assembly served, so a
+    re-read of the served document resolves exactly the releases it lists. -}
+    servedIndex :: FileVersionIndex
+    servedIndex =
+        Map.filterWithKey
+            (\filename version -> Map.member version (mpSurvivors plan) && Set.member filename (allKeptFiles plan))
+            (foldMap snd (Map.elems sources))
+
+-- Every file the per-artifact partition kept, across every surviving release.
+allKeptFiles :: MergePlan -> Set Text
+allKeptFiles plan = Set.fromList (concatMap toList (Map.elems (mpArtifacts plan)))
+
+{- | PyPI's served-document __serialise__ capability
+('Ecluse.Core.Registry.Adapter.Types.metadataSerialise'): project the assembled 'CachedDoc' to
+its 'Value' and encode it compactly to the wire bytes.
+-}
+serialiseSimpleDocument :: CachedDoc -> LByteString
+serialiseSimpleDocument = encode . maybe (Object mempty) fst . snd pypiSimpleCached

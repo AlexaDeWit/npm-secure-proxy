@@ -197,19 +197,20 @@ npm's boundary.
 -}
 assembleMergedDocument :: Text -> Map SourceId CachedDoc -> MergePlan -> Maybe CachedDoc -> CachedDoc
 assembleMergedDocument mountBase bySource plan base =
-    fst npmCached (assembleMergedPackument mountBase (Map.map npmValue bySource) plan (maybe (Object mempty) npmValue base))
+    fst npmCached (assembleMergedPackument mountBase (Map.mapMaybe npmValue bySource) plan (fromMaybe (Object mempty) (npmValue =<< base)))
 
 {- | npm's served-document __serialise__ capability
 ('Ecluse.Core.Registry.Adapter.Types.metadataSerialise'): project the assembled
 'CachedDoc' to npm's 'Value' and encode it compactly to the wire bytes.
 -}
 serialiseMergedDocument :: CachedDoc -> LByteString
-serialiseMergedDocument = encode . npmValue
+serialiseMergedDocument = encode . fromMaybe (Object mempty) . npmValue
 
--- npm is the only injector, so the empty-object fallback never runs in practice. It is a
--- benign miss: no keys and no versions.
-npmValue :: CachedDoc -> Value
-npmValue = fromMaybe (Object mempty) . snd npmCached
+{- A source document in npm's own representation. One another ecosystem injected projects as
+'Nothing' and is dropped, the same rule the assembly applies to a survivor whose source holds no
+entry: a foreign document contributes nothing rather than an empty one. -}
+npmValue :: CachedDoc -> Maybe Value
+npmValue = snd npmCached
 
 {- One source document's version lookup: its raw @versions@ object, resolved once per source
 by 'overlaySurvivors' and then read per survivor. -}

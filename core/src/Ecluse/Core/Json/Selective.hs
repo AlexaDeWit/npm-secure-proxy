@@ -41,6 +41,7 @@ module Ecluse.Core.Json.Selective (
     -- * Bounded selection
     findInRecord,
     collectFromArray,
+    selectFromArray,
     materialiseWithinBudget,
 
     -- * Container guards
@@ -98,16 +99,37 @@ findInRecord childBudget target = go Nothing 0
 are skipped unallocated. The scan runs to the end, so a malformed unpicked item still refuses.
 -}
 collectFromArray :: Int -> (Int -> Bool) -> TkArray k String -> Either SelectiveError ([Value], Int, k)
-collectFromArray budget pick = go [] 0
+collectFromArray budget pick = selectFromArray budget (\position _ -> Right (pick position))
+
+{- | Collect the items a probe accepts, deciding from the item's __own tokens__ so an item can be
+rejected on what it says about itself and then skipped unallocated.
+
+The probe sees each item's tokens at the array's item budget, and may walk them: they are a
+lazy structure, so a walk to read one discriminating member costs no materialised value, and an
+accepted item is materialised whole from the same tokens afterward. That is what lets a caller
+pick by content rather than by position while still materialising only what it picks.
+
+The scan runs to the array's end, so a malformed item the probe rejected still refuses the
+decode, exactly as a whole-document decode would.
+-}
+selectFromArray ::
+    Int ->
+    -- | The probe: an item's position and its own tokens, which continue into the rest of the array.
+    (Int -> Tokens (TkArray k String) String -> Either SelectiveError Bool) ->
+    TkArray k String ->
+    Either SelectiveError ([Value], Int, k)
+selectFromArray budget probe = go [] 0
   where
     go picked !count = \case
         TkArrayEnd cont -> Right (reverse picked, count, cont)
         TkArrayErr _ -> Left SelectiveUndecodable
-        TkItem valueToks
-            | pick count -> do
-                (value, cont) <- materialiseWithinBudget budget valueToks
-                go (value : picked) (count + 1) cont
-            | otherwise -> skipValue budget valueToks >>= go picked (count + 1)
+        TkItem valueToks -> do
+            wanted <- probe count valueToks
+            if wanted
+                then do
+                    (value, cont) <- materialiseWithinBudget budget valueToks
+                    go (value : picked) (count + 1) cont
+                else skipValue budget valueToks >>= go picked (count + 1)
 
 {- | Materialise one value from its tokens, bounded at @budget@. It is the same 'Value'
 decode a whole-document path uses. Route every 'Value' a selective walk builds through

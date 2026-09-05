@@ -161,9 +161,11 @@ library ecluse-core
     Ecluse.Core.Registry.PyPI.Credential
     Ecluse.Core.Registry.PyPI.Filter
     Ecluse.Core.Registry.PyPI.FirstParty
+    Ecluse.Core.Registry.PyPI.Metadata
     Ecluse.Core.Registry.PyPI.Project
     Ecluse.Core.Registry.PyPI.Request
     Ecluse.Core.Registry.PyPI.Route
+    Ecluse.Core.Registry.PyPI.SelectiveDecode
     Ecluse.Core.Registry.PyPI.Wire
     Ecluse.Core.Registry.Request
     Ecluse.Core.Registry.ServedDocument
@@ -738,9 +740,11 @@ test-suite ecluse-core-unit
     Ecluse.Core.Registry.PyPI.CredentialSpec
     Ecluse.Core.Registry.PyPI.FilterSpec
     Ecluse.Core.Registry.PyPI.FirstPartySpec
+    Ecluse.Core.Registry.PyPI.MetadataSpec
     Ecluse.Core.Registry.PyPI.ProjectSpec
     Ecluse.Core.Registry.PyPI.RequestSpec
     Ecluse.Core.Registry.PyPI.RouteSpec
+    Ecluse.Core.Registry.PyPI.SelectiveDecodeSpec
     Ecluse.Core.Registry.PyPI.WireSpec
     Ecluse.Core.Registry.RequestSpec
     Ecluse.Core.Registry.ServedDocumentSpec
