@@ -230,9 +230,8 @@ extractFromAdvisory scores adv = do
     -- over the advisory's own id and its aliases together.
     epss = epssForIds scores (osvId adv : fromMaybe [] (osvAliases adv))
 
-{- | Does every bound this segment carries parse under the ecosystem's version grammar?
-A bound that does not parse leaves 'Ecluse.Core.Cve.insideAffectedRange' unable to order the
-segment, and its fail-closed default then matches every version of the package.
+{- | Does every bound this segment carries parse under the ecosystem's version grammar? A bound
+that does not leaves 'Ecluse.Core.Cve.insideAffectedRange' matching every version, fail-closed.
 -}
 orderableBounds :: Ecosystem -> ExtractedOsv -> Bool
 orderableBounds eco osv = all parses (catMaybes [extIntroduced osv, upperBound (extUpperBound osv)])
@@ -247,10 +246,8 @@ orderableBounds eco osv = all parses (catMaybes [extIntroduced osv, upperBound (
 -- One affected interval: an inclusive lower bound and where it closes.
 data Segment = Segment (Maybe Text) UpperBound
 
-{- Build a segment from a range's events, decoding an @introduced@ of @"0"@ to no lower bound.
-OSV spells "affected from the beginning" that way, and semver rejects it, so keeping it verbatim
-would rest every such row on the range check's fail-closed default instead of on its own bounds.
-An exactly enumerated version of @"0"@ is a version, not a sentinel, so it does not come here. -}
+-- OSV spells "affected from the beginning" as @introduced: "0"@, which semver rejects. Decoded here
+-- to no lower bound. An enumerated version of @"0"@ is a version, not a sentinel, and never comes here.
 rangeSegment :: Maybe Text -> UpperBound -> Segment
 rangeSegment introduced = Segment (introduced >>= beyondTheBeginning)
   where
