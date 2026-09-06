@@ -87,7 +87,7 @@ import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Registry.PyPI.Project (FileCoordinate (fcVersionKey), canonicalName, fileCoordinate, isCanonicalName, projectName)
 import Ecluse.Core.Server.Context (
     MountRouter,
-    ResponseAction (AnswerLocally, RunPipeline),
+    ResponseAction (AnswerRefusal, RunPipeline),
     RouteAction (RouteAction),
  )
 import Ecluse.Core.Server.Contract (
@@ -108,7 +108,7 @@ import Ecluse.Core.Server.Contract (
 import Ecluse.Core.Server.Path (Filename, mkFilename)
 import Ecluse.Core.Server.Pipeline.Packument (PackumentReplies (..), headPackument, servePackument)
 import Ecluse.Core.Server.Pipeline.Tarball (TarballReplies (..), headTarball, serveTarball)
-import Ecluse.Core.Server.Response (Refusal, mkRefusal, refusalHelp)
+import Ecluse.Core.Server.Response (HelpMessage, Refusal, mkRefusal, refusalHelp)
 import Ecluse.Core.Server.Route (
     Capture (Capture),
     MediaNegotiation (AcceptsAnything, AcceptsOnly),
@@ -116,8 +116,8 @@ import Ecluse.Core.Server.Route (
     PatternSeg (SegCap, SegLit),
     Route (Route),
     RouteName (RouteName),
-    answering,
     isHead,
+    refusing,
     renderRoute,
     routerOf,
     safeSegment,
@@ -135,7 +135,7 @@ pypiRouter = routerOf pypiNotFound pypiRoutes
 an unknown project gets from the index itself.
 -}
 pypiNotFound :: RouteAction
-pypiNotFound = RouteAction unsupportedContract (AnswerLocally (bareRefusal []))
+pypiNotFound = RouteAction unsupportedContract (AnswerRefusal (declaredRefusal "no route claims this path" []))
 
 -- | PyPI's routes, in matching order.
 pypiRoutes :: [Route PyPICap]
@@ -189,7 +189,7 @@ uploadRoute =
         MethodPost
         AcceptsAnything
         [SegLit "legacy"]
-        (answering (bareRefusal []))
+        (refusing (declaredRefusal "publishing is not enabled on this mount" []))
         "Upload a first-party distribution (not supported)"
         "A PyPI mount registers no publish capability, so an upload is answered `405` rather \
         \than relayed. The route is declared so the refusal is the documented one rather than \
@@ -279,9 +279,9 @@ pypiIndexReplies =
         }
 
 -- The @406@ arm, which the router selects before any handler runs.
-notAcceptable :: ResponseHeaders -> PyPIIndexResponse
-notAcceptable headers =
-    SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (bareRefusal headers))))))
+notAcceptable :: ResponseHeaders -> Maybe HelpMessage -> PyPIIndexResponse
+notAcceptable headers help =
+    SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (declaredRefusal "no representation this index serves is acceptable" headers help))))))
 
 {- | The artifact route is deliberately an open relay: it forwards any upstream status, headers,
 media type, and bytes, so one @default@ document is more accurate than a closed list.
@@ -305,15 +305,16 @@ pypiUploadContract = refusalContract status405 "Publishing is not enabled on thi
 unsupportedContract :: ResponseContract (ResponseValue (Maybe LByteString))
 unsupportedContract = refusalContract status404 "Unrecognised path; deny by default."
 
--- A refusal with no body: the shape an upstream index answers, and the default here.
-bareRefusal :: ResponseHeaders -> ResponseValue (Maybe LByteString)
-bareRefusal headers = responseValue headers Nothing
-
 {- A refusal body: the operator help message alone, and nothing at all when no operator
 configured one. Écluse's own wording stays off the wire, because PyPI's refusal is a bare status
 and a client reads no envelope here. -}
 helpBody :: ResponseHeaders -> Refusal -> ResponseValue (Maybe LByteString)
 helpBody headers refusal = responseValue headers (helpBytes refusal)
+
+{- The body of a refusal the route table decides rather than the pipeline, rendered through
+'helpBody' too so a configured help message reaches every arm alike. -}
+declaredRefusal :: Text -> ResponseHeaders -> Maybe HelpMessage -> ResponseValue (Maybe LByteString)
+declaredRefusal reason headers help = helpBody headers (mkRefusal help reason)
 
 -- The artifact relay's refusal, which is the same body under the transparent-relay contract.
 artifactRefusalBody :: Refusal -> PassthroughBody

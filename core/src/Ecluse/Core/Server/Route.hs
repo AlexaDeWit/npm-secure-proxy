@@ -46,6 +46,7 @@ module Ecluse.Core.Server.Route (
 
     -- * Building a route table
     answering,
+    refusing,
     safeSegment,
     isHead,
 ) where
@@ -56,11 +57,12 @@ import Network.HTTP.Types.Method (Method, methodDelete, methodGet, methodHead, m
 import Ecluse.Core.Server.Accept (acceptsAny)
 import Ecluse.Core.Server.Context (
     MountRouter,
-    ResponseAction (AnswerLocally),
+    ResponseAction (AnswerLocally, AnswerRefusal),
     RouteAction (RouteAction),
  )
 import Ecluse.Core.Server.Contract (RequestSpec, ResponseContract, bodilessContract)
 import Ecluse.Core.Server.Path (isSafeComponent)
+import Ecluse.Core.Server.Response (HelpMessage)
 
 {- | One route: how it matches, what it does, and what it documents.
 
@@ -136,17 +138,16 @@ data Capture v = Capture
 
 {- | What a route serves, and what it answers a client that will not take it.
 
-The alternative is a value of the route's own 'ResponseContract', so the @406@ a negotiating
-route answers is documented from the same record that serves it and cannot drift from what the
-router emits.
+The refusal is rendered into the route's own 'ResponseContract', so the @406@ a negotiating
+route answers is documented from the same record that serves it.
 -}
 data MediaNegotiation response
     = -- | The route negotiates nothing: every request is admitted whatever it says it accepts.
       AcceptsAnything
-    | {- | The route serves these media types alone, and answers this value to a request whose
-      @Accept@ admits none of them.
+    | {- | The route serves these media types alone, and refuses a request whose @Accept@ admits
+      none of them, under the mount's configured help message.
       -}
-      AcceptsOnly (NonEmpty ByteString) response
+      AcceptsOnly (NonEmpty ByteString) (Maybe HelpMessage -> response)
 
 {- | The method condition on a route: a closed vocabulary rather than a predicate, so the
 manifest can name the documented method. A method outside it matches no route and denies.
@@ -212,7 +213,7 @@ matchRoute routes method headers segments =
         AcceptsAnything -> built
         AcceptsOnly served refusal
             | acceptsAny headers served -> built
-            | otherwise -> AnswerLocally refusal <$ built
+            | otherwise -> AnswerRefusal refusal <$ built
 
     contractFor requested
         | isHead requested = bodilessContract
@@ -235,6 +236,12 @@ literal routes an ecosystem answers itself, rather than through the data plane, 
 -}
 answering :: response -> Method -> [v] -> Maybe (ResponseAction response)
 answering answer _method _captures = Just (AnswerLocally answer)
+
+{- | 'answering' for a refusal: the route decides it, and the site holding the mount's
+dependencies renders it under the configured help message.
+-}
+refusing :: (Maybe HelpMessage -> response) -> Method -> [v] -> Maybe (ResponseAction response)
+refusing render _method _captures = Just (AnswerRefusal render)
 
 {- | A 'capConsume' that claims one leading segment, and only when it is a safe path component.
 A traversal, separator, or control character therefore fails the match before the value exists.

@@ -332,6 +332,10 @@ answers an escaped fault with the route's declared neutral @500@. This type live
 data ResponseAction response
     = -- | A pure value admitted by the route's response contract.
       AnswerLocally response
+    | {- | A refusal the route decided, rendered where the mount's help message is known, so a
+      route table carries no configuration of its own.
+      -}
+      AnswerRefusal (Maybe HelpMessage -> response)
     | {- | A data-plane handler and its pre-commit perimeter fallback. The handler receives
       only the responder for this @response@ type, so it cannot send an unrestricted WAI
       'Response'. The fallback is a value of the same type, so the same contract

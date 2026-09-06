@@ -109,9 +109,10 @@ import UnliftIO.Exception (catchAny, throwIO)
 import Ecluse.Core.Server.Context (
     MountBinding (..),
     RequestCtx (RequestCtx),
-    ResponseAction (AnswerLocally, RunPipeline),
+    ResponseAction (AnswerLocally, AnswerRefusal, RunPipeline),
     RouteAction (RouteAction),
     ServeRuntime (srMetrics),
+    pdHelp,
     runHandler,
  )
 import Ecluse.Core.Server.Contract (responseToWai)
@@ -233,6 +234,9 @@ serve :: Env -> MountBinding -> RouteAction -> Request -> (Response -> IO Respon
 serve env binding (RouteAction contract action) request respond =
     case action of
         AnswerLocally answer -> send answer
+        -- This is where a route's own refusal meets the mount's help message: the table decides
+        -- the refusal, and the binding beside it renders the body.
+        AnswerRefusal render -> send (render (pdHelp (bindingPackumentDeps binding)))
         RunPipeline fallback handler -> perimeterGuard observeFault send fallback (run . handler request)
   where
     send value = respond (responseToWai contract value)
