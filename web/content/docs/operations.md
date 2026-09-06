@@ -94,6 +94,38 @@ boot-time configuration echo is the exception: it prints each configured endpoin
 That is safe, because the boot refuses a URL that carries a credential (see
 [Secrets](@/docs/configuration.md#secrets)).
 
+## Alerting on `ERROR`
+
+**Point a monitor at `status: error` and page on it.** An `ERROR` line is a condition Écluse
+cannot resolve on its own, so each one wants a person. Among them:
+
+- A sweep cycle that halted, or a Dredger latched and running no cycle at all.
+- A store that refused a delete, or never received one.
+- An advisory sync that could not be prepared: no database within the boot budget, or a
+  published artifact Écluse refused.
+- A mirror job nothing else can capture, and an artifact whose bytes failed their digest.
+- A background loop that failed up and took the process with it.
+
+Nothing routine, expected, or self-healing is written at that level, so the volume is a signal on
+its own. Écluse absorbs a great deal without needing you, and that traffic logs below `error`:
+
+| Status | What it means | What to do with it |
+|---|---|---|
+| `error` | Écluse cannot resolve it, and the condition persists until someone acts. | Page. |
+| `warn` | Écluse absorbed it and carried on degraded. An upstream it could not reach, a mirror job left to redeliver, a store call it is retrying, a malformed advisory entry it dropped, a background loop backing off. | Chart it, and alert on a sustained rate rather than on a line. |
+| `info` | What the run did: a completed sweep cycle, a version deleted, a mirrored artifact, a served package. | Index it, and read it back during an incident. |
+| `debug` | Per-request and per-entry detail. Verbose under load, and off by default. | Turn it on while you investigate. |
+
+A loop that keeps failing warns on every attempt, so `error` alone does not catch a slow death.
+The mirror worker is covered: a stalled consume loop fails `GET /livez`
+([Health probes](@/docs/operations.md#health-probes)). Every other background loop needs a rate
+alert on the warnings carrying its name.
+
+One `error` line is a known false positive. `ecluse pilot compile` run beside a live Pilot cannot
+bind the metrics listener, and does its work anyway
+([Telemetry](@/docs/operations.md#telemetry-opt-in)). Any other failure to bind that listener wants
+a look.
+
 ## Telemetry (opt-in)
 
 Telemetry stays off until you ask for it. Set `ECLUSE_OBSERVABILITY__TELEMETRY=on`, then give the

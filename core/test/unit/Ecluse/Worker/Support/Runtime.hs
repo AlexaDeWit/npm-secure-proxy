@@ -27,6 +27,7 @@ module Ecluse.Worker.Support.Runtime (
     withRuntime,
     withQueueRuntime,
     runWM,
+    runWMWith,
 
     -- * Metadata-client doubles
     versionClient,
@@ -45,6 +46,7 @@ module Ecluse.Worker.Support.Runtime (
     withUpstream,
 ) where
 
+import Katip (LogEnv)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Types (status200)
 import UnliftIO.Exception (throwIO)
@@ -193,9 +195,11 @@ withQueueRuntime queue body =
 scribe, so log lines are discarded.
 -}
 runWM :: WorkerRuntime -> WorkerM a -> IO a
-runWM runtime action = do
-    logEnv <- newTestLogEnv
-    runWorkerM logEnv mempty runtime action
+runWM runtime action = newTestLogEnv >>= \logEnv -> runWMWith logEnv runtime action
+
+-- | 'runWM' over a caller-supplied 'LogEnv', so a spec reads back what the worker logged.
+runWMWith :: LogEnv -> WorkerRuntime -> WorkerM a -> IO a
+runWMWith logEnv = runWorkerM logEnv mempty
 
 {- | A 'MetadataClient' double whose single-version op returns a fixed result (the
 full-manifest op is unused here and refuses loudly).

@@ -8,10 +8,12 @@ module Ecluse.Core.Osv.AdvisorySpec (spec) where
 import Conduit
 import Data.Aeson (eitherDecodeStrict)
 import Data.ByteString qualified as BS
+import Katip (closeScribes)
 import Test.Hspec (Spec, anyException, describe, it, shouldBe, shouldSatisfy, shouldThrow)
 
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (unpack)
+import Data.Text qualified as T
 import Ecluse.Core.Osv.Advisory
 import Ecluse.Core.Osv.Epss (EpssScores, mkEpssScores)
 import Ecluse.Core.Osv.Stream (
@@ -25,7 +27,8 @@ import Ecluse.Core.Osv.Stream (
     systemicDrop,
  )
 import Ecluse.Core.Osv.Types (UpperBound (..))
-import Ecluse.Test.Osv (osvZipOf, runOsvTestM)
+import Ecluse.Test.Log (captureStdout, jsonLogEnv)
+import Ecluse.Test.Osv (osvZipOf, runOsvTestM, runOsvTestMWith)
 import Ecluse.Test.Stub (stubBaseUrl, withStub)
 import Network.HTTP.Types.Status (status200)
 
@@ -341,6 +344,26 @@ spec = describe "Osv parsing and streaming" $ do
                     pure (rs, st)
             length results `shouldBe` 5
             statAccepted stats `shouldBe` 1
+
+        -- 'systemicDrop' is what escalates a feed whose drops stop being isolated.
+        it "keeps every per-entry drop below the level an operator pages on" $ do
+            zipData <-
+                osvZipOf
+                    [ ("big.json", LBS.replicate 3000 120)
+                    , ("bad.json", "not json at all")
+                    , ("fan.json", "{\"id\":\"GHSA-fan\",\"affected\":[{\"package\":{\"name\":\"fan\",\"ecosystem\":\"npm\"},\"versions\":[\"1.0.0\",\"1.1.0\",\"1.2.0\",\"1.3.0\",\"1.4.0\"]}]}")
+                    ]
+            let limits = defaultIngestLimits{ilMaxAdvisoryBytes = 2000, ilMaxAdvisoryFanOut = 3}
+            logged <- captureStdout $ do
+                logEnv <- jsonLogEnv
+                runOsvTestMWith logEnv $ do
+                    ingest <- newOsvIngest limits noScores
+                    void . runConduit $ yieldMany (LBS.toChunks zipData) .| parseOsvStream Nothing ingest .| sinkList
+                void (closeScribes logEnv)
+            logged `shouldSatisfy` T.isInfixOf "Dropping oversized OSV entry"
+            logged `shouldSatisfy` T.isInfixOf "Failed to parse OSV advisory JSON"
+            logged `shouldSatisfy` T.isInfixOf "exceeding the sanity threshold"
+            logged `shouldSatisfy` (not . T.isInfixOf "\"sev\":\"Error\"")
 
     describe "systemicDrop" $ do
         it "does not trip on a healthy feed with a few bad entries" $

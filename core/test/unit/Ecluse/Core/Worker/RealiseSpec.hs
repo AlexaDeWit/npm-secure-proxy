@@ -9,6 +9,8 @@ that retires a message no dead-letter terminus captures. The decision half's cov
 -}
 module Ecluse.Core.Worker.RealiseSpec (spec) where
 
+import Data.Text qualified as T
+import Katip (closeScribes)
 import Test.Hspec
 
 import Ecluse.Core.Package (HashAlg (SRI))
@@ -16,6 +18,7 @@ import Ecluse.Core.Queue (DeliveryBudget (DeliveryBudget), MirrorQueue (delivery
 import Ecluse.Core.Registry (PublishError (PublishError), PublishFault (PublishRejected))
 import Ecluse.Core.Telemetry.Metrics (MirrorResult (Discarded, Failed, Published))
 import Ecluse.Core.Worker (processBatch)
+import Ecluse.Test.Log (captureStdout, jsonLogEnv)
 import Ecluse.Test.Package (unsafeHash)
 import Ecluse.Test.Port (noopWorkerMetricsPort, recordingWorkerMetricsPort)
 import Ecluse.Test.Rules (denyRule)
@@ -92,6 +95,22 @@ spec = do
                     -- redelivering backend the un-acked message comes back ("retry is don't ack").
                     acked <- ackedReceipts
                     acked `shouldBe` []
+
+        -- The terminal outcomes beside this one, a dead-letter and a discard, are what
+        -- keep the error level worth alerting on.
+        it "warns rather than errors when a job is left for redelivery, the routine retry" $
+            withUpstream $ \url -> do
+                (queue, _ackedReceipts) <- recordingAckQueue
+                withRuntimeQueue queue (`recordingPublish` Left (PublishRejected (PublishError "503"))) admitPolicies noopWorkerMetricsPort $ \runtime _logRef -> do
+                    enqueue_ queue (jobWith url)
+                    messages <- receive_ queue
+                    logged <- captureStdout $ do
+                        logEnv <- jsonLogEnv
+                        runWMWith logEnv runtime (processBatch messages)
+                        void (closeScribes logEnv)
+                    logged `shouldSatisfy` T.isInfixOf "\"sev\":\"Warning\""
+                    logged `shouldSatisfy` T.isInfixOf "leaving mirror job un-acked for retry"
+                    logged `shouldSatisfy` (not . T.isInfixOf "\"sev\":\"Error\"")
 
         it "acks a DROPPED job, retiring a tampered artifact rather than retrying it" $
             -- An integrity mismatch is non-retryable, because redelivery could never make the bytes

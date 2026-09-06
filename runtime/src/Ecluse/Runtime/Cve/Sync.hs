@@ -2,31 +2,14 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The advisory database's sync mechanics: detect a new @osv.db@ artifact in
-object storage, download it bounded, verify it, and shadow-swap it into the read path.
-One task runs per ecosystem, driven by the configured mounts.
-
-The write side of "Ecluse.Core.Cve.Slot". 'syncStep' performs exactly one
-detect-download-verify-swap cycle over an injected 'CveFetch', so unit tests
-drive it without a network. 'runCveSync' schedules those steps: an eager __boot
-burst__ followed by the steady ETag poll. The burst is an immediate attempt, retried
-with incremental backoff, and eventually allowed to fail so a broken bucket never
-wedges startup. The proxy is rules-engine complete as early as the artifact can be
-had. Before then it serves deny-by-default.
-
-The swap follows a file discipline. The download lands in a temp file beside the
-canonical per-ecosystem path. 'Ecluse.Core.Cve.openCveDb' then verifies that temp
-file (epoch stamp, table shape, ecosystem), the artifact contract's
-verify-before-swap. The connection that verified is __the connection that serves__.
-The rename puts the accepted temp file atomically onto the canonical name. The open
-connection follows the inode through the rename, and 'Ecluse.Core.Cve.Slot.swapIn'
-publishes that same 'CveDb'. There is no reopen and so no verify-to-serve gap. The
-displaced generation drains and closes inside
-'Ecluse.Core.Cve.Slot.swapIn', releasing the old inode's last reference.
-Reclamation is the kernel's, never a delete this code could mistime. The sync
-deletes a rejected artifact and remembers its ETag, since re-downloading a
-known-bad object every poll buys nothing, and the last-good generation keeps
-serving.
+{- | The advisory database's sync mechanics, and the write side of "Ecluse.Core.Cve.Slot":
+detect a new @osv.db@ artifact in object storage, download it bounded, verify it, and
+shadow-swap it into the read path, one task per configured mount. 'syncStep' performs
+exactly one such cycle over an injected 'CveFetch', so unit tests drive it without a
+network, and 'runCveSync' schedules those steps: an eager boot burst, retried with
+incremental backoff and eventually allowed to fail so a broken bucket never wedges
+startup, then the steady ETag poll. Until an artifact lands, the ecosystem denies by
+default.
 -}
 module Ecluse.Runtime.Cve.Sync (
     -- * The injected transport
@@ -54,7 +37,7 @@ import Conduit (ConduitT, await, runResourceT, yield, (.|))
 import Control.Retry (retrying)
 import Data.ByteString qualified as BS
 import Data.Conduit.Combinators qualified as C
-import Katip (KatipContext, Severity (DebugS, ErrorS, InfoS), logFM, ls)
+import Katip (KatipContext, Severity (DebugS, ErrorS, InfoS, WarningS), logFM, ls)
 import Network.HTTP.Types.Status (statusCode)
 import System.Directory (removeFile, renameFile)
 import UnliftIO (MonadUnliftIO, withRunInIO)
@@ -158,8 +141,8 @@ syncStep env lastSeen =
             | Just remote == lastSeen -> pure SyncUnchanged
             | otherwise -> syncNewArtifact env
 
--- The 'onException' guards absorb nothing. They discard the temp file when a filesystem fault
--- escapes below the typed channels, then re-propagate it.
+-- Nothing unverified is renamed onto the name the read path opens. The 'onException' guards
+-- absorb nothing: they discard the temp file when a filesystem fault escapes, then re-propagate.
 syncNewArtifact :: SyncEnv -> IO SyncOutcome
 syncNewArtifact env = do
     let temp = syncDbPath env <> ".tmp"
@@ -278,8 +261,9 @@ observedStep metrics tracing env eco notifyFirstSync lastSeen =
     attempt =
         liftIO (syncStep env lastSeen) >>= \case
             SyncFetchFaulted fault -> do
-                -- The step learned nothing about the remote artifact. The last seen ETag stands.
-                logFM ErrorS (ls ("cve-sync[" <> eco <> "]: sync fetch failed: " <> show fault))
+                -- The step learned nothing about the remote artifact, so the last seen ETag and
+                -- the last good database both stand and the next poll retries.
+                logFM WarningS (ls ("cve-sync[" <> eco <> "]: sync fetch failed: " <> show fault))
                 pure (AdvisoryFetchFailed, (False, lastSeen))
             SyncSwapped etag meta -> do
                 logFM InfoS (ls ("cve-sync[" <> eco <> "]: advisory database swapped in: etag=" <> show etag <> " meta=" <> show meta))

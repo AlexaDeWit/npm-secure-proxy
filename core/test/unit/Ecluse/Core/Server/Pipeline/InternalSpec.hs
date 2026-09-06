@@ -39,11 +39,13 @@ import Ecluse.Core.Rules.Types (
 import Ecluse.Core.Server.Pipeline.Internal (
     DenialAudit (..),
     Metadata (..),
+    VersionVerdict (VersionVerdict),
     admitByIntegrity,
     denialAuditPayload,
     denialLabels,
     evalTier,
     logDecodeFailure,
+    logDenials,
     logNameMismatch,
     logUpstreamUnformable,
     packumentServeDecision,
@@ -197,6 +199,22 @@ spec = do
                 [ Undecidable (WillResolve Nothing) "unreachable"
                 , BlockedByDefault []
                 ]
+
+    describe "logDenials" $
+        -- An open rule-source breaker fast-fails to this verdict, so it is the routine
+        -- shape of a rule source being down rather than a fault nobody answered.
+        it "keeps an absorbed rule-source outage below the level an operator pages on" $ do
+            let denied =
+                    VersionVerdict
+                        "1.0.0"
+                        (Reject (Rejection (Unavailable (WillResolve Nothing)) "DenyIfCve: the rule could not be evaluated"))
+            logged <- captureStdout $ do
+                logEnv <- jsonLogEnv
+                runKatipContextT logEnv (mempty :: SimpleLogPayload) mempty (logDenials (unscopedNpm "is-odd") Nothing [denied])
+                void (closeScribes logEnv)
+            logged `shouldSatisfy` T.isInfixOf "\"sev\":\"Warning\""
+            logged `shouldSatisfy` (not . T.isInfixOf "\"sev\":\"Error\"")
+            logged `shouldSatisfy` T.isInfixOf "\"package\":\"is-odd\""
 
     describe "denialAuditPayload" $ do
         let audit etag extra =
