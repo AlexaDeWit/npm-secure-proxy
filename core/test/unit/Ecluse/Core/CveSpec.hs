@@ -93,3 +93,12 @@ spec = do
 
             it "an unparseable subject version counts as inside" $
                 inside "definitely not semver" (range (Just "1.0.0") (FixedBefore "2.0.0")) `shouldBe` True
+
+            it "answers a decoded \"0\" lower bound exactly as it answers the raw one" $ do
+                -- Pilot decodes OSV's "0" lower bound to no lower bound at all. The two
+                -- spellings must agree at every version, or the decode would move a verdict.
+                let agrees upper v = inside v (range Nothing upper) `shouldBe` inside v (range (Just "0") upper)
+                    versions = ["0.0.1", "1.0.0", "99.0.0", "definitely not semver"]
+                traverse_ (agrees (FixedBefore "2.0.0")) versions
+                traverse_ (agrees (LastAffected "3.8.8")) versions
+                traverse_ (agrees Unbounded) versions

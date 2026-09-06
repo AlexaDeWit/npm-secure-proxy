@@ -230,6 +230,15 @@ extractFromAdvisory scores adv = do
 -- One affected interval: an inclusive lower bound and where it closes.
 data Segment = Segment (Maybe Text) UpperBound
 
+{- Build a segment from a range's events, decoding an @introduced@ of @"0"@ to no lower bound.
+OSV spells "affected from the beginning" that way, and semver rejects it, so keeping it verbatim
+would rest every such row on the range check's fail-closed default instead of on its own bounds.
+An exactly enumerated version of @"0"@ is a version, not a sentinel, so it does not come here. -}
+rangeSegment :: Maybe Text -> UpperBound -> Segment
+rangeSegment introduced = Segment (introduced >>= beyondTheBeginning)
+  where
+    beyondTheBeginning i = if i == "0" then Nothing else Just i
+
 affectedSegments :: OsvAffected -> [Segment]
 affectedSegments aff =
     maybe [] (concatMap (extractRange . rangeEvents) . filter versionTyped) (affectedRanges aff)
@@ -251,12 +260,12 @@ extractRange :: [OsvEvent] -> [Segment]
 extractRange = go Nothing
   where
     go Nothing [] = []
-    go (Just i) [] = [Segment (Just i) Unbounded]
+    go (Just i) [] = [rangeSegment (Just i) Unbounded]
     go current (e : es)
         | Just i <- eventIntroduced e =
             case current of
-                Just prev -> Segment (Just prev) Unbounded : go (Just i) es
+                Just prev -> rangeSegment (Just prev) Unbounded : go (Just i) es
                 Nothing -> go (Just i) es
-        | Just f <- eventFixed e = Segment current (FixedBefore f) : go Nothing es
-        | Just la <- eventLastAffected e = Segment current (LastAffected la) : go Nothing es
+        | Just f <- eventFixed e = rangeSegment current (FixedBefore f) : go Nothing es
+        | Just la <- eventLastAffected e = rangeSegment current (LastAffected la) : go Nothing es
         | otherwise = go current es

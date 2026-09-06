@@ -71,7 +71,7 @@ spec = describe "Osv parsing and streaming" $ do
                                     { extPackage = "hono"
                                     , extEcosystem = "npm"
                                     , extCveId = "GHSA-2234-fmw7-43wr"
-                                    , extIntroduced = Just "0"
+                                    , extIntroduced = Nothing
                                     , extUpperBound = FixedBefore "4.6.5"
                                     , -- The fixture carries both a CVSS 3.1 vector and the
                                       -- "MODERATE" label. The computed base score wins.
@@ -151,7 +151,7 @@ spec = describe "Osv parsing and streaming" $ do
             let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing Nothing (Just "3.8.8")]
                 adv = OsvAdvisory "GHSA-la" Nothing (Just [OsvAffected (OsvPackage "electerm" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing
             extractFromAdvisory noScores adv
-                `shouldBe` [ExtractedOsv "electerm" "npm" "GHSA-la" (Just "0") (LastAffected "3.8.8") Nothing Nothing]
+                `shouldBe` [ExtractedOsv "electerm" "npm" "GHSA-la" Nothing (LastAffected "3.8.8") Nothing Nothing]
 
         it "ignores a GIT range whose commit-SHA bounds are not versions" $ do
             -- Carving a GIT range into segments would store a commit SHA as a version bound, which
@@ -167,7 +167,7 @@ spec = describe "Osv parsing and streaming" $ do
             let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent (Just "2.0.0") Nothing Nothing]
                 adv = OsvAdvisory "GHSA-open" Nothing (Just [OsvAffected (OsvPackage "open-pkg" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing
             extractFromAdvisory noScores adv
-                `shouldBe` [ ExtractedOsv "open-pkg" "npm" "GHSA-open" (Just "0") Unbounded Nothing Nothing
+                `shouldBe` [ ExtractedOsv "open-pkg" "npm" "GHSA-open" Nothing Unbounded Nothing Nothing
                            , ExtractedOsv "open-pkg" "npm" "GHSA-open" (Just "2.0.0") Unbounded Nothing Nothing
                            ]
 
@@ -184,7 +184,23 @@ spec = describe "Osv parsing and streaming" $ do
                         Nothing
                         Nothing
             extractFromAdvisory noScores adv
-                `shouldBe` [ExtractedOsv "mixed-pkg" "npm" "GHSA-both" (Just "0") (FixedBefore "2.0.0") Nothing Nothing]
+                `shouldBe` [ExtractedOsv "mixed-pkg" "npm" "GHSA-both" Nothing (FixedBefore "2.0.0") Nothing Nothing]
+
+        it "decodes OSV's \"0\" lower bound to no lower bound at all" $ do
+            -- OSV spells "affected from the beginning" as an introduced of "0", which semver
+            -- rejects. Verbatim it would leave the row resting on the matcher's fail-closed
+            -- default instead of on a bound of its own.
+            let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing (Just "1.2.3") Nothing]
+                adv = OsvAdvisory "MAL-zero" Nothing (Just [OsvAffected (OsvPackage "mal-pkg" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing
+            extractFromAdvisory noScores adv
+                `shouldBe` [ExtractedOsv "mal-pkg" "npm" "MAL-zero" Nothing (FixedBefore "1.2.3") Nothing Nothing]
+
+        it "keeps an exactly enumerated \"0\" as the version it names" $ do
+            -- The sentinel reading belongs to a range's lower bound. In versions[] the same
+            -- text names a version a package may really carry.
+            let adv = OsvAdvisory "MAL-v0" Nothing (Just [OsvAffected (OsvPackage "zero-pkg" "npm") Nothing (Just ["0"])]) Nothing Nothing
+            extractFromAdvisory noScores adv
+                `shouldBe` [ExtractedOsv "zero-pkg" "npm" "MAL-v0" (Just "0") (LastAffected "0") Nothing Nothing]
 
     it "extracts multiple packages and ranges from a complex OSV advisory" $ do
         fileBytes <- BS.readFile "test/unit/fixtures/osv/complex.json"
@@ -201,7 +217,7 @@ spec = describe "Osv parsing and streaming" $ do
                                     { extPackage = "multi-pkg"
                                     , extEcosystem = "npm"
                                     , extCveId = "GHSA-multi"
-                                    , extIntroduced = Just "0"
+                                    , extIntroduced = Nothing
                                     , extUpperBound = FixedBefore "1.0.0"
                                     , extSeverity = Nothing
                                     , extEpss = Nothing
@@ -228,7 +244,7 @@ spec = describe "Osv parsing and streaming" $ do
                                     { extPackage = "other-pkg"
                                     , extEcosystem = "npm"
                                     , extCveId = "GHSA-multi"
-                                    , extIntroduced = Just "0"
+                                    , extIntroduced = Nothing
                                     , extUpperBound = FixedBefore "3.0.0"
                                     , extSeverity = Nothing
                                     , extEpss = Nothing
