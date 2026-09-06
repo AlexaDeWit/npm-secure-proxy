@@ -29,7 +29,7 @@ data OsvEcosystem = OsvEcosystem
     -}
     , osvEcosystemTag :: Maybe Ecosystem
     {- ^ The ecosystem whose version grammar orders this pass's advisory bounds. 'Nothing' for a
-    name this build does not serve, and then the pass admits every bound unchecked.
+    name this build does not serve, and then the pass tallies nothing.
     -}
     }
     deriving stock (Eq, Show)

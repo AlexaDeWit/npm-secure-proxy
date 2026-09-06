@@ -121,9 +121,10 @@ spec = do
                 insideAffectedRange PyPI "2.0" (range Nothing (FixedBefore "2.0")) `shouldBe` False
                 insideAffectedRange PyPI "2.0.post1" (range Nothing (FixedBefore "2.0")) `shouldBe` False
 
-            it "covers a PyPI pre-release of the zero version, which a \"0\" bound excluded" $
+            it "covers a PyPI pre-release of the zero version, which a \"0\" bound excluded" $ do
                 -- PEP 440 orders 0rc1 below 0, so the raw bound left it outside the range it
                 -- belongs to. With no lower bound it is inside.
+                insideAffectedRange PyPI "0rc1" (range (Just "0") (FixedBefore "2.0")) `shouldBe` False
                 insideAffectedRange PyPI "0rc1" (range Nothing (FixedBefore "2.0")) `shouldBe` True
 
         describe "a point segment naming a version no grammar can order" $ do
@@ -137,6 +138,10 @@ spec = do
             it "leaves an orderable point on the ordinary comparison" $ do
                 inside "1.0.0" (point "1.0.0") `shouldBe` True
                 inside "1.0.1" (point "1.0.0") `shouldBe` False
+                -- Ordered equality, not string equality. Both hold only while a bound the
+                -- grammar parses keeps the point arm out of the way.
+                insideAffectedRange PyPI "1.0.0" (point "1.0") `shouldBe` True
+                inside "1.0.0+build" (point "1.0.0") `shouldBe` True
 
             it "does not read a range with two different unorderable bounds as a point" $
                 -- Only a segment whose bounds are the same text names one version. Anything

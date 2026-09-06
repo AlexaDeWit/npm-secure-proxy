@@ -417,12 +417,12 @@ spec = describe "Osv parsing and streaming" $ do
         it "admits a row whose bounds the ecosystem's grammar parses" $
             orderableBounds Npm (row (Just "1.0.0") (FixedBefore "2.0.0")) `shouldBe` True
 
-        it "refuses a row whose upper bound is no version of the ecosystem" $
+        it "does not order a row whose upper bound is no version of the ecosystem" $
             -- Date-stamped and two-component bounds both ride the real npm feed. Unordered,
             -- the segment matches every version of the package.
             orderableBounds Npm (row (Just "1.0.0") (FixedBefore "2026.05.1")) `shouldBe` False
 
-        it "refuses a point segment naming a version the grammar rejects" $
+        it "does not order a point segment naming a version the grammar rejects" $
             orderableBounds PyPI (row (Just "0.1-bulbasaur") (LastAffected "0.1-bulbasaur")) `shouldBe` False
 
         it "admits a segment carrying no bound to order" $

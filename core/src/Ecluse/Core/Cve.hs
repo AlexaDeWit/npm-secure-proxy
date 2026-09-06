@@ -150,10 +150,7 @@ taggedQuery :: Text -> IO a -> IO a
 taggedQuery tag act = act `catch` \(err :: SQLError) -> throwIO (CveQueryFault tag (show err))
 
 {- | Is this version inside the advisory segment's affected interval, under the ecosystem's
-version ordering? __Fail-closed:__ an unprovable comparison, from an unparseable bound or
-version, counts as __inside__, so a range with an endpoint the grammar rejects covers every
-version of its package. The one exception is a segment naming a single unorderable version
-('unorderablePoint'), which nothing can order and which therefore matches only itself.
+ordering? __Fail-closed:__ an unprovable comparison counts as __inside__, bar an 'unorderablePoint'.
 -}
 insideAffectedRange :: Ecosystem -> Text -> AdvisoryRange -> Bool
 insideAffectedRange eco versionText ar = case unorderablePoint eco ar of
@@ -184,11 +181,8 @@ insideAffectedRange eco versionText ar = case unorderablePoint eco ar of
         -- No upper bound: the range never ends.
         Unbounded -> True
 
-{- | The single version a segment names, when it names one that no ordering can place: both
-bounds are the same text and the grammar rejects it. OSV writes an exactly enumerated version
-this way, so the affected set is that literal string. A parseable point keeps the comparison,
-which admits the equal version through the ordinary inclusive bounds.
--}
+-- OSV writes an enumerated version as introduced == last_affected. When the grammar rejects that
+-- string, the segment names it literally, since nothing can order it against anything.
 unorderablePoint :: Ecosystem -> AdvisoryRange -> Maybe Text
 unorderablePoint eco ar = case (arIntroduced ar, arUpperBound ar) of
     (Just introduced, LastAffected lastAffected)

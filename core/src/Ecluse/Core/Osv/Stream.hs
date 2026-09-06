@@ -83,9 +83,8 @@ data IngestStats = IngestStats
     , statDroppedMalformed :: !Int
     -- ^ Entries dropped because their JSON did not decode.
     , statUnorderable :: !Int
-    {- ^ Rows carrying a bound the ecosystem's version grammar cannot parse
-    ('orderableBounds'). They are kept, so this is an alarm rather than a drop, and it is
-    counted in rows rather than entries.
+    {- ^ Rows kept with a bound the grammar cannot parse ('orderableBounds'). Counted in
+    rows, so it stays out of 'systemicDrop'.
     -}
     }
     deriving stock (Eq, Show)
@@ -102,7 +101,7 @@ data OsvIngest = OsvIngest
     , ingestCounter :: IngestCounter
     , ingestEcosystem :: Maybe Ecosystem
     {- ^ The version grammar that orders this pass's bounds. 'Nothing' for a name this build
-    does not serve, and then the pass admits every row unchecked.
+    does not serve, and then nothing is tallied.
     -}
     , ingestEpss :: EpssScores
     -- ^ The pass's EPSS table, joined onto each advisory as it is extracted.
