@@ -6,6 +6,7 @@ module Ecluse.E2E.Harness.Verdaccio (
     verdaccioHasVersion,
     verdaccioHasVersionNow,
     verdaccioListing,
+    verdaccioListsPackage,
     verdaccioNamesUnder,
 ) where
 
@@ -53,6 +54,14 @@ so an image whose listing changed shape fails here rather than inside a cycle.
 -}
 verdaccioListing :: E2E -> IO [Text]
 verdaccioListing e2e = map renderPackageName <$> verdaccioPackages e2e
+
+{- | Poll the listing until it names a package, or the timeout lapses. A sweep walks this document
+rather than a packument, so a case that seeds a package for one waits on the listing, not the
+packument: a store can serve a version it has not listed yet.
+-}
+verdaccioListsPackage :: E2E -> Text -> IO Bool
+verdaccioListsPackage e2e pkg =
+    pollUntil 40 500000 id (handleAny (\_ -> pure False) (elem pkg <$> verdaccioListing e2e))
 
 {- | The names the store lists that fall in one bucket of the name space, through the same
 predicate a store with no prefix filter of its own is walked by.

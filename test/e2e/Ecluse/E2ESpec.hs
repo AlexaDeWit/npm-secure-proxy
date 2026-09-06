@@ -314,6 +314,10 @@ dredgerScenarios =
             void $ npmInstall e2e (psName dredgerDryRunPkg) >>= shouldSucceed
             mirrored <- verdaccioHasVersion e2e (psName dredgerDryRunPkg) (psVersion dredgerDryRunPkg)
             mirrored `shouldBe` True
+            -- A candidate cycle walks the store's listing and keeps the names its rules pin, so a
+            -- package the store serves but has not listed is a package the sweep never sees.
+            listed <- verdaccioListsPackage e2e (psName dredgerDryRunPkg)
+            unless listed (expectationFailure "the store never listed the seeded package")
             run <- runDredgerOnce gdp ["--once", "--dry-run"] [("ECLUSE_RULES", identityDenyOf dredgerDryRunPkg)]
             unless (dredgerExit run == ExitSuccess) (failWithLog run "the rehearsal exited non-zero")
             -- The rehearsal counts in the cycle's deleted column, so one dry run reports the reach
@@ -350,6 +354,8 @@ dredgerFirstPartyScenario =
                 void $ withPublishProject e2e publishDredgerName publishVersion npmPublishIn >>= shouldSucceed
                 onTarget <- verdaccioHasVersion e2e publishDredgerName publishVersion
                 onTarget `shouldBe` True
+                listed <- verdaccioListsPackage e2e publishDredgerName
+                unless listed (expectationFailure "the store never listed the published package")
                 -- The deny names this very version, so surviving is the belt's doing and not the
                 -- candidate set's. The Dredger reads the same namespace the publish was scoped to.
                 run <-
