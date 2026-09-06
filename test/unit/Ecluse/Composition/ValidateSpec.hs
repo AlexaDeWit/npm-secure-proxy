@@ -9,6 +9,7 @@ import Test.Hspec
 
 import Ecluse.Composition.BootError (
     BootError (
+        DredgerChunkPauseBeneathFloor,
         FirstPartyMissing,
         MirrorTargetOnMountEndpoint,
         MirrorTargetWithoutPublish,
@@ -47,10 +48,11 @@ import Ecluse.Config (
 import Ecluse.Core.Credential (unSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI, RubyGems))
 import Ecluse.Core.Package (mkScope)
+import Ecluse.Core.Registry.Sweep.Types (minimumChunkPause)
 import Ecluse.Core.Security.Egress (registryUrlText)
 
-{- | Tests the boot's validate phase: the four groups a role's pass runs, and the plan a cleared
-configuration reifies from. The groups compose with '<*>', so one run reports all of them.
+{- | Tests the boot's validate phase: the groups a role's pass runs, and the plan a cleared
+configuration reifies from. They compose with '<*>', so one run reports all of them.
 -}
 spec :: Spec
 spec = do
@@ -106,7 +108,7 @@ clearedSpec = describe "vetBoot -- what a cleared configuration reifies" $ do
     repositoryOf = fromMaybe "<not a CodeArtifact store>" . clearedRepository
 
 refusalSpec :: Spec
-refusalSpec = describe "vetBoot -- the refusals its four groups earn" $ do
+refusalSpec = describe "vetBoot -- the refusals its groups earn" $ do
     it "refuses a mount whose ecosystem this build ships no adapter for" $
         refusalsFor MirrorWriter (overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" staticEnvVars)
             `shouldReturn` [MissingAdapter RubyGems]
@@ -151,6 +153,17 @@ refusalSpec = describe "vetBoot -- the refusals its four groups earn" $ do
         refusalsFor MirrorPruner (overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__CODE_ARTIFACT__URL" codeArtifactMirrorUrl (withoutPrivateUpstreamUrl codeArtifactEnvVars))
             `shouldReturn` [MirrorTargetOnMountEndpoint Npm Npm "privateUpstream" codeArtifactMirrorUrl]
 
+    it "refuses the deleting role a chunk pause beneath the sweep's floor" $
+        -- The pause is what leaves an operator time to stop a mistaken sweep, and deletion is
+        -- permanent, so a value beneath the floor stops the boot rather than sweeping faster.
+        refusalsFor MirrorPruner (beneathThePauseFloor codeArtifactEnvVars)
+            `shouldReturn` [DredgerChunkPauseBeneathFloor 1 minimumChunkPause]
+
+    it "clears a writing role that same pause, because no writing role sweeps" $
+        -- The dredger group is the deleting role's alone. The checker still names the refusal
+        -- for this configuration, so an operator learns of it from either side.
+        refusalsFor MirrorWriter (beneathThePauseFloor codeArtifactEnvVars) `shouldReturn` []
+
     it "reports the mount refusal beside the maintenance refusal from one deleting-role run" $
         refusalsFor MirrorPruner (overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" staticEnvVars)
             `shouldReturn` [MissingAdapter RubyGems, noMaintenanceBackend]
@@ -176,6 +189,10 @@ publishingEnv =
 -- | 'publishingEnv' publishing under a static credential, which needs an inbound edge beside it.
 staticPublishEnv :: [(String, String)]
 staticPublishEnv = overrideEnv "ECLUSE_MOUNTS__NPM__PUBLICATION_TARGET__REGISTRY__TOKEN" "publish-write-token" publishingEnv
+
+-- | A sweep paced faster than the floor the deleting role refuses beneath.
+beneathThePauseFloor :: [(String, String)] -> [(String, String)]
+beneathThePauseFloor = overrideEnv "ECLUSE_DREDGER__CHUNK_PAUSE" "1"
 
 -- | Drop the first-party declaration, leaving the target the guard has nothing to check against.
 withoutFirstParty :: [(String, String)] -> [(String, String)]

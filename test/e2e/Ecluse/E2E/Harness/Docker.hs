@@ -486,7 +486,6 @@ dredgerEnv =
     , ("ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__TOKEN", "e2e-publish-token")
     , ("ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__PERMIT_DELETION", "true")
     , ("ECLUSE_OBSERVABILITY__LOG_FORMAT", "json")
-    , ("ECLUSE_DREDGER__CHUNK_PAUSE", "1")
     , ("SSL_CERT_FILE", "/certs/bundle.pem")
     ]
 

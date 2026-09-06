@@ -198,6 +198,14 @@ dryRunSpec = describe "a dry run" $ do
             `shouldReturn` [SweepExamined, SweepExamined, SweepWouldDelete, SweepWouldDelete]
         held store `shouldReturn` map version ["1.0.0", "2.0.0"]
 
+    it "reports once where a run that halts on the cap would have stopped" $ do
+        -- The line is what an operator sizes the cap from ahead of the first real sweep, so it
+        -- names the cap and the count, and it is written at the crossing rather than per version.
+        (rec', _) <- rehearseOne testPacing{swpDeletionCap = 1} ["1.0.0", "2.0.0"]
+        info <- recInfo rec'
+        filter (T.isInfixOf "deletion cap") info
+            `shouldSatisfy` \lines' -> length lines' == 1 && all (T.isInfixOf "handed over 2 versions") lines'
+
 {- One package's step under a rehearsal's report, over a store whose delete is the backend's own
 rehearsal. Nothing here knows which run it is in; the report is what differs. -}
 rehearseOne :: SweepPacing -> [Text] -> IO (RecordedSweep, FakeStore)

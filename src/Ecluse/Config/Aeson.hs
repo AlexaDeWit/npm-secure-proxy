@@ -195,7 +195,7 @@ dredgerDecoder =
         <$> requiredKey "chunkSize" parsePositiveInt
         <*> requiredKey "chunkPause" parseDelaySeconds
         <*> requiredKey "cyclePause" parseDelaySeconds
-        <*> requiredKey "deletionCap" parsePositiveInt
+        <*> optionalKey "deletionCap" parsePositiveInt
         <*> plainKey "fullWalk"
 
 {- | Parse every mount in the merged @mounts@ object, the shipped per-ecosystem templates

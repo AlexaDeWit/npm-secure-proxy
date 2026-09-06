@@ -225,6 +225,11 @@ error, not a silent skip:
   refusal names the mount key and the reason. Only the Dredger deletes, so only the Dredger refuses:
   the other roles boot on such a target and log nothing, and `ecluse check-config` names the
   Dredger's refusal.
+- `dredger.chunkPause` carries a hardcoded floor of two seconds. The pause between chunks is what
+  leaves an operator time to stop a mistaken sweep, and deletion is permanent, so the value may be
+  raised and never lowered. `ecluse dredger` refuses a value beneath the floor and names the key,
+  the configured value, and the floor. Only the Dredger reads the group, so the same severity split
+  applies: the other roles boot on it, and the checker names the Dredger's refusal.
 
 Most of those refusals are decided as the configuration loads. The mount-adapter rule, the
 publish-policy pairing, the endpoint-disjointness rules, and the store maintenance backend are
@@ -256,9 +261,10 @@ The checker picks no subcommand, so it runs the pass once per role. It runs no m
 prunes no store, so its own pass vets under the writing roles' severities, and that pass decides
 the exit status. A refusal only some roles earn prints as a warning naming the command that earns
 it: `ecluse proxy --no-worker` and `ecluse mirror` over the bounded in-memory queue, `ecluse mirror`
-where no mount declares a `mirrorTarget`, and `ecluse dredger` on a collapsed endpoint pair or on
-a `mirrorTarget` this build has no maintenance backend for. A configuration one role refuses and
-another boots is a normal deployment, which is why those do not fail the check.
+where no mount declares a `mirrorTarget`, and `ecluse dredger` on a collapsed endpoint pair, on a
+`mirrorTarget` this build has no maintenance backend for, or on a chunk pause beneath its floor. A
+configuration one role refuses and another boots is a normal deployment, which is why those do not
+fail the check.
 
 What the checker does not reach is the environment-dependent tier those refusals sit in. A boot
 builds it and the checker makes no cloud call, which is also why allocating each mount's rule state

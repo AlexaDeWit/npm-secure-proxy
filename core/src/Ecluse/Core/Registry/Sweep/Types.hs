@@ -10,6 +10,8 @@ module Ecluse.Core.Registry.Sweep.Types (
     -- * What a sweep runs over
     SweepMount (..),
     SweepPacing (..),
+    minimumChunkPause,
+    deletionCapPerStore,
     SweepShape (..),
     SweepReport (..),
     SweepPorts (..),
@@ -84,6 +86,18 @@ data SweepPacing = SweepPacing
     -- ^ Which names the cycle carries to the rules.
     }
     deriving stock (Eq, Show)
+
+{- | The shortest pause a sweep may be paced by, which the boot refuses beneath. Deletion is
+permanent, and the pause between chunks is what leaves time to stop a mistaken run.
+-}
+minimumChunkPause :: NominalDiffTime
+minimumChunkPause = 2
+
+{- | Versions one cycle may hand over per sweepable store, which the cap's default is computed
+from. A cycle covers every store in turn, so one pinned total would starve the later mounts.
+-}
+deletionCapPerStore :: Int
+deletionCapPerStore = 100
 
 {- | Which names one cycle decides. A full walk is a superset of a candidate cycle, so the
 two never run beside each other.

@@ -19,6 +19,7 @@ module Ecluse.Composition.BootError (
 ) where
 
 import Data.Text qualified as T
+import Data.Time (NominalDiffTime)
 import UnliftIO (tryAny)
 
 import Ecluse.Config (
@@ -131,6 +132,10 @@ data BootError
       with, carrying why.
       -}
       StoreMaintenanceUnavailable Ecosystem StoreMaintenanceReason
+    | {- | The configured pause between sweep chunks is beneath its floor, carried beside it.
+      Only the deleting role reads the @dredger@ group, so only that role refuses.
+      -}
+      DredgerChunkPauseBeneathFloor NominalDiffTime NominalDiffTime
     | {- | An advisory store is configured and no mount is, so @ecluse pilot@ has no ecosystem
       to compile an artifact for and would publish nothing.
       -}
@@ -263,6 +268,12 @@ renderBootError = \case
             <> " has no usable store maintenance backend: "
             <> renderStoreMaintenanceReason eco reason
             <> " (the Dredger deletes from every mount's mirror target, so it refuses rather than starting against a store it cannot sweep)"
+    DredgerChunkPauseBeneathFloor configured floorPause ->
+        "ECLUSE_DREDGER__CHUNK_PAUSE (dredger.chunkPause) is "
+            <> show configured
+            <> ", beneath the floor of "
+            <> show floorPause
+            <> ": the pause between chunks is what leaves time to stop a mistaken sweep. Deletion is permanent, so the pause may be raised and never lowered"
     PilotWithoutEcosystem ->
         "ECLUSE_ADVISORIES__URL is set but no mount is declared, so ecluse pilot has no ecosystem to compile an advisory artifact for: declare the mounts this deployment serves under ECLUSE_MOUNTS__<ECOSYSTEM>__, or run a role this configuration has work for"
 

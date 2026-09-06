@@ -18,6 +18,7 @@ module Ecluse.Dredger.Plan (
     haltDetail,
 ) where
 
+import Ecluse.Composition.Sizing (resolveSized)
 import Ecluse.Config (
     AppConfig (cfgDredger),
     DredgerSettings (drgChunkPause, drgChunkSize, drgCyclePause, drgDeletionCap, drgFullWalk),
@@ -33,6 +34,7 @@ import Ecluse.Core.Registry.Sweep.Types (
     SweepPacing (SweepPacing, swpChunkPause, swpChunkSize, swpCyclePause, swpDeletionCap, swpShape),
     SweepReport (SweepReport, reportCapHalts, reportOpening, reportRemoval),
     SweepShape (SweepCandidates, SweepEverything),
+    deletionCapPerStore,
     renderCycleHalt,
  )
 import Ecluse.Core.Rules.Types (readsAdvisories)
@@ -64,18 +66,28 @@ data DredgerOptions = DredgerOptions
     }
     deriving stock (Eq, Show)
 
--- | The pacing, the per-cycle cap, and the shape the @dredger@ configuration group settled.
-sweepPacingFor :: AppConfig -> SweepPacing
-sweepPacingFor appConfig =
-    SweepPacing
+{- | The pacing, the per-cycle cap, and the shape the @dredger@ group settled over the stores a
+cycle sweeps, beside the boot line naming where the cap came from.
+-}
+sweepPacingFor :: AppConfig -> Int -> (SweepPacing, Text)
+sweepPacingFor appConfig stores =
+    ( SweepPacing
         { swpChunkSize = drgChunkSize dredger
         , swpChunkPause = drgChunkPause dredger
         , swpCyclePause = drgCyclePause dredger
-        , swpDeletionCap = drgDeletionCap dredger
+        , swpDeletionCap = cap
         , swpShape = if drgFullWalk dredger then SweepEverything else SweepCandidates
         }
+    , capLine
+    )
   where
     dredger = cfgDredger appConfig
+    (cap, capLine) =
+        resolveSized
+            "dredger: deletion cap"
+            (drgDeletionCap dredger)
+            (deletionCapPerStore * stores)
+            ("computed as " <> show deletionCapPerStore <> " per sweepable mirror store")
 
 {- | The detail a halted one-shot run reports as its own non-zero ending, so a scheduler reads
 the outcome from the status and the reason from the same line.

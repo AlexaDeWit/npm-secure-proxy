@@ -435,9 +435,9 @@ data DredgerSettings = DredgerSettings
     -- ^ Seconds between chunks, which is also the wait a fault advising no delay of its own takes.
     , drgCyclePause :: NominalDiffTime
     -- ^ Seconds between the end of one cycle and the start of the next.
-    , drgDeletionCap :: Int
-    {- ^ Versions one cycle may hand over for deletion. Reaching it halts the sweep for the life
-    of the process, which is the breaker against a generation that denies far more than it should.
+    , drgDeletionCap :: Maybe Int
+    {- ^ Versions one cycle may hand over for deletion, computed per sweepable store when unset.
+    Reaching it halts the sweep for the life of the process, so a poisoned generation stops there.
     -}
     , drgFullWalk :: Bool
     {- ^ Walk every package each cycle rather than the advisory and identity-deny candidates. It
