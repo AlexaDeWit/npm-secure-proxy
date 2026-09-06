@@ -21,7 +21,9 @@ import Ecluse.Core.Registry.Maintenance (
     chunksOfCeiling,
     collectPages,
     deleteAll,
+    extendBucket,
     inBucket,
+    initialBuckets,
     mkNameAlphabet,
     noNameAlphabet,
     pageAll,
@@ -34,6 +36,7 @@ import Ecluse.Core.Registry.Maintenance (
     storeFaultOfMetadata,
     storeRefusal,
     unreachedBatch,
+    wholeNameSpace,
  )
 import Ecluse.Core.Registry.Metadata (
     MetadataError (MetadataBoundExceeded, MetadataFetch, MetadataNameMismatch, MetadataUndecodable),
@@ -53,6 +56,34 @@ spec = do
 
 bucketSpec :: Spec
 bucketSpec = do
+    describe "initialBuckets" $ do
+        it "gives one bucket per character of the alphabet, in the order it was built with" $
+            map renderNamePrefix (toList (initialBuckets (mkNameAlphabet "abc")))
+                `shouldBe` ["a", "b", "c"]
+
+        it "drops a repeated character, so no name lands in two buckets" $
+            length (initialBuckets (mkNameAlphabet "aab")) `shouldBe` 2
+
+        it "gives the one bucket that covers everything when the alphabet has no characters" $
+            initialBuckets noNameAlphabet `shouldBe` wholeNameSpace :| []
+
+        it "puts every name the alphabet leads into exactly one of its buckets" $
+            map bucketsHolding names `shouldBe` replicate (length names) 1
+
+    describe "extendBucket" $ do
+        it "narrows a bucket by one character of the alphabet at a time" $
+            withBucket "a" $ \a ->
+                map renderNamePrefix (extendBucket (mkNameAlphabet "ab") a) `shouldBe` ["aa", "ab"]
+
+        it "narrows nothing under an alphabet with no characters" $
+            withBucket "a" $
+                \a -> extendBucket noNameAlphabet a `shouldBe` []
+
+        it "keeps the narrower buckets inside the one they came from" $
+            withBucket "a" $ \a ->
+                all (\narrower -> renderNamePrefix a `T.isPrefixOf` renderNamePrefix narrower) (extendBucket alphabet a)
+                    `shouldBe` True
+
     describe "parseNamePrefix" $ do
         it "reads back a prefix the alphabet spells" $
             fmap renderNamePrefix (parseNamePrefix (mkNameAlphabet "abc") "ab") `shouldBe` Just "ab"
@@ -83,6 +114,11 @@ bucketSpec = do
                 map (inBucket everything) names `shouldBe` replicate (length names) True
   where
     names = [unscoped "apple", unscoped "banana", scopedName]
+
+    -- The alphabet leads every one of those names, so the buckets it gives partition them.
+    alphabet = mkNameAlphabet "abc"
+
+    bucketsHolding name = length [() | b <- toList (initialBuckets alphabet), inBucket b name]
 
 {- The two folds a store's reads go through. Only the transport half of either clears on its own,
 so everything else advises against a second attempt in the same cycle. -}

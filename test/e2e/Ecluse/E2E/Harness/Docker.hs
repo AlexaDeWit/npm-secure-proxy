@@ -19,6 +19,10 @@ module Ecluse.E2E.Harness.Docker (
     -- * Observability
     withUpstreamPaused,
 
+    -- * The Dredger, run to completion
+    DredgerRun (..),
+    runDredgerOnce,
+
     -- * Container logs
     awaitContainerLog,
     containerLogs,
@@ -142,12 +146,12 @@ withGlobalDataPlane action = do
                             , drPorts = ["127.0.0.1:0:4873"]
                             , drMounts = [(workDir </> "verdaccio.yaml", "/verdaccio/conf/config.yaml:ro")]
                             }
-                    -- One nginx terminates TLS for both registry stubs, so it answers to two
-                    -- in-network aliases (`upstream` and `mirror`). The raw docker CLI
-                    -- supports that multi-alias and testcontainers 0.5.3.0 does not.
+                    -- One nginx terminates TLS for every registry stub, so it answers to three
+                    -- in-network aliases (`upstream`, `mirror`, and `private-upstream`). The raw
+                    -- docker CLI supports that multi-alias and testcontainers 0.5.3.0 does not.
                     stubRun =
                         (dockerRun stub net stubImage)
-                            { drAliases = ["upstream", "mirror"]
+                            { drAliases = ["upstream", "mirror", "private-upstream"]
                             , drMounts =
                                 [ (workDir </> "html", "/usr/share/nginx/html:ro")
                                 , (workDir </> "nginx.conf", "/etc/nginx/conf.d/default.conf:ro")
@@ -321,15 +325,22 @@ dockerRun name net image =
 labels. It fails the test loudly on a non-zero exit.
 -}
 runDetached :: [String] -> DockerRun -> IO ()
-runDetached labelArgs spec =
-    dockerOk $
-        ["run", "--rm", "-d", "--name", drName spec, "--network", drNetwork spec]
-            <> concatMap (\a -> ["--network-alias", a]) (drAliases spec)
-            <> concatMap (\p -> ["-p", p]) (drPorts spec)
-            <> concatMap (\(h, c) -> ["-v", h <> ":" <> c]) (drMounts spec)
-            <> concatMap (\(k, v) -> ["-e", toString (k <> "=" <> v)]) (drEnv spec)
-            <> labelArgs
-            <> (drImage spec : drCmd spec)
+runDetached labelArgs = dockerOk . runArgs ["-d"] labelArgs
+
+{- | The @docker run@ arguments one spec renders to, with whatever extra flags the caller needs.
+A detached run passes @-d@ and a run waited on passes none, so both render the same spec.
+-}
+runArgs :: [String] -> [String] -> DockerRun -> [String]
+runArgs extra labelArgs spec =
+    ["run", "--rm"]
+        <> extra
+        <> ["--name", drName spec, "--network", drNetwork spec]
+        <> concatMap (\a -> ["--network-alias", a]) (drAliases spec)
+        <> concatMap (\p -> ["-p", p]) (drPorts spec)
+        <> concatMap (\(h, c) -> ["-v", h <> ":" <> c]) (drMounts spec)
+        <> concatMap (\(k, v) -> ["-e", toString (k <> "=" <> v)]) (drEnv spec)
+        <> labelArgs
+        <> (drImage spec : drCmd spec)
 
 {- | Run a detached container for the duration of the action, force-removing it on every
 exit path. It yields the container name the caller chose.
@@ -434,6 +445,51 @@ collectorConfig =
         <> "traces: {receivers: [otlp], exporters: [debug]}, "
         <> "metrics: {receivers: [otlp], exporters: [debug]}}}}"
 
+{- | What one @ecluse dredger --once@ run reported: the status a scheduler reads, and the JSONL
+log lines it wrote. The run is not detached, so it ends when the cycle does.
+-}
+data DredgerRun = DredgerRun
+    { dredgerExit :: ExitCode
+    , dredgerOutput :: Text
+    }
+
+{- | Run the product image as @ecluse dredger --once@ against the shared data plane, with the extra
+environment the case layers over the Dredger's own. It deletes from the same Verdaccio store the
+proxy mirrors into, so a case seeds through the proxy and asserts against the store.
+-}
+runDredgerOnce :: GlobalDataPlane -> [Text] -> [(Text, Text)] -> IO DredgerRun
+runDredgerOnce gdp flags extraEnv = do
+    image <- maybe (fail (imageVar <> " unset")) pure =<< lookupEnv imageVar
+    sfx <- uniqueSuffix
+    labelArgs <- dockerLabelArgs "e2e"
+    let run =
+            (dockerRun ("ecluse-e2e-dredger-" <> sfx) (gdpNet gdp) (LocallyBuilt (toText image)))
+                { drMounts = [(gdpWorkDir gdp </> "certs", "/certs:ro")]
+                , drEnv = dredgerEnv <> extraEnv
+                , drCmd = "dredger" : map toString flags
+                }
+    (code, out, err) <- readProcess (proc "docker" (runArgs [] labelArgs run))
+    pure DredgerRun{dredgerExit = code, dredgerOutput = decodeUtf8 (LBS.toStrict (out <> err))}
+
+{- | The Dredger's own environment. Its mirror target is the store the proxy mirrors into, and it
+carries the operator consent that store's tag admits. Its private upstream is a registry of its
+own, because the deleting role refuses a mirror target that is also any mount\'s private upstream.
+-}
+dredgerEnv :: [(Text, Text)]
+dredgerEnv =
+    [ ("ECLUSE_SERVER__PORT", "4873")
+    , ("ECLUSE_SERVER__PUBLIC_URL", "http://127.0.0.1:4873")
+    , ("ECLUSE_MOUNTS__NPM__ENABLED", "true")
+    , ("ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL", "https://private-upstream/")
+    , ("ECLUSE_MOUNTS__NPM__PUBLIC_UPSTREAM__REGISTRY__URL", "https://upstream/")
+    , ("ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__URL", "https://mirror/")
+    , ("ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__TOKEN", "e2e-publish-token")
+    , ("ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__PERMIT_DELETION", "true")
+    , ("ECLUSE_OBSERVABILITY__LOG_FORMAT", "json")
+    , ("ECLUSE_DREDGER__CHUNK_PAUSE", "1")
+    , ("SSL_CERT_FILE", "/certs/bundle.pem")
+    ]
+
 -- | Run a docker command, failing the test loudly if it exits non-zero.
 dockerOk :: [String] -> IO ()
 dockerOk args = do
@@ -442,7 +498,8 @@ dockerOk args = do
         fail ("docker command " <> show args <> " failed: " <> toString (decodeUtf8 (LBS.toStrict err) :: Text))
 
 {- | Generate a test CA and a server certificate into @dir@ (SANs: @upstream@, @mirror@,
-@localhost@, @127.0.0.1@), plus a @bundle.pem@ of system and test CAs for @SSL_CERT_FILE@.
+@private-upstream@, @localhost@, @127.0.0.1@), plus a @bundle.pem@ of system and test CAs for
+@SSL_CERT_FILE@.
 -}
 generateCerts :: FilePath -> IO ()
 generateCerts dir = do
@@ -453,7 +510,7 @@ generateCerts dir = do
         srvKey = dir </> "server.key"
         srvCsr = dir </> "server.csr"
         ext = dir </> "san.ext"
-    writeFileText ext "subjectAltName=DNS:upstream,DNS:mirror,DNS:localhost,IP:127.0.0.1\n"
+    writeFileText ext "subjectAltName=DNS:upstream,DNS:mirror,DNS:private-upstream,DNS:localhost,IP:127.0.0.1\n"
     opensslOk ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", caCrt, "-days", "2", "-subj", "/CN=Ecluse E2E Test CA"]
     opensslOk ["genrsa", "-out", srvKey, "2048"]
     opensslOk ["req", "-new", "-key", srvKey, "-out", srvCsr, "-subj", "/CN=ecluse-e2e"]
@@ -553,7 +610,7 @@ uniqueSuffix = do
     t <- getPOSIXTime
     pure (show (round (t * 1000) :: Integer))
 
-{- | The nginx stub config. One nginx terminates TLS for both registry stubs by @server_name@, so
+{- | The nginx stub config. One nginx terminates TLS for every registry stub by @server_name@, so
 the proxy dials https-only registry endpoints. Only the proxy validates the cert, so the harness's
 own probes stay plain HTTP. @client_max_body_size 0@ admits a published tarball, and
 @X-Forwarded-Proto https@ keeps Verdaccio generating https URLs.
@@ -573,6 +630,15 @@ nginxStubConfig =
         , "    }"
         , "    location / {"
         , "        try_files $uri =404;"
+        , "    }"
+        , "}"
+        , "server {"
+        , "    listen 443 ssl;"
+        , "    server_name private-upstream;"
+        , "    ssl_certificate /certs/server.crt;"
+        , "    ssl_certificate_key /certs/server.key;"
+        , "    location / {"
+        , "        return 404;"
         , "    }"
         , "}"
         , "server {"

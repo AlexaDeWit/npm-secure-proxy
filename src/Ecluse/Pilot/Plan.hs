@@ -27,7 +27,6 @@ module Ecluse.Pilot.Plan (
     uploadTarget,
 ) where
 
-import Data.Time (NominalDiffTime)
 import System.FilePath (takeFileName)
 
 import Ecluse.Config (
@@ -41,6 +40,7 @@ import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Osv.Advisory (osvExportUrl)
 import Ecluse.Core.Osv.Compile (CompileSources (..))
 import Ecluse.Core.Osv.Ecosystem (OsvEcosystem (osvExportDirectory), osvEcosystemNamed)
+import Ecluse.Core.Supervision (secondsToMicros)
 
 -- | What the scheduled export loop does with the advisory settings and the mounted ecosystems.
 data ExportLoopPlan
@@ -69,9 +69,6 @@ added store only takes effect on the next boot, so the sleep is deliberately lon
 -}
 idleCadenceMicros :: Int
 idleCadenceMicros = secondsToMicros (24 * 60 * 60)
-
-secondsToMicros :: NominalDiffTime -> Int
-secondsToMicros seconds = round seconds * 1000000
 
 {- | The upstreams a scheduled cycle reads, both configured keys so a moved or mirrored feed
 never needs a new binary.

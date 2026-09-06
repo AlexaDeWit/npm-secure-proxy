@@ -20,8 +20,7 @@ import Ecluse.Composition.BootError (
         MirrorQueueUnavailable,
         MissingAdapter,
         PilotWithoutEcosystem,
-        StoreMaintenanceUnavailable,
-        StorePrunerWithoutSweep
+        StoreMaintenanceUnavailable
     ),
     StoreMaintenanceReason (ClientBuildFailed),
  )
@@ -31,7 +30,8 @@ import Ecluse.Composition.Executable (
     BuildMirrorQueue,
     ExecutablePlan (epBootPlan, epRoleWiring),
     MirrorWiring (mwBootWiring, mwCveSync, mwRole),
-    RoleWiring (MirrorPipelineWiring, PilotWiring),
+    PrunerWiring (pwMounts),
+    RoleWiring (MirrorPipelineWiring, PilotWiring, StorePrunerWiring),
     planExecutable,
  )
 import Ecluse.Composition.Maintenance (BuildStoreMaintenance)
@@ -43,6 +43,7 @@ import Ecluse.Composition.Types (
  )
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Queue (noMirrorQueue)
+import Ecluse.Core.Registry.Sweep.Types (SweepMount (smEcosystem))
 import Ecluse.Core.Server.Context (MountBinding (bindingPrefix))
 import Ecluse.Pilot.Plan (ExportLoopPlan (ExportIdle, ExportTo))
 import Ecluse.Service (mountBindingFor)
@@ -108,39 +109,40 @@ spec = describe "planExecutable" $ do
             Left [AdvisorySyncUnavailable _, MirrorQueueUnavailable _, MissingAdapter Npm] -> pass
             Left errs -> expectationFailure ("expected all three refusals in one list, got: " <> show errs)
 
-    it "refuses the store pruner for want of a sweep, though every store and handle clears" $ do
-        -- This build carries no sweep, so a started Dredger would hold a deleting identity and
-        -- delete nothing. Its stores clear and its handles build, and the role still refuses.
-        outcome <- planWith codeArtifactEnvVars BootStorePruner (\_ _ _ -> Nothing) refusingQueue inertStore
-        case outcome of
-            Right _ -> expectationFailure "expected the store pruner arm to refuse"
-            Left errs -> errs `shouldBe` [StorePrunerWithoutSweep]
+    it "plans the store pruner a sweepable mount per cleared store" $ do
+        -- The build carries a sweep, so the arm yields the plan rather than refusing: one mount
+        -- per store the pass cleared, carrying what decides for it.
+        pruner <- expectExecutableWith codeArtifactEnvVars BootStorePruner (\_ _ _ -> Nothing) refusingQueue inertStore
+        plannedArm (epRoleWiring pruner) `shouldBe` "store pruner"
+        case epRoleWiring pruner of
+            StorePrunerWiring wiring -> map smEcosystem (pwMounts wiring) `shouldBe` [Npm]
+            other -> expectationFailure ("expected the store pruner arm, got the " <> toString (plannedArm other) <> " arm")
 
-    it "reports a store maintenance client the live environment cannot build ahead of that refusal" $ do
+    it "reports a store maintenance client the live environment cannot build" $ do
         -- The client discovers an AWS identity when it is built, so an environment with none
         -- refuses here rather than failing the Dredger's first call against the store.
         outcome <- planWith codeArtifactEnvVars BootStorePruner (\_ _ _ -> Nothing) refusingQueue refusingStore
         case outcome of
             Right _ -> expectationFailure "expected the planning phase to refuse"
-            Left [StoreMaintenanceUnavailable Npm (ClientBuildFailed detail), StorePrunerWithoutSweep] ->
+            Left [StoreMaintenanceUnavailable Npm (ClientBuildFailed detail)] ->
                 detail `shouldSatisfy` T.isInfixOf "NoCredentials"
-            Left errs -> expectationFailure ("expected the handle refusal then the sweep refusal, got: " <> show errs)
+            Left errs -> expectationFailure ("expected the handle refusal, got: " <> show errs)
 
-    it "reports a mirror-write mint the live environment refuses, ahead of the sweep refusal" $ do
+    it "reports a mirror-write mint the live environment refuses" $ do
         -- The Dredger reads and deletes through the mirror write's own credential, so it mints
         -- at boot exactly as the proxy does, and an identity that cannot answer refuses here.
         outcome <- planUnder codeArtifactEnvVars BootStorePruner (\_ _ _ -> Nothing) refusingQueue refusingCredentials inertStore
         case outcome of
             Right _ -> expectationFailure "expected the planning phase to refuse"
-            Left errs -> errs `shouldBe` [CodeArtifactMintFailed "no identity answered", StorePrunerWithoutSweep]
+            Left errs -> errs `shouldBe` [CodeArtifactMintFailed "no identity answered"]
 
     it "reports a refused mint and a store client it cannot build together" $ do
-        -- Both halves plan before the refusal folds in, so one launch names every problem.
+        -- All three refusable steps accumulate, so one launch names every problem.
         outcome <- planUnder codeArtifactEnvVars BootStorePruner (\_ _ _ -> Nothing) refusingQueue refusingCredentials refusingStore
         case outcome of
             Right _ -> expectationFailure "expected the planning phase to refuse"
-            Left [CodeArtifactMintFailed _, StoreMaintenanceUnavailable Npm (ClientBuildFailed _), StorePrunerWithoutSweep] -> pass
-            Left errs -> expectationFailure ("expected the mint, the handle, then the sweep refusal, got: " <> show errs)
+            Left [CodeArtifactMintFailed _, StoreMaintenanceUnavailable Npm (ClientBuildFailed _)] -> pass
+            Left errs -> expectationFailure ("expected the mint and the handle refusal, got: " <> show errs)
 
     it "plans the pilot through the same phase, on its own arm" $ do
         -- Nothing here needs a live environment, so ports that refuse outright leave the role
@@ -173,6 +175,7 @@ spec = describe "planExecutable" $ do
 plannedArm :: RoleWiring -> Text
 plannedArm = \case
     MirrorPipelineWiring _ -> "mirror pipeline"
+    StorePrunerWiring _ -> "store pruner"
     PilotWiring _ -> "pilot"
 
 -- | A queue builder that allocates nothing, for the arms whose refusals are elsewhere.

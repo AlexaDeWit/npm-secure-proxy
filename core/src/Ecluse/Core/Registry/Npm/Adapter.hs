@@ -57,10 +57,10 @@ npmAdapter =
                   -- is no separate canonical files host to admit.
                   artifactHosts = []
                 }
+        , adapterProjectName = rightToMaybe . projectName
         , adapterPublish =
             AdapterPublish
                 { publishRelay = relayPublishDocument
-                , publishCanonicaliseName = rightToMaybe . projectName
                 , publishDeclaredNames = declaredNames
                 , publishCodec = npmPublishCodec
                 }

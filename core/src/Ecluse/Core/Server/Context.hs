@@ -73,7 +73,7 @@ import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Package.Integrity (MinIntegrity, MinTrustedIntegrity)
 import Ecluse.Core.Package.Merge (DivergencePolicy)
 import Ecluse.Core.Queue (MirrorQueue)
-import Ecluse.Core.Registry.Adapter.Capability (AdapterArtifact, AdapterMetadata, AdapterPublish)
+import Ecluse.Core.Registry.Adapter.Capability (AdapterArtifact, AdapterMetadata, AdapterPublish, ProjectName)
 import Ecluse.Core.Registry.Request (CredentialMapping)
 import Ecluse.Core.Rules (PreparedRule)
 import Ecluse.Core.Security (HostPort, Limits, Origin, TarballHostGate, tarballHostAllowed, thgAllowlist, thgEcosystemHosts)
@@ -314,6 +314,8 @@ data PublishDeps = PublishDeps
     -}
     , pubHelp :: Maybe HelpMessage
     -- ^ The operator help message appended to a publish denial, if configured.
+    , pubProjectName :: ProjectName
+    -- ^ The ecosystem's own name parser, which the anti-shadowing guard reads a declared name through.
     , pubAdapter :: AdapterPublish
     {- ^ The mount ecosystem's publish capability, carried whole
     ('Ecluse.Core.Registry.Adapter.Capability.AdapterPublish'), never copied field by field.

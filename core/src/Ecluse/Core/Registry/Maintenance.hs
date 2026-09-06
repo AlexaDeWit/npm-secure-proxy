@@ -29,8 +29,11 @@ module Ecluse.Core.Registry.Maintenance (
     mkNameAlphabet,
     noNameAlphabet,
     NamePrefix,
+    wholeNameSpace,
     renderNamePrefix,
     parseNamePrefix,
+    initialBuckets,
+    extendBucket,
     inBucket,
 
     -- * Walk resumption
@@ -213,6 +216,12 @@ part after any namespace, because that is the component a store's own listing fi
 newtype NamePrefix = NamePrefix Text
     deriving stock (Eq, Ord, Show)
 
+{- | The bucket that covers a whole store: the empty prefix, which filters nothing. It is the one
+bucket an alphabet with no characters offers.
+-}
+wholeNameSpace :: NamePrefix
+wholeNameSpace = NamePrefix ""
+
 -- | The prefix as a store filter and a walk cursor spell it. Empty stands for no filter at all.
 renderNamePrefix :: NamePrefix -> Text
 renderNamePrefix (NamePrefix raw) = raw
@@ -224,6 +233,20 @@ parseNamePrefix :: NameAlphabet -> Text -> Maybe NamePrefix
 parseNamePrefix (NameAlphabet chars) raw
     | T.all (`elem` chars) raw = Just (NamePrefix raw)
     | otherwise = Nothing
+
+{- | The buckets a full walk covers. They are disjoint and their union is the whole store, so a
+walk that completes every one of them has seen every package.
+-}
+initialBuckets :: NameAlphabet -> NonEmpty NamePrefix
+initialBuckets (NameAlphabet chars) =
+    maybe (wholeNameSpace :| []) (fmap (NamePrefix . T.singleton)) (nonEmpty chars)
+
+{- | The narrower buckets that cover one bucket, for a listing that outgrew its budget. An
+alphabet with no characters can narrow nothing, so it yields none.
+-}
+extendBucket :: NameAlphabet -> NamePrefix -> [NamePrefix]
+extendBucket (NameAlphabet chars) (NamePrefix raw) =
+    [NamePrefix (raw <> T.singleton ch) | ch <- chars]
 
 -- | Whether a name falls in a bucket, for a store whose listing has no prefix filter of its own.
 inBucket :: NamePrefix -> PackageName -> Bool

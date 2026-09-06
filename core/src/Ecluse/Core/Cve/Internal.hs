@@ -15,6 +15,7 @@ module Ecluse.Core.Cve.Internal (
     openHardenedConnection,
     probeQuery,
     advisoriesQuery,
+    coveredNamesQuery,
     toRange,
     provenanceQuery,
 ) where
@@ -184,6 +185,13 @@ probeQuery :: Connection -> Text -> Text -> IO Bool
 probeQuery conn name version = do
     hits <- query conn "SELECT 1 FROM package_vulnerability_ranges WHERE package_name = ? AND fixed_version = ? LIMIT 1" (name, version) :: IO [Only Int]
     pure (not (null hits))
+
+{- | Every package name this artifact records an advisory against, each once. The name index
+covers the scan, and the result is what a store sweep intersects its listing with.
+-}
+coveredNamesQuery :: Connection -> IO [Text]
+coveredNamesQuery conn =
+    map fromOnly <$> query_ conn "SELECT DISTINCT package_name FROM package_vulnerability_ranges"
 
 -- | Every advisory segment recorded against a package name.
 advisoriesQuery :: Connection -> Text -> IO [AdvisoryRange]

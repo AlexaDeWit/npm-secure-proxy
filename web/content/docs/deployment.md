@@ -18,13 +18,11 @@ selects the role:
 - **`ecluse mirror`**: the mirror worker on its own, for a worker fleet you scale separately. See
   [Splitting the proxy from the mirror worker](#splitting-the-proxy-from-the-mirror-worker).
 - **`ecluse pilot`**: the OSV advisory ingestion pipeline.
-- **`ecluse dredger`**: the registry cleanup worker. This build carries no sweep, so the role
-  refuses to start rather than run idle. A configuration it refuses reports on its own, ahead of
-  that: a mount's `mirrorTarget` that is also any mount's `privateUpstream` or its own mount's
-  `publicationTarget`, because it deletes from that store, and one whose tag names a store this
-  build carries no control plane for. It plans its credential and its handles before it refuses, so
-  a mirror-write credential it cannot mint and a store whose client it cannot build both report
-  beside the sweep refusal. The other roles start and warn on the collapsed pairs instead.
+- **`ecluse dredger`**: deletes mirrored versions your rules now deny, and the only role that
+  deletes. It refuses a configuration that would put the wrong store in its blast radius: a mount's
+  `mirrorTarget` that is also any mount's `privateUpstream` or its own mount's `publicationTarget`,
+  and one whose tag names a store this build carries no control plane for. The other roles start
+  and warn on the collapsed pairs instead. See [Running the Dredger](@/docs/dredger.md).
 - **`ecluse check-config`**: validates the shared configuration and prints the resolved posture
   without starting anything (exit `0` valid, `2` refused). It checks every role, so a refusal only
   one command earns (`ecluse proxy --no-worker` or `ecluse mirror` without a durable queue,
@@ -319,7 +317,7 @@ Each role needs a different slice of that allowance, and only the proxy needs in
 | `ecluse proxy` | Client traffic, behind the edge you front it with | The upstreams, the mirror target, the metadata endpoint, and the advisory store when `ECLUSE_ADVISORIES__URL` is set | The mirror-write credential, plus the advisory-store read (`s3:GetObject`) when that store is set. Nothing more |
 | `ecluse mirror` | None public (health probes only, for the orchestrator) | The public upstream, the mirror target, the mirror queue, the metadata endpoint, and the advisory store when `ECLUSE_ADVISORIES__URL` is set | The same as the proxy: the mirror-write credential and the advisory-store read |
 | `ecluse pilot` | None public | The OSV export host in `ECLUSE_ADVISORIES__OSV_EXPORT_BASE_URL` (default `osv-vulnerabilities.storage.googleapis.com`), the EPSS feed host in `ECLUSE_ADVISORIES__EPSS_FEED_URL` (default `epss.empiricalsecurity.com`), the metadata endpoint, and your object store | `s3:PutObject` to upload the advisory database |
-| `ecluse dredger` | None | The mirror target, the metadata endpoint, and the STS endpoint where the identity comes from there. It mints the mirror-write credential and builds each store's client at boot, then refuses before it calls any registry or control plane | The mirror-write credential, minted the same way the proxy mints it, because the Dredger reads a store's metadata through it. It needs no destructive permission while this build carries no sweep |
+| `ecluse dredger` | None | The mirror target, the metadata endpoint, the advisory store when `ECLUSE_ADVISORIES__URL` is set, and the STS endpoint where the identity comes from there | The mirror-write credential, minted the same way the proxy mints it, because the Dredger reads and deletes through it, plus the delete permission on the mirror repository and the advisory-store read. [Running the Dredger](@/docs/dredger.md) has the action list |
 
 **Do not block the metadata endpoint or internal ranges for the proxy itself.** Écluse reaches
 metadata through the AWS SDK to mint its instance-role credentials, so denying it breaks those

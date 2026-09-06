@@ -21,6 +21,9 @@ module Ecluse.Core.Registry.Adapter.Capability (
     -- * Publish
     AdapterPublish (..),
 
+    -- * Names
+    ProjectName,
+
     -- * Store maintenance
     AdapterMaintenance (..),
     StoreListing (..),
@@ -49,6 +52,11 @@ import Ecluse.Core.Telemetry.Metrics qualified as Metric
 import Ecluse.Core.Telemetry.Record (MetricsPort)
 import Ecluse.Core.Telemetry.Span (TracingPort)
 import Ecluse.Core.Version (Version)
+
+{- | Canonicalise a raw package-name string under one ecosystem's own grammar, 'Nothing' for
+a string that grammar refuses. It is the one parser every caller reaches a 'PackageName' through.
+-}
+type ProjectName = Text -> Maybe PackageName
 
 {- | The ecosystem's metadata capability: reading a package's metadata from an origin,
 assembling the served document, and encoding it ('Ecluse.Core.Server.Context.pdMetadata').
@@ -112,8 +120,6 @@ data AdapterPublish = AdapterPublish
     {- ^ Relay a client's publish document to the publication target, named as the origin to
     write through, and return the target's own response.
     -}
-    , publishCanonicaliseName :: Text -> Maybe PackageName
-    -- ^ Canonicalise a raw package-name string, or 'Nothing' when it cannot be parsed.
     , publishDeclaredNames :: LByteString -> [Text]
     {- ^ Extract every package name a publish body declares as its own identity. The
     anti-shadowing guard refuses any declared name that disagrees with the URL-path name. A body

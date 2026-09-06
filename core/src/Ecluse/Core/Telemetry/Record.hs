@@ -15,13 +15,14 @@ supplies the OTel-backed implementations behind them (see
 @Ecluse.Runtime.Telemetry.Instruments@), and a test supplies an inert or recording
 double.
 
-There are four ports. 'MetricsPort' serves the serve path: serve decisions, the rule
+There are five ports. 'MetricsPort' serves the serve path: serve decisions, the rule
 gate, the data-plane upstream fetch, the metadata cache, and mirror enqueue.
 'WorkerMetricsPort' serves the mirror worker: jobs processed, publish latency.
-'AdvisorySyncMetricsPort' serves the advisory sync task: attempts and their latency.
-'AdvisoryCompileMetricsPort' serves the Pilot compile: the entries one pass accepted or
-dropped, and how the pass concluded. The credential signals stay in the application
-instrument set. Each port carries exactly the signals its consumer emits.
+'DredgerMetricsPort' serves the mirror sweep: what each cycle did with the versions it
+examined. 'AdvisorySyncMetricsPort' serves the advisory sync task: attempts and their
+latency. 'AdvisoryCompileMetricsPort' serves the Pilot compile: the entries one pass
+accepted or dropped, and how the pass concluded. The credential signals stay in the
+application instrument set. Each port carries exactly the signals its consumer emits.
 
 The advisory database's age is not here. It reads from the slot at each collection
 (@Ecluse.Runtime.Telemetry.Instruments@), so no consumer has to push it.
@@ -32,6 +33,9 @@ module Ecluse.Core.Telemetry.Record (
 
     -- * The worker recording port
     WorkerMetricsPort (..),
+
+    -- * The mirror sweep recording port
+    DredgerMetricsPort (..),
 
     -- * The advisory sync recording port
     AdvisorySyncMetricsPort (..),
@@ -58,6 +62,7 @@ import Ecluse.Core.Telemetry.Metrics (
     RelayAnomaly,
     RequestFaultCause,
     StatusClass,
+    SweepResult,
     Tier,
     Upstream,
  )
@@ -150,6 +155,16 @@ data WorkerMetricsPort = WorkerMetricsPort
     -}
     , wmpMirrorPublishDuration :: Double -> IO ()
     -- ^ Record one mirror publish-latency sample (@ecluse.mirror.publish.duration@).
+    }
+
+{- | The mirror sweep's metric-recording port, recorded by "Ecluse.Core.Registry.Sweep". The
+package and version a disposition concerns ride the sweep's own audit line, never a label.
+-}
+newtype DredgerMetricsPort = DredgerMetricsPort
+    { dmpSweptVersion :: SweepResult -> IO ()
+    {- ^ Record one disposition of one examined version (@ecluse.dredger.versions@). A version
+    counts once as examined and once more under what the sweep did with it.
+    -}
     }
 
 {- | The advisory sync task's metric-recording port, recorded by the sync loop in

@@ -362,7 +362,7 @@ spec = do
 
     describe "superviseProcess (the typed process perimeter)" $ do
         it "classifies a graceful return as ShutdownRequested" $
-            superviseProcess pass `shouldReturn` ShutdownRequested
+            superviseProcess (pure ShutdownRequested) `shouldReturn` ShutdownRequested
 
         it "classifies a boot abort as BootFault carrying the refusal it was raised with" $
             superviseProcess (throwIO (BootAborted "mount npm has no adapter wired in this build"))
@@ -378,7 +378,7 @@ spec = do
             -- A genuine asynchronous delivery, as base 'Conc.throwTo', 'killThread' and the RTS
             -- use. An async-hygienic catch would rethrow it before the classification ran, so this
             -- pins that the perimeter observes real kills.
-            superviseProcess (Conc.myThreadId >>= \tid -> Conc.throwTo tid ThreadKilled)
+            superviseProcess (Conc.myThreadId >>= \tid -> Conc.throwTo tid ThreadKilled >> pure ShutdownRequested)
                 `shouldReturn` RunCancelled
 
         it "rethrows a deliberate ExitCode so an intended status is preserved" $ do
@@ -388,7 +388,7 @@ spec = do
         it "propagates an unrecognised asynchronous exception (not ours to interpret)" $ do
             -- A test's 'timeout' around 'run' must keep its semantics: the private
             -- timeout token passes through rather than reading as a cancellation.
-            outcome <- timeout 50000 (superviseProcess (threadDelay 10_000_000))
+            outcome <- timeout 50000 (superviseProcess (threadDelay 10_000_000 >> pure ShutdownRequested))
             outcome `shouldBe` Nothing
 
     describe "exitCodeFor (the operator-visible exit table)" $

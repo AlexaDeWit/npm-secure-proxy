@@ -173,7 +173,8 @@ When your own scanning is ahead of the public yank, revoke in this order:
 
 1. **Deny the identity** with a `DenyByIdentity` rule. The serve path stops admitting the
    version, and the worker stops re-mirroring it.
-2. **Purge that version** from the mirror.
+2. **Purge that version** from the mirror. `ecluse dredger` does this for you: the deny in step 1
+   is what it sweeps on. See [Running the Dredger](@/docs/dredger.md).
 
 The order matters. Purge alone is a treadmill, because the next install re-admits and re-mirrors
 a version still live upstream.

@@ -65,25 +65,24 @@ import Ecluse.Core.Server.Admission (newServeAdmission)
 import Ecluse.Core.Server.Cache (newMetadataCache)
 import Ecluse.Core.Server.Context (PackumentDeps, PublishDeps)
 import Ecluse.Core.Supervision (
-    BackoffSchedule (BackoffSchedule, bsBaseMicros, bsCapMicros),
     FaultDisposition (Permanent, Transient),
     SupervisionPolicy (SupervisionPolicy, spBackoff, spClassify, spLabel),
     superviseLoop,
     transientPolicy,
  )
 import Ecluse.Core.Worker (Liveness, WorkerHeartbeat, WorkerPolicies, alwaysLive, heartbeatLivenessNow, runWorkerM, workerLoop)
-import Ecluse.Cve.Sync (CveSyncHandle (csEnv, csReady), cveSyncReady, cveSyncScheduleFor)
-import Ecluse.Runtime.Cve.Sync (SyncEnv (syncEcosystem, syncSlot), SyncSchedule, runCveSync)
+import Ecluse.Cve.Sync (CveSyncHandle (csEnv), backgroundLoopBackoff, cveSyncReady, cveSyncScheduleFor, cveSyncTasks)
+import Ecluse.Runtime.Cve.Sync (SyncEnv (syncSlot))
 import Ecluse.Runtime.Env (Env, envDdContext, envLogEnv, envMetrics, envTelemetry, newWorkerHeartbeat, withEnvWithAdmission, workerRuntimeOf)
 import Ecluse.Runtime.Server (MountBinding (..))
 import Ecluse.Runtime.Telemetry.Correlation (ddPayloadNow)
-import Ecluse.Runtime.Telemetry.Instruments (advisorySyncMetricsPortOf, registerAdvisoryDatabaseAge)
+import Ecluse.Runtime.Telemetry.Instruments (registerAdvisoryDatabaseAge)
 import Ecluse.Runtime.Telemetry.Reporters (
     DeferredMetrics,
     deferredMirrorEnqueueFailure,
     installMetrics,
  )
-import Ecluse.Runtime.Telemetry.Tracing (advisorySyncTracingPortOf, instrumentDataPlaneManagerSettings)
+import Ecluse.Runtime.Telemetry.Tracing (instrumentDataPlaneManagerSettings)
 
 {- | Everything a role needs to start its own tasks, built once by 'withServiceRuntime'. The
 background tasks arrive already wrapped in their supervision policy.
@@ -164,7 +163,13 @@ withServiceRuntime bootEnv plan mirror action = do
                 , svcBindings = bindings
                 , svcWorkerPolicies = workerPoliciesFor builtEnv bindings (bwPublishTargets (mwBootWiring mirror)) workerArtifactMaxBytes
                 , svcMirrorDrain = superviseDrain builtEnv <$> mirrorDrain
-                , svcSyncTasks = cveSyncTasks builtEnv (cveSyncScheduleFor appConfig) cveSyncPlan
+                , svcSyncTasks =
+                    cveSyncTasks
+                        (envLogEnv builtEnv)
+                        (envMetrics builtEnv)
+                        (envTelemetry builtEnv)
+                        (cveSyncScheduleFor appConfig)
+                        cveSyncPlan
                 , svcCheckReady = cveSyncReady cveSyncPlan
                 , svcCheckLive = workerLiveness runsWorkerHere heartbeat
                 }
@@ -220,31 +225,12 @@ registerAdvisoryAges builtEnv plan =
     for_ (Map.toList plan) $ \(eco, handle) ->
         registerAdvisoryDatabaseAge (envMetrics builtEnv) eco (generationInstalledAt (syncSlot (csEnv handle)))
 
--- One supervised sync task per configured ecosystem. Each flips its ecosystem's one-way
--- readiness flag once its first sync lands, and a restart resumes from the remote artifact.
-cveSyncTasks :: Env -> SyncSchedule -> Map.Map Ecosystem CveSyncHandle -> [IO ()]
-cveSyncTasks builtEnv schedule plan =
-    [ void . runKatipContextT (envLogEnv builtEnv) (mempty :: SimpleLogPayload) "cve-sync" $
-        superviseLoop
-            (transientPolicy ("cve-sync[" <> show (syncEcosystem (csEnv handle)) <> "]") shellBackoff)
-            (runCveSync syncMetrics syncTracing (csEnv handle) schedule (atomically (writeTVar (csReady handle) True)))
-    | handle <- Map.elems plan
-    ]
-  where
-    syncMetrics = advisorySyncMetricsPortOf (envMetrics builtEnv)
-    syncTracing = advisorySyncTracingPortOf (envTelemetry builtEnv)
-
-{- The pace every shell background loop retries a transient fault at: one second after the
-first failure, doubling to a thirty-second ceiling. -}
-shellBackoff :: BackoffSchedule
-shellBackoff = BackoffSchedule{bsBaseMicros = 1_000_000, bsCapMicros = 30_000_000}
-
 {- The enqueue-buffer drain under the shared supervision combinator. Pacing lives in the
 buffer's own loop, so this wrapper only stops residue ending mirror-job delivery. -}
 superviseDrain :: Env -> IO () -> IO ()
 superviseDrain builtEnv drain =
     void . runKatipContextT (envLogEnv builtEnv) (mempty :: SimpleLogPayload) "mirror-enqueue-drain" $
-        superviseLoop (transientPolicy "mirror-enqueue-drain" shellBackoff) (liftIO drain)
+        superviseLoop (transientPolicy "mirror-enqueue-drain" backgroundLoopBackoff) (liftIO drain)
 
 {- | Run the supervised mirror worker over the composition-root 'Env' and the per-ecosystem
 bundles. The loop re-runs current policy against a job before it mirrors.
@@ -261,7 +247,7 @@ workerSupervision =
     SupervisionPolicy
         { spLabel = "worker"
         , spClassify = classify
-        , spBackoff = shellBackoff
+        , spBackoff = backgroundLoopBackoff
         }
   where
     classify fault

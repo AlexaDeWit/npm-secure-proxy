@@ -184,6 +184,30 @@ observability:
   # false, which the load then refuses as the wrong type.
   telemetry: "off"
 
+# The mirror sweep, read only by `ecluse dredger`. Every other role carries these keys
+# unread. Each cycle intersects the store's package listing with the names the advisory
+# database covers and the names an identity-deny rule pins, reads each of those packages'
+# metadata back from the store, and deletes a version only on a named decisive deny.
+# Deletion is permanent, so the pacing and the cap below bound what one cycle can do.
+dredger:
+  # Candidate packages one chunk examines before the sweep pauses.
+  chunkSize: 50
+  # Seconds between chunks. It is also the wait after a store fault whose retry advice
+  # names no delay of its own.
+  chunkPause: 2
+  # Seconds between the end of one cycle and the start of the next. A cycle that halted
+  # waits the same pause and repeats its error line at each one.
+  cyclePause: 3600
+  # Versions one cycle may hand over for deletion. Reaching it halts the sweep for the
+  # life of the process: no further cycle runs until you restart the Dredger deliberately.
+  # It is the breaker against an advisory database that denies far more than it should.
+  deletionCap: 1000
+  # Walk every package in the store each cycle instead of the advisory and identity-deny
+  # candidates. Turn it on after a rule change, which is the one cause a candidate cycle
+  # cannot see, and turn it off once a walk has completed. A full walk replaces the
+  # candidate cycle while it is on, and it writes one resumption marker to the store.
+  fullWalk: false
+
 mounts:
   # Dormant per-ecosystem templates. A mount activates only when your document or
   # environment declares any key under it. `enabled: true` alone is enough for the

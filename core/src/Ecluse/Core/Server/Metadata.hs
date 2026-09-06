@@ -30,6 +30,9 @@ module Ecluse.Core.Server.Metadata (
 
     -- * Constructing a per-request read handle
     newMetadataClient,
+
+    -- * Projecting one version
+    selectVersion,
 ) where
 
 import Data.Map.Strict qualified as Map
@@ -141,7 +144,9 @@ newMetadataClient metrics upstream caching logFailure logInvalid logFetch rawFet
                 Right details -> pure (Right details)
                 Left err -> logFailure name err >> pure (Left err)
 
--- Select one version's details out of a parsed packument, by its rendered form.
+{- | Select one version's details out of a parsed packument, by its rendered form. The store
+sweep projects every version it decides out of one manifest through this.
+-}
 selectVersion :: Version -> PackageInfo -> Maybe PackageDetails
 selectVersion version info = Map.lookup (renderVersion version) (infoVersions info)
 

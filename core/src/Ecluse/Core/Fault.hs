@@ -23,6 +23,7 @@ module Ecluse.Core.Fault (
     TransportFault (..),
     transportFault,
     TransportCause (..),
+    renderTransportCause,
     transportRetryable,
 
     -- * Retry delays
@@ -75,6 +76,14 @@ transportRetryable = \case
     TransportUnreachable -> True
     TransportTls -> False
     TransportProtocol -> False
+
+-- | What a transport cause says happened, for a line an operator reads.
+renderTransportCause :: TransportCause -> Text
+renderTransportCause = \case
+    TransportTimeout -> "the peer did not answer in time"
+    TransportUnreachable -> "the peer could not be reached"
+    TransportTls -> "the TLS layer refused the peer"
+    TransportProtocol -> "the peer's answer could not be used"
 
 {- | A @Retry-After@ delay, in whole seconds. A 'newtype' so a raw count of seconds is
 never confused with some other integer when it reaches a response header or a sweep's wait.

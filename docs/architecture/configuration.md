@@ -268,13 +268,12 @@ planning phase over that plan, which spends every remaining refusal and yields a
 
 Every role runs that phase, and each has its own arm in it. The three mirror-pipeline halves
 settle the mount wiring, the advisory sync, and the queue backend there, and one run reports every
-refusal all of that earns. `ecluse dredger` plans the client it would sweep each cleared mirror
-store with there, so a store whose client cannot be built reports at the gate rather than on the
-first call against it, and then refuses: this build carries no sweep, and a role with no coherent
-runtime behaviour gets no runtime. `ecluse pilot` settles its export loop there, one compile cycle
-per mounted ecosystem, and refuses on the same principle where an advisory store is configured and
-no mount is. So an executable plan carries the role's own wiring, and a boot spends its last
-refusal in one place whichever role it started.
+refusal all of that earns. `ecluse dredger` settles the credential its stores answer to, the
+advisory sync its rules read, and one maintenance handle per cleared mirror store there, so a store
+whose client cannot be built reports at the gate rather than on the first call against it. `ecluse
+pilot` settles its export loop there, one compile cycle per mounted ecosystem, and refuses where an
+advisory store is configured and no mount is. So an executable plan carries the role's own wiring,
+and a boot spends its last refusal in one place whichever role it started.
 
 Nothing downstream of an executable plan refuses to boot. Holding one means the assembly below it
 only builds and allocates, so a role's runtime cannot reject a configuration the boot already

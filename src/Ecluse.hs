@@ -112,7 +112,8 @@ import Ecluse.CheckConfig (runCheckConfig)
 import Ecluse.Composition.BootError (renderBootErrors)
 import Ecluse.Composition.Credential (initCredentialProviders)
 import Ecluse.Composition.Executable (
-    RoleWiring (MirrorPipelineWiring, PilotWiring),
+    PrunerWiring,
+    RoleWiring (MirrorPipelineWiring, PilotWiring, StorePrunerWiring),
     epRoleWiring,
     planExecutable,
  )
@@ -124,6 +125,8 @@ import Ecluse.Composition.Types (
  )
 import Ecluse.Config (Config (configApp))
 import Ecluse.Core.Text (displayExceptionT)
+import Ecluse.Dredger (runDredger)
+import Ecluse.Dredger.Plan (DredgerOptions)
 import Ecluse.Mirror
 import Ecluse.Pilot
 import Ecluse.Proxy
@@ -141,22 +144,25 @@ run = do
 
 {- Dispatch one subcommand under the process perimeter. Each arm names its role once, and the
 plan carries it from there. check-config runs outside 'withBootEnv': no logger, no services. -}
-runCommand :: AppCommand -> IO ()
+runCommand :: AppCommand -> IO ProcessOutcome
 runCommand = \case
-    RunCheckConfig -> runCheckConfig
-    RunService role -> withBootEnv (BootMirrorPipeline role) startPlannedRole
-    RunPilot -> withBootEnv BootWithoutPipeline startPlannedRole
-    RunDredger -> withBootEnv BootStorePruner startPlannedRole
+    RunCheckConfig -> shutdownAfter runCheckConfig
+    RunService role -> withBootEnv (BootMirrorPipeline role) (startPlannedRole noDredgerOptions)
+    RunPilot -> withBootEnv BootWithoutPipeline (startPlannedRole noDredgerOptions)
+    RunDredger opts -> withBootEnv BootStorePruner (startPlannedRole (Just opts))
     -- A one-shot compile vets under the Pilot's role and then does its own work rather than
     -- that role's long-running one, so it is the one boot whose behaviour the plan cannot name.
     RunPilotCompile opts ->
         withBootEnv BootWithoutPipeline $ \bootEnv ->
-            void (runPilotCompile (beLogEnv bootEnv) (beTelemetry bootEnv) (bpS3Endpoint (beBootPlan bootEnv)) (configApp (beConfig bootEnv)) opts)
+            shutdownAfter (void (runPilotCompile (beLogEnv bootEnv) (beTelemetry bootEnv) (bpS3Endpoint (beBootPlan bootEnv)) (configApp (beConfig bootEnv)) opts))
+  where
+    -- Only 'RunDredger' carries sweep options, and only it boots the deleting role.
+    noDredgerOptions = Nothing
 
 {- Plan the role's runtime, then start the behaviour that plan carries. Every role plans through
 the one phase, so this is where a boot spends its last refusal whichever role it started. -}
-startPlannedRole :: BootEnv -> IO ()
-startPlannedRole bootEnv = do
+startPlannedRole :: Maybe DredgerOptions -> BootEnv -> IO ProcessOutcome
+startPlannedRole dredgerOptions bootEnv = do
     plan <-
         planExecutable
             (beLogEnv bootEnv)
@@ -168,8 +174,19 @@ startPlannedRole bootEnv = do
             (beBootPlan bootEnv)
             >>= orExit renderBootErrors
     case epRoleWiring plan of
-        MirrorPipelineWiring mirror -> withServiceRuntime bootEnv plan mirror runMirrorPipeline
-        PilotWiring exportPlan -> runPilot bootEnv exportPlan
+        MirrorPipelineWiring mirror -> shutdownAfter (withServiceRuntime bootEnv plan mirror runMirrorPipeline)
+        -- Only 'RunDredger' names the deleting role, so it is the only command that reaches here
+        -- and the options it settled are always in hand.
+        StorePrunerWiring pruner -> maybe (pure ShutdownRequested) (sweepUnder bootEnv pruner) dredgerOptions
+        PilotWiring exportPlan -> shutdownAfter (runPilot bootEnv exportPlan)
+
+{- Run the Dredger and report what it ended on. A one-shot cycle that halted is a service ending
+rather than a shutdown, so a scheduler reads the outcome from the exit status. -}
+sweepUnder :: BootEnv -> PrunerWiring -> DredgerOptions -> IO ProcessOutcome
+sweepUnder bootEnv pruner opts = maybe ShutdownRequested ServiceExited <$> runDredger bootEnv opts pruner
+
+shutdownAfter :: IO () -> IO ProcessOutcome
+shutdownAfter act = ShutdownRequested <$ act
 
 {- Pick the entry point the assembled runtime's own role names. Both halves run over the one
 assembly, so the dedicated worker composes the wiring the serve path embeds. -}
@@ -196,10 +213,10 @@ data ProcessOutcome
 {- | Run the service under the typed process perimeter and classify its ending. The base
 'Exception.try' and 'Exception.throwIO' are deliberate: what leaves here async must leave async.
 -}
-superviseProcess :: IO () -> IO ProcessOutcome
+superviseProcess :: IO ProcessOutcome -> IO ProcessOutcome
 superviseProcess service =
     Exception.try service >>= \case
-        Right () -> pure ShutdownRequested
+        Right outcome -> pure outcome
         Left err
             | Just (BootAborted rendered) <- fromException err -> pure (BootFault rendered)
             | Just (code :: ExitCode) <- fromException err -> Exception.throwIO code

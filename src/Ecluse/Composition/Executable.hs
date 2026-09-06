@@ -14,6 +14,7 @@ module Ecluse.Composition.Executable (
     ExecutablePlan (epBootPlan, epRoleWiring),
     RoleWiring (..),
     MirrorWiring (mwRole, mwBootWiring, mwCveSync, mwQueue, mwDeferredMetrics),
+    PrunerWiring (pwMounts, pwCveSync, pwDeferredMetrics),
     BuildMirrorQueue,
     BuildCredentials,
     planExecutable,
@@ -23,15 +24,18 @@ import Data.Time (getCurrentTime)
 import Katip (LogEnv)
 import Validation (eitherToValidation, validationToEither)
 
+import Data.Map.Strict qualified as Map
+
 import Ecluse.Composition (
     BootWiring,
     PublishBudget (PublishBudget, pbBodyBudget, pbMaxRequestBytes),
     ResolveAdapter,
     WiringPorts (WiringPorts, wpClock, wpReporters, wpResolveAdapter, wpRuleDeps),
+    firstPartyName,
     resolveBootWiring,
  )
 import Ecluse.Composition.BootError (
-    BootError (AdvisorySyncUnavailable, MirrorQueueUnavailable, PilotWithoutEcosystem, StorePrunerWithoutSweep),
+    BootError (AdvisorySyncUnavailable, MirrorQueueUnavailable, PilotWithoutEcosystem),
     refuseOnThrow,
  )
 import Ecluse.Composition.Credential (CredentialProviders, noCredentialProviders, providerLabel)
@@ -53,12 +57,18 @@ import Ecluse.Composition.Types (
  )
 import Ecluse.Composition.Validate (
     ValidatedPlan (vpMirrorStores, vpMounts, vpSettings),
-    VettedMount (vmEcosystem, vmMount),
+    VettedMount (vmAdapter, vmConfig, vmEcosystem, vmMount),
  )
-import Ecluse.Config (AppConfig (cfgAdvisories), Mount, StoreTag)
+import Ecluse.Config (AppConfig (cfgAdvisories), Mount (mountPolicy), MountConfig (mntFirstParty), StoreTag)
 import Ecluse.Core.Credential.Refresh (CredentialReporters (CredentialReporters, crBreakerReporter, crRefreshReporter))
 import Ecluse.Core.Ecosystem (Ecosystem)
+import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Queue (MirrorQueue, noMirrorQueue)
+import Ecluse.Core.Registry.Adapter (ProjectName, adapterProjectName)
+import Ecluse.Core.Registry.Maintenance (StoreMaintenance)
+import Ecluse.Core.Registry.Sweep.Types (SweepMount (..))
+import Ecluse.Core.Rules (PreparedRule, RuleDeps, prepare)
+import Ecluse.Core.Rules.Types (PrecededRule (prRule), Rule)
 import Ecluse.Core.Server.Admission.Bytes (newByteAdmission)
 import Ecluse.Core.Telemetry.Metrics (BreakerSource (CredentialMint, EffectfulRule))
 import Ecluse.Core.Telemetry.Span (TracingPort)
@@ -87,6 +97,8 @@ planned cannot reach another role's runtime.
 data RoleWiring
     = -- | @ecluse proxy@, @ecluse proxy --no-worker@ and @ecluse mirror@.
       MirrorPipelineWiring MirrorWiring
+    | -- | @ecluse dredger@: the stores it sweeps, and what decides for each of them.
+      StorePrunerWiring PrunerWiring
     | -- | @ecluse pilot@: the export loop the advisory settings and the vetted mounts name.
       PilotWiring ExportLoopPlan
 
@@ -103,6 +115,22 @@ data MirrorWiring = MirrorWiring
     , mwDeferredMetrics :: DeferredMetrics
     {- ^ The metric handle the credential providers and the rule breakers already record through.
     The assembly makes those recordings live once the instruments exist.
+    -}
+    }
+
+{- | What the store pruner's arm settled: one sweepable mount per cleared store, and the advisory
+sync the sweep's rules read. "Ecluse.Dredger" assembles the whole role from it.
+-}
+data PrunerWiring = PrunerWiring
+    { pwMounts :: [SweepMount]
+    {- ^ One entry per store the pass cleared, carrying its maintenance handle, its own prepared
+    rule set, and the shared first-party predicate its belt reads.
+    -}
+    , pwCveSync :: Map Ecosystem CveSyncHandle
+    -- ^ One advisory-sync handle per mount ecosystem, empty where no advisory store is configured.
+    , pwDeferredMetrics :: DeferredMetrics
+    {- ^ The metric handle the credential providers and the sweep's rule breakers already record
+    through. The role makes those recordings live once the instruments exist.
     -}
     }
 
@@ -132,17 +160,19 @@ planExecutable logEnv tracing resolveAdapter buildQueue buildCredentials buildSt
     BootMirrorPipeline role ->
         fmap (executablePlan . MirrorPipelineWiring)
             <$> planMirrorWiring logEnv resolveAdapter buildQueue role bootPlan
-    -- This build carries no sweep, so the arm plans its handles and then refuses.
-    BootStorePruner -> planPrunerWiring tracing buildCredentials buildStore bootPlan
+    BootStorePruner ->
+        fmap (executablePlan . StorePrunerWiring)
+            <$> planPrunerWiring logEnv tracing buildCredentials buildStore bootPlan
     BootWithoutPipeline -> pure (executablePlan . PilotWiring <$> pilotExportPlan (bpValidated bootPlan))
   where
     executablePlan wiring = ExecutablePlan{epBootPlan = bootPlan, epRoleWiring = wiring}
 
-{- The deleting role's arm: the credential its stores answer to, then a handle per store. Both
-halves plan before the refusal folds in, so one launch reports every problem. -}
-planPrunerWiring :: TracingPort -> BuildCredentials -> BuildStoreMaintenance -> BootPlan -> IO (Either [BootError] ExecutablePlan)
-planPrunerWiring tracing buildCredentials buildStore bootPlan = do
+{- The deleting role's arm: the advisory sync its rules read, the credential its stores answer to,
+and a handle per store. All three refusable steps accumulate, so one launch reports every problem. -}
+planPrunerWiring :: LogEnv -> TracingPort -> BuildCredentials -> BuildStoreMaintenance -> BootPlan -> IO (Either [BootError] PrunerWiring)
+planPrunerWiring logEnv tracing buildCredentials buildStore bootPlan = do
     deferredMetrics <- newDeferredMetrics
+    cveSync <- planAdvisorySync logEnv bootPlan
     credentials <- buildCredentials (credentialReportersOver deferredMetrics) prunerMounts
     stores <-
         planStoreMaintenance
@@ -150,16 +180,73 @@ planPrunerWiring tracing buildCredentials buildStore bootPlan = do
             tracing
             (fromRight noCredentialProviders credentials)
             (bpLimits bootPlan)
-            (vpMirrorStores (bpValidated bootPlan))
-    pure (idlePrunerRefusal credentials stores)
+            (vpMirrorStores validated)
+    -- A refused sync leaves the rules abstaining, so the policies below still prepare and still
+    -- report. The accumulation then discards them along with the sync.
+    let ruleDepsFor =
+            cveRuleDepsFor
+                (fromRight mempty cveSync)
+                (deferredBreakerReporter deferredMetrics EffectfulRule)
+                (katipFaultReporter logEnv)
+    policies <- Map.fromList <$> traverse (sweepPolicyFor ruleDepsFor) (vpMounts validated)
+    pure . validationToEither $
+        prunerWiringFrom deferredMetrics policies
+            <$> eitherToValidation cveSync
+            <* eitherToValidation credentials
+            <*> eitherToValidation stores
   where
-    prunerMounts = map vmMount (vpMounts (bpValidated bootPlan))
+    validated = bpValidated bootPlan
+    prunerMounts = map vmMount (vpMounts validated)
 
-{- The refusal is folded in after the credential and the handles are planned, so a mint or a client
-this environment refuses reports beside it rather than the refusal standing alone. -}
-idlePrunerRefusal :: Either [BootError] a -> Either [BootError] b -> Either [BootError] ExecutablePlan
-idlePrunerRefusal credentials stores =
-    Left (fromLeft [] credentials <> fromLeft [] stores <> [StorePrunerWithoutSweep])
+{- What decides for one mount's store: its own rule set, prepared as the serve path prepares its,
+and the shared first-party predicate. A mount declaring no namespaces owns none. -}
+sweepPolicyFor :: (Ecosystem -> RuleDeps) -> VettedMount -> IO (Ecosystem, SweepPolicy)
+sweepPolicyFor ruleDepsFor vetted = do
+    prepared <- prepare deps configured
+    pure (eco, SweepPolicy{spRules = prepared, spConfigured = map prRule configured, spDeps = deps, spProject = project, spFirstParty = firstParty})
+  where
+    eco = vmEcosystem vetted
+    deps = ruleDepsFor eco
+    configured = mountPolicy (vmMount vetted)
+    project = adapterProjectName (vmAdapter vetted)
+    firstParty = maybe (const False) firstPartyName (mntFirstParty (vmConfig vetted))
+
+{- One mount's half of a sweepable store. The configured rules ride beside the prepared ones,
+because a prepared rule no longer carries the identity a deny names. -}
+data SweepPolicy = SweepPolicy
+    { spRules :: [PreparedRule]
+    , spConfigured :: [Rule]
+    , spDeps :: RuleDeps
+    , spProject :: ProjectName
+    , spFirstParty :: PackageName -> Bool
+    }
+
+{- The artefact the arm yields. The join is on the ecosystem, and only a mount declaring a mirror
+target reaches the store map, so a store with no policy cannot arise. -}
+prunerWiringFrom ::
+    DeferredMetrics ->
+    Map Ecosystem SweepPolicy ->
+    Map Ecosystem CveSyncHandle ->
+    Map Ecosystem StoreMaintenance ->
+    PrunerWiring
+prunerWiringFrom deferredMetrics policies cveSync stores =
+    PrunerWiring
+        { pwMounts =
+            [ SweepMount
+                { smEcosystem = eco
+                , smStore = store
+                , smRules = spRules policy
+                , smConfigured = spConfigured policy
+                , smRuleDeps = spDeps policy
+                , smProjectName = spProject policy
+                , smFirstParty = spFirstParty policy
+                }
+            | (eco, store) <- Map.toAscList stores
+            , Just policy <- [Map.lookup eco policies]
+            ]
+        , pwCveSync = cveSync
+        , pwDeferredMetrics = deferredMetrics
+        }
 
 {- The Pilot publishes one artifact per vetted mount, so a configured store with no mount leaves
 it nothing to compile, and a role with no runtime behaviour refuses rather than idling. -}

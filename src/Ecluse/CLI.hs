@@ -12,6 +12,11 @@ import Options.Applicative
 
 import Ecluse.Composition.Types (MirrorRole (MirrorOnly, ServeAndMirror, ServeOnly))
 import Ecluse.Core.BuildIdentity (productVersion)
+import Ecluse.Dredger.Plan (
+    DredgerOptions (DredgerOptions),
+    SweepMode (SweepDeletes, SweepRehearses),
+    SweepRepetition (SweepContinuously, SweepOnce),
+ )
 import Ecluse.Pilot (PilotCompileOptions (..))
 
 data AppCommand
@@ -19,7 +24,8 @@ data AppCommand
       RunService MirrorRole
     | RunPilot
     | RunPilotCompile PilotCompileOptions
-    | RunDredger
+    | -- | @ecluse dredger@, with the repetition and the mode its flags settled.
+      RunDredger DredgerOptions
     | RunCheckConfig
     deriving stock (Eq, Show)
 
@@ -29,7 +35,7 @@ commandParser =
         ( command "proxy" (info (RunService <$> proxyRoleParser) (progDesc "Run the Écluse proxy server"))
             <> command "mirror" (info (pure (RunService MirrorOnly)) (progDesc "Run the Écluse mirror worker alone, for a worker fleet scaled on queue depth"))
             <> command "pilot" (info pilotCommandParser (progDesc "Run the Écluse Pilot (OSV ingestion pipeline)"))
-            <> command "dredger" (info (pure RunDredger) (progDesc "Run the Écluse Dredger (mirror pruning worker)"))
+            <> command "dredger" (info (RunDredger <$> dredgerOptionsParser) (progDesc "Run the Écluse Dredger (mirror pruning worker)"))
             <> command "check-config" (info (pure RunCheckConfig) (progDesc "Validate the configuration and print the resolved posture, then exit (0 valid, 2 refused)"))
         )
         <|> pure (RunService ServeAndMirror)
@@ -41,6 +47,20 @@ proxyRoleParser =
         ServeAndMirror
         ServeOnly
         (long "no-worker" <> help "Serve without the embedded mirror worker; needs a durable ECLUSE_QUEUE__URL and an 'ecluse mirror' fleet to drain it")
+
+{- Both flags narrow what one invocation does, so absent they give the shipped behaviour: cycle
+for the life of the process, and delete what a named decisive deny condemns. -}
+dredgerOptionsParser :: Parser DredgerOptions
+dredgerOptionsParser =
+    DredgerOptions
+        <$> flag
+            SweepDeletes
+            SweepRehearses
+            (long "dry-run" <> help "Report what a cycle would delete and delete nothing; it writes no walk marker either")
+        <*> flag
+            SweepContinuously
+            SweepOnce
+            (long "once" <> help "Run one cycle, then exit: 0 when it completed, 1 when it halted")
 
 -- A bare @pilot@ keeps its serve-and-export meaning. @pilot compile@ selects the
 -- one-shot mode.

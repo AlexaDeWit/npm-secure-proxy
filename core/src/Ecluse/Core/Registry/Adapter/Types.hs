@@ -22,6 +22,7 @@ module Ecluse.Core.Registry.Adapter.Types (
     AdapterArtifact (..),
     AdapterPublish (..),
     AdapterMaintenance (..),
+    ProjectName,
 ) where
 
 import Ecluse.Core.Ecosystem (Ecosystem)
@@ -30,6 +31,7 @@ import Ecluse.Core.Registry.Adapter.Capability (
     AdapterMaintenance (..),
     AdapterMetadata (..),
     AdapterPublish (..),
+    ProjectName,
  )
 import Ecluse.Core.Registry.Request (CredentialMapping)
 import Ecluse.Core.Server.Context (MountRouter)
@@ -50,6 +52,10 @@ data RegistryAdapter = RegistryAdapter
     -- ^ The metadata capability: the read-handle constructor and the packument assembly.
     , adapterArtifact :: AdapterArtifact
     -- ^ The artifact request formation, by filename and by authoritative URL.
+    , adapterProjectName :: ProjectName
+    {- ^ The ecosystem's own name parser. The publish guard, the sweep's candidate set, and
+    anything else that turns a raw string into a 'PackageName' reads this one definition.
+    -}
     , adapterPublish :: AdapterPublish
     {- ^ The publish capability: the first-party relay, the name canonicaliser, the declared-name
     extractor, and the mirror write's protocol codec.

@@ -26,6 +26,8 @@ module Ecluse.E2E.Fixtures (
     allowPkg,
     denyPkg,
     mirrorPkg,
+    dredgerPkg,
+    dredgerKeepPkg,
     tamperPkg,
     headPkg,
     telemetryPkg,
@@ -87,6 +89,18 @@ mirror is attributable to the @HEAD@ alone.
 headPkg :: PkgSpec
 headPkg = defaultPkgSpec "e2e-head"
 
+{- | A package the Dredger deletes from the mirror. No other case installs or observes it, so an
+absence after a sweep is attributable to that sweep alone.
+-}
+dredgerPkg :: PkgSpec
+dredgerPkg = defaultPkgSpec "e2e-dredger"
+
+{- | A package that is mirrored beside 'dredgerPkg' and that no deny names, so a sweep that
+deleted it would prove the sweep deletes more than the rule condemned.
+-}
+dredgerKeepPkg :: PkgSpec
+dredgerKeepPkg = defaultPkgSpec "e2e-dredger-keep"
+
 -- | A package used to exercise telemetry domain-span emission.
 telemetryPkg :: PkgSpec
 telemetryPkg = defaultPkgSpec "e2e-telemetry"
@@ -96,7 +110,7 @@ telemetryDdPkg = defaultPkgSpec "e2e-telemetry-datadog"
 
 -- | The full fixture set the stub serves.
 fixturePackages :: [PkgSpec]
-fixturePackages = [allowPkg, denyPkg, mirrorPkg, tamperPkg, headPkg, telemetryPkg, telemetryDdPkg]
+fixturePackages = [allowPkg, denyPkg, mirrorPkg, tamperPkg, headPkg, dredgerPkg, dredgerKeepPkg, telemetryPkg, telemetryDdPkg]
 
 {- | Write every fixture package under @root@, the nginx stub's document root, with each
 packument's @dist.integrity@ fixed to the artifact's real sha-512.

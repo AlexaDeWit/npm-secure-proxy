@@ -36,6 +36,7 @@ module Ecluse.Runtime.Telemetry.Instruments (
     -- * The core recording ports
     metricsPortOf,
     workerMetricsPortOf,
+    dredgerMetricsPortOf,
     advisorySyncMetricsPortOf,
     advisoryCompileMetricsPortOf,
 
@@ -64,6 +65,9 @@ module Ecluse.Runtime.Telemetry.Instruments (
     recordMirrorEnqueueFailure,
     recordMirrorJobProcessed,
     recordMirrorPublishDuration,
+
+    -- * Mirror sweep
+    recordSweptVersion,
 
     -- * Credentials
     recordCredentialRefresh,
@@ -114,7 +118,7 @@ import Ecluse.Core.Telemetry.Metrics (
     Cause,
     CredentialResult,
     Decision,
-    Label (LAdvisoryCompileResult, LAdvisoryDropCause, LAdvisorySyncResult, LBreakerSource, LCacheResult, LCause, LCredentialResult, LDecision, LEcosystem, LMirrorResult, LPerimeterCause, LProvider, LReasonClass, LRelayAnomaly, LRule, LStatusClass, LTier, LUpstream),
+    Label (LAdvisoryCompileResult, LAdvisoryDropCause, LAdvisorySyncResult, LBreakerSource, LCacheResult, LCause, LCredentialResult, LDecision, LEcosystem, LMirrorResult, LPerimeterCause, LProvider, LReasonClass, LRelayAnomaly, LRule, LStatusClass, LSweepResult, LTier, LUpstream),
     MetricName (..),
     MirrorResult,
     Provider,
@@ -122,13 +126,14 @@ import Ecluse.Core.Telemetry.Metrics (
     RelayAnomaly,
     RequestFaultCause,
     StatusClass,
+    SweepResult,
     Tier,
     Upstream,
     breakerStateCode,
     metricAttributes,
     metricName,
  )
-import Ecluse.Core.Telemetry.Record (AdvisoryCompileMetricsPort (..), AdvisorySyncMetricsPort (..), MetricsPort (..), WorkerMetricsPort (..), timedSeconds)
+import Ecluse.Core.Telemetry.Record (AdvisoryCompileMetricsPort (..), AdvisorySyncMetricsPort (..), DredgerMetricsPort (..), MetricsPort (..), WorkerMetricsPort (..), timedSeconds)
 import Ecluse.Core.Telemetry.Span (ecluseScope)
 import Ecluse.Runtime.Telemetry (Telemetry, telemetryMeterProvider)
 
@@ -161,6 +166,7 @@ data Metrics = Metrics
     , mMirrorEnqueueFailures :: Counter Int64
     , mMirrorJobsProcessed :: Counter Int64
     , mMirrorPublishDuration :: Histogram
+    , mDredgerVersions :: Counter Int64
     , mCredentialRefresh :: Counter Int64
     , mCredentialTokenTtlSeconds :: Gauge Int64
     , mAdvisorySyncAttempts :: Counter Int64
@@ -205,6 +211,7 @@ newMetrics telemetry = do
         <*> counter meter MirrorEnqueueFailures "{failure}" "mirror enqueue failures"
         <*> counter meter MirrorJobsProcessed "{job}" "mirror jobs processed by result"
         <*> histogram meter MirrorPublishDuration "mirror publish latency"
+        <*> counter meter DredgerVersions "{version}" "mirror-store versions a sweep cycle disposed of, by result"
         <*> counter meter CredentialRefresh "{refresh}" "credential refreshes by result and provider"
         <*> gauge meter CredentialTokenTtlSeconds "remaining outbound-token lifetime by provider"
         <*> counter meter AdvisorySyncAttempts "{attempt}" "advisory sync attempts by ecosystem and result"
@@ -274,6 +281,12 @@ workerMetricsPortOf m =
         { wmpMirrorJobProcessed = recordMirrorJobProcessed m
         , wmpMirrorPublishDuration = recordMirrorPublishDuration m
         }
+
+{- | Project the instruments onto the core 'DredgerMetricsPort' that "Ecluse.Core.Registry.Sweep"
+records through. It is inert when telemetry is off, since the instruments are.
+-}
+dredgerMetricsPortOf :: Metrics -> DredgerMetricsPort
+dredgerMetricsPortOf m = DredgerMetricsPort{dmpSweptVersion = recordSweptVersion m}
 
 {- | Project the instruments onto the core 'AdvisorySyncMetricsPort' that "Ecluse.Runtime.Cve.Sync"
 records through. It is inert when telemetry is off, since the instruments are.
@@ -416,6 +429,10 @@ recordPublicRelayAnomaly m cls = addOne (mServeRelayAnomalies m) [LRelayAnomaly 
 recordMirrorJobProcessed :: (MonadIO m) => Metrics -> MirrorResult -> m ()
 recordMirrorJobProcessed m result =
     addOne (mMirrorJobsProcessed m) [LMirrorResult result]
+
+-- | Record one disposition of one swept mirror-store version (@ecluse.dredger.versions@).
+recordSweptVersion :: (MonadIO m) => Metrics -> SweepResult -> m ()
+recordSweptVersion m result = addOne (mDredgerVersions m) [LSweepResult result]
 
 -- | Record a mirror publish latency sample (@ecluse.mirror.publish.duration@).
 recordMirrorPublishDuration :: (MonadIO m) => Metrics -> Double -> m ()

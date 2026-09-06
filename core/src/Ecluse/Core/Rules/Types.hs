@@ -19,6 +19,7 @@ module Ecluse.Core.Rules.Types (
     DenyIfCveParams (..),
     DenyIfEpssParams (..),
     ruleName,
+    readsAdvisories,
 
     -- * Precedence
     PrecededRule (..),
@@ -153,6 +154,20 @@ ruleName = \case
     AllowIfRemediatesCve -> "AllowIfRemediatesCve"
     DenyIfCve{} -> "DenyIfCve"
     DenyIfEpss{} -> "DenyIfEpss"
+
+{- | Whether a rule reads the advisory database. A rule set with none never needs one, and a set
+with one is worth waiting a bounded while for the first sync before deciding anything.
+-}
+readsAdvisories :: Rule -> Bool
+readsAdvisories = \case
+    AllowIfRemediatesCve -> True
+    DenyIfCve{} -> True
+    DenyIfEpss{} -> True
+    AllowScope{} -> False
+    AllowIfOlderThan{} -> False
+    DenyInstallTimeExecution -> False
+    DenyByIdentity{} -> False
+    AllowByIdentity{} -> False
 
 {- | A 'Rule' paired with the integer precedence at which it competes, higher first.
 'Ecluse.Core.Rules.bootOrder' turns precedence, and at equal precedence the rule name,

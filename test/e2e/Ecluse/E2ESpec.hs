@@ -22,10 +22,24 @@ module Ecluse.E2ESpec (spec) where
 
 import Data.Text qualified as T
 
+import System.Exit (ExitCode (ExitSuccess))
 import Test.Hspec
 import UnliftIO.Concurrent (threadDelay)
 
-import Ecluse.E2E.Fixtures (PkgSpec, allowPkg, denyPkg, headPkg, mirrorPkg, psName, psVersion, tamperPkg, telemetryDdPkg, telemetryPkg)
+import Ecluse.E2E.Fixtures (
+    PkgSpec,
+    allowPkg,
+    denyPkg,
+    dredgerKeepPkg,
+    dredgerPkg,
+    headPkg,
+    mirrorPkg,
+    psName,
+    psVersion,
+    tamperPkg,
+    telemetryDdPkg,
+    telemetryPkg,
+ )
 import Ecluse.E2E.Harness
 
 spec :: Spec
@@ -37,6 +51,7 @@ spec = do
             scenarios
             telemetryScenarios
             publishScenarios
+            dredgerScenarios
             pendingScenarios
 
 {- | The active scenarios, grouped into @describe@ blocks that each share one proxy under
@@ -254,6 +269,64 @@ publishScenarios = do
                     threadDelay 1500000
                     reached <- verdaccioHasVersionNow e2e name ver
                     reached `shouldBe` False
+
+{- | The Dredger against the store the proxy mirrors into. Its own proxy seeds the store, and the
+sweep then runs as a one-shot container on the same data plane. Both cases act on fixture packages
+no other block installs, so an absence after a sweep is attributable to that sweep.
+-}
+dredgerScenarios :: SpecWith GlobalDataPlane
+dredgerScenarios =
+    describe "the Dredger against the mirror store" $ aroundAllWith withPlaneAndProxy $ do
+        it "lists the names a seeded store holds, and buckets them by their base component" $ \(_, e2e) -> do
+            -- The protocol leaf reads this document and projects it with this parser, so a
+            -- Verdaccio image bump that changed the shape would fail here rather than in a sweep.
+            void $ npmInstall e2e (psName dredgerPkg) >>= shouldSucceed
+            mirrored <- verdaccioHasVersion e2e (psName dredgerPkg) (psVersion dredgerPkg)
+            mirrored `shouldBe` True
+            names <- verdaccioListing e2e
+            names `shouldSatisfy` elem (psName dredgerPkg)
+            bucketed <- verdaccioNamesUnder e2e "e"
+            bucketed `shouldSatisfy` elem (psName dredgerPkg)
+            outside <- verdaccioNamesUnder e2e "z"
+            outside `shouldBe` []
+
+        it "deletes the mirrored version an identity deny names, and keeps the one it does not" $ \(gdp, e2e) -> do
+            -- Both packages are mirrored, and the sweep's rule set names only one of them, so the
+            -- survivor is what shows the cap and the verdict bound what the cycle did.
+            void $ npmInstall e2e (psName dredgerPkg) >>= shouldSucceed
+            void $ npmInstall e2e (psName dredgerKeepPkg) >>= shouldSucceed
+            condemned <- verdaccioHasVersion e2e (psName dredgerPkg) (psVersion dredgerPkg)
+            survivor <- verdaccioHasVersion e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
+            (condemned, survivor) `shouldBe` (True, True)
+            run <- runDredgerOnce gdp ["--once"] [("ECLUSE_RULES", identityDenyOf dredgerPkg)]
+            -- The Dredger's own log carries why a cycle swept nothing: a halt, a refused delete,
+            -- an empty candidate set, or a boot it never got past. Report it rather than a bare
+            -- False, so one run is enough to say what happened.
+            unless (dredgerExit run == ExitSuccess) (failWithLog run "the sweep exited non-zero")
+            gone <- verdaccioHasVersionNow e2e (psName dredgerPkg) (psVersion dredgerPkg)
+            when gone (failWithLog run "the condemned version is still served")
+            kept <- verdaccioHasVersionNow e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
+            unless kept (failWithLog run "the version no rule named was deleted too")
+
+-- Fail with what the sweep itself reported, so the next run needs no second look.
+failWithLog :: DredgerRun -> Text -> Expectation
+failWithLog run reason =
+    expectationFailure (toString (reason <> ", and the sweep reported:\n" <> dredgerOutput run))
+
+-- The proxy that seeds the store, beside the data plane the sweep container joins.
+withPlaneAndProxy :: ((GlobalDataPlane, E2E) -> IO ()) -> GlobalDataPlane -> IO ()
+withPlaneAndProxy action gdp = withE2E (\e2e -> action (gdp, e2e)) gdp
+
+{- | A rule set with one identity deny and no advisory rule, so the sweep needs no advisory
+database and only the named version is condemned.
+-}
+identityDenyOf :: PkgSpec -> Text
+identityDenyOf p =
+    "{\"revoke-swept\":{\"type\":\"DenyByIdentity\",\"identity\":\""
+        <> psName p
+        <> "@"
+        <> psVersion p
+        <> "\"}}"
 
 {- | Placeholders for unimplemented work, kept outside @aroundAll@ so they boot no environment.
 Graceful drain @SIGTERM@s the proxy, so when written it needs its own @describe@ block and proxy.

@@ -39,6 +39,7 @@ module Ecluse.Core.Telemetry.Metrics (
     Tier (..),
     CacheResult (..),
     MirrorResult (..),
+    SweepResult (..),
     CredentialResult (..),
     AdvisorySyncResult (..),
     advisorySyncResultName,
@@ -133,6 +134,8 @@ data MetricName
       MirrorJobsProcessed
     | -- | @ecluse.mirror.publish.duration@: mirror publish latency (histogram).
       MirrorPublishDuration
+    | -- | @ecluse.dredger.versions@: mirror-store versions one sweep cycle disposed of, by result (counter).
+      DredgerVersions
     | -- | @ecluse.credential.refresh@: credential refreshes by result and provider (counter).
       CredentialRefresh
     | -- | @ecluse.credential.token.ttl.seconds@: remaining token lifetime by provider (gauge).
@@ -180,6 +183,7 @@ metricName = \case
     MirrorEnqueueFailures -> "ecluse.mirror.enqueue.failures"
     MirrorJobsProcessed -> "ecluse.mirror.jobs.processed"
     MirrorPublishDuration -> "ecluse.mirror.publish.duration"
+    DredgerVersions -> "ecluse.dredger.versions"
     CredentialRefresh -> "ecluse.credential.refresh"
     CredentialTokenTtlSeconds -> "ecluse.credential.token.ttl.seconds"
     AdvisorySyncAttempts -> "ecluse.advisory.sync.attempts"
@@ -316,6 +320,24 @@ data MirrorResult
 
 instance Universe MirrorResult where universe = universeGeneric
 
+{- | What the mirror sweep did with one version it examined. Every version counts once as
+'SweepExamined' and once more under its disposition, so deletions read as a fraction of what was seen.
+-}
+data SweepResult
+    = -- | The sweep evaluated the version.
+      SweepExamined
+    | -- | A named decisive deny removed it.
+      SweepDeleted
+    | -- | A named decisive deny would have removed it, under a dry run.
+      SweepWouldDelete
+    | -- | Nothing decisively denied it, so it stays.
+      SweepKept
+    | -- | A safety control held it back: the first-party belt, or the cycle's deletion cap.
+      SweepGuardSkipped
+    deriving stock (Eq, Generic, Show)
+
+instance Universe SweepResult where universe = universeGeneric
+
 -- | A credential-refresh result.
 data CredentialResult = Refreshed | RefreshFailed
     deriving stock (Eq, Generic, Show)
@@ -414,6 +436,7 @@ data Label
     | LStatusClass StatusClass
     | LCacheResult CacheResult
     | LMirrorResult MirrorResult
+    | LSweepResult SweepResult
     | LCredentialResult CredentialResult
     | LAdvisorySyncResult AdvisorySyncResult
     | LAdvisoryCompileResult AdvisoryCompileResult
@@ -438,6 +461,7 @@ labelKey = \case
     LStatusClass{} -> KeyStatusClass
     LCacheResult{} -> KeyResult
     LMirrorResult{} -> KeyResult
+    LSweepResult{} -> KeyResult
     LCredentialResult{} -> KeyResult
     LAdvisorySyncResult{} -> KeyResult
     LAdvisoryCompileResult{} -> KeyResult
@@ -483,6 +507,12 @@ labelValue = \case
         Published -> "published"
         Failed -> "failed"
         Discarded -> "discarded"
+    LSweepResult r -> case r of
+        SweepExamined -> "examined"
+        SweepDeleted -> "deleted"
+        SweepWouldDelete -> "would_delete"
+        SweepKept -> "kept"
+        SweepGuardSkipped -> "guard_skipped"
     LCredentialResult c -> case c of
         Refreshed -> "refreshed"
         RefreshFailed -> "failed"

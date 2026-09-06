@@ -18,7 +18,7 @@ of real installs, with no mirror and no cloud account.
 **Taking it to production?** Read [Deploying Écluse](@/docs/deployment.md) for the topology
 and the network fences, [Configuring Écluse](@/docs/configuration.md) for the layers,
 secrets, and rule policy, and [Operating Écluse](@/docs/operations.md) for the probes, logs,
-and sizing.
+and sizing. [Running the Dredger](@/docs/dredger.md) covers the one role that deletes.
 
 **Looking something up?** [Protocol support](@/docs/protocol-support.md) says exactly what
 the server speaks, and the [Threat model](@/docs/threat-model.md) records what Écluse

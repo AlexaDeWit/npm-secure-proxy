@@ -9,6 +9,11 @@ import Test.Hspec
 
 import Ecluse.CLI (AppCommand (..), commandParser)
 import Ecluse.Composition.Types (MirrorRole (MirrorOnly, ServeAndMirror, ServeOnly))
+import Ecluse.Dredger.Plan (
+    DredgerOptions (DredgerOptions, doMode, doRepetition),
+    SweepMode (SweepDeletes, SweepRehearses),
+    SweepRepetition (SweepContinuously, SweepOnce),
+ )
 import Ecluse.Pilot (PilotCompileOptions (..))
 
 parseCLI :: [String] -> ParserResult AppCommand
@@ -47,9 +52,15 @@ spec = do
                 Success cmd -> cmd `shouldBe` RunPilot
                 _ -> expectationFailure "expected Success RunPilot"
 
-        it "parses 'dredger' as RunDredger" $ do
+        it "parses 'dredger' as the shipped invocation: cycling, and deleting" $ do
             case parseCLI ["dredger"] of
-                Success cmd -> cmd `shouldBe` RunDredger
+                Success cmd -> cmd `shouldBe` RunDredger DredgerOptions{doMode = SweepDeletes, doRepetition = SweepContinuously}
+                _ -> expectationFailure "expected Success RunDredger"
+
+        it "parses 'dredger --once --dry-run' as one rehearsed cycle" $ do
+            -- Both flags only narrow what one invocation does, so they compose.
+            case parseCLI ["dredger", "--once", "--dry-run"] of
+                Success cmd -> cmd `shouldBe` RunDredger DredgerOptions{doMode = SweepRehearses, doRepetition = SweepOnce}
                 _ -> expectationFailure "expected Success RunDredger"
 
         it "parses 'pilot compile' with the default ecosystem and canonical source" $ do

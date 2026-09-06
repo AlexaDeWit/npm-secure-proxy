@@ -177,6 +177,11 @@ tag `ecluse dredger` writes. A store reached through the ecosystem protocol alon
 place: its listing is one document, read whole on every pass, so a walk over it starts
 from the first bucket after a restart.
 
+Only the opt-in full walk needs that record. The default cycle carries the names the advisory
+database covers and the names an identity deny pins, which is a set the deployment already holds,
+so it resumes nothing and writes nothing. That is why the tag-write permission is the operator's
+separate decision rather than part of the Dredger's standing grant.
+
 ### The two store kinds
 
 A store belongs to one of two kinds, and the kind fixes what the ecosystem contributes and what
