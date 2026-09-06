@@ -113,7 +113,9 @@ network. It then asserts client- and mirror-observable outcomes:
 - an allow-listed package installs,
 - Écluse blocks a rules-denied package and never mirrors it,
 - an installed package round-trips server → worker to the private mirror,
-- a tampered artifact fails the integrity gate and never publishes.
+- a tampered artifact fails the integrity gate and never publishes,
+- the Dredger lists a seeded mirror store, and `ecluse dredger --once` deletes the version an
+  identity deny names while keeping the one it does not.
 
 It catches composition-root and cross-component regressions nothing else does. The mount rewrites a
 served `dist.tarball` to an absolute installable URL under `ECLUSE_SERVER__PUBLIC_URL`, because
