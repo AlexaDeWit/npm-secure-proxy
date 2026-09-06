@@ -124,9 +124,8 @@ spec = do
                 Right v -> absurd v
             readIORef calls `shouldReturn` 3
 
-        -- The ERROR log contract: an operator alerts on the error level, so only the fault
-        -- that takes the process down reaches it. A retry is the loop healing itself, and
-        -- the stale heartbeat on /livez is what escalates a loop that never recovers.
+        -- The pair below pins both arms, so neither negative assertion is vacuous: the
+        -- scribe demonstrably renders "sev":"Error" when a line earns it.
         it "warns on a transient fault, so a self-healing retry never pages an operator" $ do
             let step = throwIO (StepFault "still down")
             logged <- captureStdout $ do

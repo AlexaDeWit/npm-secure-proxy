@@ -97,30 +97,34 @@ That is safe, because the boot refuses a URL that carries a credential (see
 ## Alerting on `ERROR`
 
 **Point a monitor at `status: error` and page on it.** An `ERROR` line is a condition Écluse
-cannot resolve on its own, so each one wants a person: a halted sweep, a store that refuses a
-delete, an advisory sync that cannot be prepared, a background loop that failed up and took the
-process with it. Nothing routine, expected, or self-healing is written at that level, so the
-volume is your signal on its own.
+cannot resolve on its own, so each one wants a person. These are the shapes it takes:
 
-Écluse absorbs a great deal without needing you, and that traffic logs below `error`:
+- A sweep cycle that halted, or a Dredger latched and running no cycle at all.
+- A store that refused a delete, or never received one.
+- An advisory sync that could not be prepared: no database within the boot budget, or a
+  published artifact Écluse refused.
+- A mirror job nothing else can capture, and an artifact whose bytes failed their digest.
+- A background loop that failed up and took the process with it.
+
+Nothing routine, expected, or self-healing is written at that level, so the volume is a signal on
+its own. Écluse absorbs a great deal without needing you, and that traffic logs below `error`:
 
 | Status | What it means | What to do with it |
 |---|---|---|
 | `error` | Écluse cannot resolve it, and the condition persists until someone acts. | Page. |
-| `warn` | Écluse absorbed it and carried on degraded: an upstream it could not reach, a mirror job left to redeliver, a malformed advisory entry it dropped, a store call it is retrying, a background loop backing off after a fault. | Chart it, and alert on a sustained rate rather than a line. |
-| `info` | What the run did: a completed sweep cycle, a version deleted or rehearsed, a mirrored artifact, a served package. | Index it, and read it back during an incident. |
+| `warn` | Écluse absorbed it and carried on degraded. An upstream it could not reach, a mirror job left to redeliver, a store call it is retrying, a malformed advisory entry it dropped, a background loop backing off. | Chart it, and alert on a sustained rate rather than on a line. |
+| `info` | What the run did: a completed sweep cycle, a version deleted, a mirrored artifact, a served package. | Index it, and read it back during an incident. |
 | `debug` | Per-request and per-entry detail. Verbose under load, and off by default. | Turn it on while you investigate. |
 
-A loop that keeps failing warns on every attempt and never escalates itself, so `error` alone does
-not catch a slow death. Cover that with the health probe, which a stalled mirror worker fails
-([Health probes](@/docs/operations.md#health-probes)), and with a rate alert on the warnings
-carrying that loop's name.
+A loop that keeps failing warns on every attempt, so `error` alone does not catch a slow death.
+The mirror worker is covered: a stalled consume loop fails `GET /livez`
+([Health probes](@/docs/operations.md#health-probes)). Every other background loop needs a rate
+alert on the warnings carrying its name.
 
-One known false positive: `ecluse pilot compile` run beside a live Pilot logs a metrics-listener
-bind failure at `error`, because both processes read the same
-`OTEL_EXPORTER_PROMETHEUS_PORT` ([Telemetry](@/docs/operations.md#telemetry-opt-in)). The one-shot
-run then does its work regardless. Every other bind failure at that level is a real port collision
-between two long-lived roles.
+One `error` line is a known false positive. `ecluse pilot compile` run beside a live Pilot cannot
+bind the metrics listener, and does its work anyway
+([Telemetry](@/docs/operations.md#telemetry-opt-in)). Any other failure to bind that listener wants
+a look.
 
 ## Telemetry (opt-in)
 

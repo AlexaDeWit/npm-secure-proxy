@@ -2,23 +2,14 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The advisory database's sync mechanics: detect a new @osv.db@ artifact in
-object storage, download it bounded, verify it, and shadow-swap it into the read path.
-One task runs per ecosystem, driven by the configured mounts.
-
-The write side of "Ecluse.Core.Cve.Slot". 'syncStep' performs exactly one
-detect-download-verify-swap cycle over an injected 'CveFetch', so unit tests drive it
-without a network. 'runCveSync' schedules those steps: an eager boot burst, retried with
-incremental backoff and eventually allowed to fail so a broken bucket never wedges startup,
-then the steady ETag poll. Until an artifact lands, the ecosystem serves deny-by-default.
-
-The swap follows a file discipline. The download lands in a temp file beside the canonical
-per-ecosystem path, and 'Ecluse.Core.Cve.openCveDb' verifies that temp file (epoch stamp,
-table shape, ecosystem) before the rename puts it atomically onto the canonical name. The
-connection that verified is the connection that serves: it follows the inode through the
-rename, and 'Ecluse.Core.Cve.Slot.swapIn' publishes that same 'CveDb' and drains and closes
-the generation it displaced. A rejected artifact is deleted and its ETag remembered, so the
-same known-bad object is not downloaded again while the last-good generation keeps serving.
+{- | The advisory database's sync mechanics, and the write side of "Ecluse.Core.Cve.Slot":
+detect a new @osv.db@ artifact in object storage, download it bounded, verify it, and
+shadow-swap it into the read path, one task per configured mount. 'syncStep' performs
+exactly one such cycle over an injected 'CveFetch', so unit tests drive it without a
+network, and 'runCveSync' schedules those steps: an eager boot burst, retried with
+incremental backoff and eventually allowed to fail so a broken bucket never wedges
+startup, then the steady ETag poll. Until an artifact lands, the ecosystem denies by
+default.
 -}
 module Ecluse.Runtime.Cve.Sync (
     -- * The injected transport
@@ -150,8 +141,9 @@ syncStep env lastSeen =
             | Just remote == lastSeen -> pure SyncUnchanged
             | otherwise -> syncNewArtifact env
 
--- The 'onException' guards absorb nothing. They discard the temp file when a filesystem fault
--- escapes below the typed channels, then re-propagate it.
+-- The download lands beside the canonical path and 'openCveDb' verifies it there, so nothing
+-- unverified is ever renamed onto the name the read path opens. The 'onException' guards absorb
+-- nothing: they discard the temp file when a filesystem fault escapes, then re-propagate it.
 syncNewArtifact :: SyncEnv -> IO SyncOutcome
 syncNewArtifact env = do
     let temp = syncDbPath env <> ".tmp"

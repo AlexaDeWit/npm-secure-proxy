@@ -96,9 +96,8 @@ spec = do
                     acked <- ackedReceipts
                     acked `shouldBe` []
 
-        -- The ERROR log contract: an operator alerts on the error level, so a message the
-        -- queue will simply hand back stays under it. The terminal outcomes beside this one
-        -- (a dead-letter, a discard) are what keep the error level worth alerting on.
+        -- The terminal outcomes beside this one, a dead-letter and a discard, are what
+        -- keep the error level worth alerting on.
         it "warns rather than errors when a job is left for redelivery, the routine retry" $
             withUpstream $ \url -> do
                 (queue, _ackedReceipts) <- recordingAckQueue

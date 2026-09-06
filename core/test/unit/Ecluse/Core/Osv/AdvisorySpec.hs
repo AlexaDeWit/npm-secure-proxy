@@ -345,9 +345,7 @@ spec = describe "Osv parsing and streaming" $ do
             length results `shouldBe` 5
             statAccepted stats `shouldBe` 1
 
-        -- The ERROR log contract: an operator alerts on the error level, so a per-entry drop
-        -- stays under it. Écluse keeps ingesting, and 'systemicDrop' is what escalates a
-        -- feed whose drops stop being isolated.
+        -- 'systemicDrop' is what escalates a feed whose drops stop being isolated.
         it "keeps every per-entry drop below the level an operator pages on" $ do
             zipData <-
                 osvZipOf

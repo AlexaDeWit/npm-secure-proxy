@@ -201,9 +201,8 @@ spec = do
                 ]
 
     describe "logDenials" $
-        -- The ERROR log contract: an operator alerts on the error level, so a fault Écluse
-        -- absorbed and answered must stay under it. An open rule-source breaker fast-fails
-        -- to this verdict, which is the routine shape of a rule source being down.
+        -- An open rule-source breaker fast-fails to this verdict, so it is the routine
+        -- shape of a rule source being down rather than a fault nobody answered.
         it "keeps an absorbed rule-source outage below the level an operator pages on" $ do
             let denied =
                     VersionVerdict

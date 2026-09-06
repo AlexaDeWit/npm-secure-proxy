@@ -3,14 +3,13 @@
 -- SPDX-License-Identifier: MIT
 
 {- | One supervision combinator for every background loop: the mirror worker's
-poll-and-process, the enqueue-buffer drain, the advisory sync tasks, Pilot's export
-cycle. Each loop's file carries only its step and its policy, never a private copy of
-the catch-log-backoff machinery.
-
-The typed fault channels stay in the steps. A step that receives an @Either fault a@
-from a handle makes its own domain decision, its own pacing included. What reaches this
-combinator's catch is residue: an exception escaping some dependency's typed contract,
-plus whichever faults a step's policy deliberately classifies 'Permanent'.
+poll-and-process, the enqueue-buffer drain, the advisory sync tasks, the dredger sweep,
+Pilot's export cycle. Each loop's file carries only its step and its policy, never a
+private copy of the catch-log-backoff machinery. The typed fault channels stay in the
+steps, so a step that receives an @Either fault a@ from a handle makes its own domain
+decision, its own pacing included. What reaches this combinator's catch is residue: an
+exception escaping some dependency's typed contract, plus whichever faults a step's
+policy deliberately classifies 'Permanent'.
 -}
 module Ecluse.Core.Supervision (
     -- * The combinator
@@ -120,8 +119,8 @@ superviseLoop policy step = go 0
                     throwIO fault
                 Transient -> do
                     let delay = backoffMicros (spBackoff policy) consecutiveFaults
-                    -- A retry the loop makes for itself, so it warns. The stale heartbeat on
-                    -- @\/livez@ is what escalates a loop that never recovers.
+                    -- A retry the loop makes for itself, so it warns. The 'Permanent' arm above
+                    -- is this combinator's only error, and it fails the process up.
                     logFM WarningS (ls (spLabel policy <> ": iteration faulted (retrying in " <> show delay <> "µs): " <> displayExceptionT fault))
                     threadDelay delay
                     go (consecutiveFaults + 1)

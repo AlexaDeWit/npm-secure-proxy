@@ -13,11 +13,6 @@ and before the JSON decodes, so an inflation bomb never reaches the decoder whol
 offending entry drains to its boundary so the entries after it stay aligned. An advisory over
 'ilMaxAdvisoryFanOut' ranges is anomalous, logged, and kept. The aggregate verdict is the
 separate pure decision 'systemicDrop', which the compiler reads once the stream completes.
-
-Nothing here guards depth on the decoded value. 'Data.Aeson.decodeStrict' materialises the
-whole intermediate value before any post-decode check could run, and 'OsvAdvisory' cannot
-represent unbounded nesting anyway. The byte cap holds parse cost to a constant multiple of
-the input, and the boot-resolved heap ceiling ("Ecluse.Rts") bounds it too.
 -}
 module Ecluse.Core.Osv.Stream (
     streamOsvUrl,
@@ -233,6 +228,11 @@ zipEntryNameText entry = case zipEntryName entry of
 {- | Accumulate one zip entry's decompressed bytes, up to @cap@. It checks the cap
 before retaining each chunk, so memory never exceeds the cap plus one chunk. On a breach
 it drains the entry to the next boundary, retains nothing, and reports 'EntryOversize'.
+
+This byte cap is the only guard on a small-but-deep payload. 'Data.Aeson.decodeStrict'
+materialises the whole intermediate value before any post-decode depth check could run,
+and 'OsvAdvisory' cannot represent unbounded nesting anyway, so the cap stands in for one
+by holding parse cost to a constant multiple of the input.
 -}
 collectFile :: (Monad m) => Int -> ConduitT (Either ZipEntry ByteString) o m EntryOutcome
 collectFile cap = go 0 []
