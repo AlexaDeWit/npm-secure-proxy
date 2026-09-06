@@ -232,7 +232,7 @@ captureBreachLog privateBody = do
     publicUp <- failingUpstream
     queue <- newTestMemoryQueue
     logEnv <- newLogEnv JsonLog InfoLevel (DdContext "ecluse" Nothing Nothing Nothing) (Environment "test")
-    withProxyOver logEnv queue privateUp publicUp Nothing (const []) (withLimits tightLimits) $ \app _env _port ->
+    withProxyOver logEnv queue privateUp publicUp Nothing (withLimits tightLimits) $ \app _env _port ->
         captureStdout $ do
             _ <- getThing Nothing app
             _ <- closeScribes logEnv

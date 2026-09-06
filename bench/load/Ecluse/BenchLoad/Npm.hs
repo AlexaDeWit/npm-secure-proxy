@@ -98,7 +98,7 @@ import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Types (hContentType, status200, status404)
 import Network.HTTP.Types.Header (hETag)
-import Network.Wai (Application, Request, pathInfo, requestHeaderHost, responseLBS)
+import Network.Wai (Application, Request, pathInfo, responseLBS)
 import Network.Wai.Handler.Warp (testWithApplication)
 
 import Ecluse (mountBindingFor)
@@ -156,7 +156,7 @@ import Ecluse.Test.Registry.Npm (VersionSpec (..), packumentValue, versionSpec, 
 import Ecluse.Test.Rules (inertRuleDeps)
 import Ecluse.Test.Server.Cache (defaultCacheConfig)
 import Ecluse.Test.Server.Mount (npmServeDeps)
-import Ecluse.Test.Wai (localhost, selfBaseUrl)
+import Ecluse.Test.Wai (localhost, rebaseAuthority, selfBaseUrl)
 import Ecluse.Test.Worker (admitAllPolicies)
 
 -- | The npm load-test fixture: the packument traffic scenarios plus the worker loop.
@@ -562,7 +562,7 @@ octetContentType = "application/octet-stream"
 corpusPublicStub :: IORef (Map Text LByteString) -> Int -> Map Text LByteString -> Application
 corpusPublicStub rewritten latency bodies request respond = do
     when (latency > 0) (threadDelay latency)
-    served <- selfHosted rewritten (stubAuthority request) bodies
+    served <- selfHosted rewritten (selfBaseUrl request) bodies
     respond $ case requestedPackage request >>= (`Map.lookup` served) of
         Just packument -> responseLBS status200 [(hContentType, jsonContentType)] packument
         Nothing -> responseLBS status404 [(hContentType, jsonContentType)] "{}"
@@ -583,15 +583,11 @@ selfHosted rewritten authority bodies =
 
 -- Replace the captured registry authority with the stub's own, over the raw bytes.
 rebaseCapture :: Text -> LByteString -> LByteString
-rebaseCapture authority = encodeUtf8 . T.replace capturedAuthority authority . decodeUtf8
+rebaseCapture = rebaseAuthority capturedAuthority
 
 -- The authority every committed corpus capture names as its tarball host.
 capturedAuthority :: Text
 capturedAuthority = "https://registry.npmjs.org"
-
--- The stub's own authority, as the request reached it.
-stubAuthority :: Request -> Text
-stubAuthority request = "http://" <> maybe "127.0.0.1" decodeUtf8 (requestHeaderHost request)
 
 -- Serves a small overlay of disjoint versions, so the merge yields a genuine cross-upstream
 -- union, plus the canned artifact bytes for any tarball path under the package.
@@ -606,7 +602,7 @@ privateOverlayStub latency bytes request respond = do
                 respond (responseLBS status200 [(hContentType, octetContentType)] bytes)
         -- Packument request: /{pkg}
         Just pkg ->
-            respond (responseLBS status200 [(hContentType, jsonContentType)] (encode (privateOverlay (stubAuthority request) pkg)))
+            respond (responseLBS status200 [(hContentType, jsonContentType)] (encode (privateOverlay (selfBaseUrl request) pkg)))
         Nothing ->
             respond (responseLBS status404 [(hContentType, jsonContentType)] "{}")
 

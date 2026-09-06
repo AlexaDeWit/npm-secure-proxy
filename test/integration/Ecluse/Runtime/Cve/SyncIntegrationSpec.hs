@@ -63,8 +63,8 @@ import Ecluse.Test.Queue (newTestMemoryQueue)
 import Ecluse.Test.Registry.Npm (VersionSpec (..), packumentValue, versionSpec, versionValue)
 import Ecluse.Test.Rules (atDefaultPrecedence, noFaultReporter)
 import Ecluse.Test.Server.Mount (npmServeDeps)
-import Ecluse.Test.Stub (stubBaseUrl, stubLocalhostUrl, withStub)
-import Ecluse.Test.Wai (status)
+import Ecluse.Test.Stub (Captured (capHeaders), stubBaseUrl, stubLocalhostUrl, withRoutedStub, withStub)
+import Ecluse.Test.Wai (rebaseAuthority, selfBaseUrlOf, status)
 
 import Ecluse.Runtime.Aws.Env (AwsEndpoint (endpointHost, endpointPort))
 
@@ -204,10 +204,17 @@ proxyApp ruleDeps privateUrl publicUrl = do
     pure (application (mkServerConfig (maybeToList (mountBindingFor Npm deps Nothing))) env)
 
 {- A single-version packument for @corpus-vuln\@1.2.0@, the fixed version GHSA-corpus-0001 names.
-Its publish time is one day before the fixed clock, so only the fast lane can admit it.
+Its publish time is one day before the fixed clock, so only the fast lane can admit it, and its
+artifact location is re-pointed at the port the stub came up on so the projection keeps it.
 -}
 withPublicUpstream :: (Text -> IO a) -> IO a
-withPublicUpstream k = withStub status200 (encode packument) (k . stubLocalhostUrl)
+withPublicUpstream k = withRoutedStub selfHosted (k . stubLocalhostUrl)
+  where
+    selfHosted cap = (status200, [], rebaseAuthority artifactPlaceholder (selfBaseUrlOf (capHeaders cap)) (encode packument))
+
+-- The authority the committed packument names, replaced by the stub's own before it is served.
+artifactPlaceholder :: Text
+artifactPlaceholder = "http://localhost:1"
 
 {- The private upstream resolves with no versions, so the public leg and the rules decide.
 A 404 would turn a total public denial into a retryable 503, hiding the 403 this test pins. -}
@@ -226,7 +233,7 @@ packument =
         [
             ( "1.2.0"
             , versionValue
-                ( (versionSpec "corpus-vuln" "1.2.0" "http://localhost:1/corpus-vuln/-/corpus-vuln-1.2.0.tgz")
+                ( (versionSpec "corpus-vuln" "1.2.0" (artifactPlaceholder <> "/corpus-vuln/-/corpus-vuln-1.2.0.tgz"))
                     { vsIntegrity = Just sha512Integrity
                     , vsShasum = Just sha1Shasum
                     }

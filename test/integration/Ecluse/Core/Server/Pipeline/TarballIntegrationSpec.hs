@@ -11,7 +11,6 @@ import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (mkPackageName)
 import Ecluse.Core.Security.Egress (registryUrlText)
 import Ecluse.Core.Security.Egress.DevHttp (loopbackRegistryUrl)
-import Ecluse.Core.Server.Context (pdPublicBaseUrl)
 import Ecluse.Core.Server.Upstream (MirrorServePlan (NoMirrorWrite))
 import Ecluse.Core.Version (mkVersion)
 import Ecluse.Server.Pipeline.TestSupport
@@ -281,28 +280,17 @@ tarballSpec = describe "artifact (tarball) path" $ do
             status resp `shouldBe` 200
             simpleBody resp `shouldBe` publicTarballBytes
 
-    it "refuses a cross-host public dist.tarball (403, no fetch)" $ do
+    it "drops a cross-host public dist.tarball at projection, so the artifact is a 404 and no fetch" $ do
+        -- One authority definition serves the listing and the download. A location the projection
+        -- refuses leaves no version to request, so the artifact route never reaches the gate.
         privateUp <- privateArtifactMiss
         publicUp <- crossHostPublicUpstream "cross.localhost" "1.0.0" publicTarballBytes
         withProxyEnv privateUp publicUp Nothing $ \app env -> do
             resp <- getTarball "1.0.0" Nothing app
-            status resp `shouldBe` 403
-            reason resp `shouldBe` "Forbidden"
+            status resp `shouldBe` 404
+            reason resp `shouldBe` "Not Found"
             seenAuth publicUp `shouldReturn` [Nothing]
             drainJobs env `shouldReturn` []
-
-    it "serves a cross-host public dist.tarball when the host is a declared ecosystem artifact host" $ do
-        privateUp <- privateArtifactMiss
-        publicUp <- crossHostPublicUpstream "cross.localhost" "1.0.0" publicTarballBytes
-        queue <- newTestMemoryQueue
-        -- The double advertises its dist.tarball on cross.localhost at its own runtime port.
-        -- Declare that authority from the public base URL, which carries the real port, not a
-        -- placeholder.
-        let crossBase d = T.replace "localhost" "cross.localhost" (registryUrlText (pdPublicBaseUrl d))
-        withProxyEnvQueueDepsHosts queue privateUp publicUp Nothing (\d -> [crossBase d]) id $ \app _env _port -> do
-            resp <- getTarball "1.0.0" Nothing app
-            status resp `shouldBe` 200
-            simpleBody resp `shouldBe` publicTarballBytes
 
     it "404s a requested filename absent from the version's artifacts (selection by filename)" $ do
         privateUp <- privateArtifactMiss

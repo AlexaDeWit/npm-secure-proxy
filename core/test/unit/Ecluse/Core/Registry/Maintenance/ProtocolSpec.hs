@@ -64,7 +64,7 @@ import Ecluse.Test.Stub (
     stubLocalhostUrl,
     withRoutedStub,
  )
-import Ecluse.Test.Wai (freePort, localhost)
+import Ecluse.Test.Wai (freePort, localhost, selfBaseUrlOf)
 
 spec :: Spec
 spec = do
@@ -393,7 +393,7 @@ packumentDocumentOn authority =
 {- The authority a captured request reached the stub on, so a fixture can name locations the
 store itself serves rather than a foreign host the projection would drop. -}
 capAuthority :: Captured -> Text
-capAuthority captured = "http://" <> maybe "127.0.0.1" (decodeUtf8 . snd) (find ((== "host") . fst) (capHeaders captured))
+capAuthority = selfBaseUrlOf . capHeaders
 
 -- The document the store's first packument edit carried.
 editedPackument :: Stub -> IO Object
