@@ -6,7 +6,7 @@ module Ecluse.E2E.Harness.Verdaccio (
     verdaccioHasVersion,
     verdaccioHasVersionNow,
     verdaccioListing,
-    verdaccioListsPackage,
+    verdaccioAwaitListed,
     verdaccioNamesUnder,
 ) where
 
@@ -55,13 +55,32 @@ so an image whose listing changed shape fails here rather than inside a cycle.
 verdaccioListing :: E2E -> IO [Text]
 verdaccioListing e2e = map renderPackageName <$> verdaccioPackages e2e
 
-{- | Poll the listing until it names a package, or the timeout lapses. A sweep walks this document
-rather than a packument, so a case that seeds a package for one waits on the listing, not the
-packument: a store can serve a version it has not listed yet.
+{- | Wait until the listing names a package. A sweep walks this document rather than a packument,
+so a case that seeds a package for one waits here: a store can serve a version it has not listed.
+It answers 'Nothing' once the name arrives, and otherwise what the store served instead, because a
+sweep that found no candidate and a store that listed nothing report the same empty cycle.
 -}
-verdaccioListsPackage :: E2E -> Text -> IO Bool
-verdaccioListsPackage e2e pkg =
-    pollUntil 40 500000 id (handleAny (\_ -> pure False) (elem pkg <$> verdaccioListing e2e))
+verdaccioAwaitListed :: E2E -> Text -> IO (Maybe Text)
+verdaccioAwaitListed e2e pkg = do
+    listed <- pollUntil 40 500000 id (handleAny (\_ -> pure False) (elem pkg <$> verdaccioListing e2e))
+    if listed then pure Nothing else Just <$> unlistedReport e2e pkg
+
+{- The evidence a never-listed package leaves: the names the projector read, and the document they
+came from, bounded so one failure stays readable.
+-}
+unlistedReport :: E2E -> Text -> IO Text
+unlistedReport e2e pkg =
+    handleAny (\err -> pure (preamble <> "the listing could not be read: " <> show err)) $ do
+        body <- verdaccioListingBody e2e
+        pure
+            ( preamble
+                <> "the projector read: "
+                <> either parseErrorMessage (T.intercalate ", " . map renderPackageName) (parsePackageListing body)
+                <> "\nthe store served (first 2048 characters): "
+                <> T.take 2048 (decodeUtf8 body)
+            )
+  where
+    preamble = "the store never listed " <> pkg <> "; "
 
 {- | The names the store lists that fall in one bucket of the name space, through the same
 predicate a store with no prefix filter of its own is walked by.
@@ -74,7 +93,13 @@ verdaccioNamesUnder e2e raw = do
 
 verdaccioPackages :: E2E -> IO [PackageName]
 verdaccioPackages e2e = do
+    body <- verdaccioListingBody e2e
+    either (fail . toString . parseErrorMessage) pure (parsePackageListing body)
+
+-- The listing document unparsed, so a failure can report what the store actually served.
+verdaccioListingBody :: E2E -> IO ByteString
+verdaccioListingBody e2e = do
     req <- parseRequest (toString (e2eVerdaccio e2e <> "/-/all"))
     resp <- httpLbs req (e2eManager e2e)
     when (statusCode (responseStatus resp) /= 200) (fail "the store served no package listing")
-    either (fail . toString . parseErrorMessage) pure (parsePackageListing (LBS.toStrict (responseBody resp)))
+    pure (LBS.toStrict (responseBody resp))
