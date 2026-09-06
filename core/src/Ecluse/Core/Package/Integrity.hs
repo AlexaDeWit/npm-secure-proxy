@@ -213,13 +213,8 @@ data VersionIntegrity
       NoIntegrity
     deriving stock (Eq, Show)
 
-{- | Partition a version's artifacts against a floor: the files whose strongest digest clears it,
-or the verdict for a version no file of which does.
-
-The gate keeps a file that clears the floor and drops one that does not, so a release loses only
-the files that cannot be tied to a tamper-evident fingerprint rather than disappearing whole.
-A version whose artifact set is a singleton, npm's, therefore either survives entire or drops
-entire, exactly as the whole-version classification decided.
+{- | Partition a version's artifacts against a floor, so a release loses the files that clear no
+tamper-evident fingerprint rather than disappearing whole.
 -}
 partitionByFloor :: (IntegrityFloor floor) => floor -> NonEmpty Artifact -> Either VersionIntegrity (NonEmpty Artifact)
 partitionByFloor flr arts = case nonEmpty (NE.filter (artifactMeetsFloor flr) arts) of

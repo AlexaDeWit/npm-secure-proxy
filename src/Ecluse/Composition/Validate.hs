@@ -140,9 +140,8 @@ vetMount (eco, (mount, mcfg)) =
     mirrors = isJust (regMirrorTarget (mountRegistries mount))
     publishes = isJust (mntPublicationTarget mcfg)
 
-    {- A write destination declared on an ecosystem this build writes nothing for. The mirror
-    would drain a queue it could never publish from, and a publish relay would have no adapter to
-    reach its target, so the mount is refused at the boot rather than served half-wired. -}
+    -- A mirror would drain a queue it could never publish from, and a publish relay would have
+    -- no adapter to reach its target, so such a mount is refused rather than served half-wired.
     declaredWithoutPublish declared e = do
         guard declared
         adapter <- adapterFor e

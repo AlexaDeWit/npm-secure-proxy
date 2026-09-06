@@ -28,9 +28,8 @@ adapter registers it on 'Ecluse.Core.Registry.Adapter.Types.serveCredential'.
 npmCredential :: CredentialMapping
 npmCredential = credentialMapping recoverBearer hAuthorization renderBearer
 
-{- The client's bearer credential from @Authorization: Bearer …@, the token text alone. npm's
-scheme carries no username, so the recovered pair has none. Any other presentation yields
-'Nothing': another scheme, a bare or empty token, no header. -}
+-- npm's scheme carries no username, so the recovered pair has none. Another scheme, a bare or
+-- empty token, or no header yields 'Nothing'.
 recoverBearer :: RequestHeaders -> Maybe ClientCredential
 recoverBearer headers = do
     (_, raw) <- find ((== hAuthorization) . fst) headers

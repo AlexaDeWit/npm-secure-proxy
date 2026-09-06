@@ -2,29 +2,15 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The PyPI realisation of the serve-path read operations: fetch a project's Simple index and
-project it into the domain manifest. Every failure comes back as a typed 'MetadataError'.
+{- | The PyPI realisation of the serve-path read operations, every failure a typed
+'MetadataError' value.
 
-One endpoint answers both serve-path needs. The Simple index carries each file's own
-@upload-time@, so the age signal a quarantine reads needs no second document, and the pypi.org
-JSON API is not fetched at all. This module owns the PyPI side of both operations and the
-constructor ('newPyPIMetadataClient') that leads them into the serve layer's agnostic caching,
-metrics, and failure-log policy ("Ecluse.Core.Server.Metadata").
-
-  * 'fetchPyPIManifest' \/ 'projectPyPIIndex' back the full-manifest operation. The projection
-    runs one sequence over a fetched index: decode, bound the nesting depth, project and
-    validate the self-reported name, then bound the release and file counts. It is a total
-    'Either', so the serve path maps each cause onto a response rather than catching a throw.
-
-  * 'projectPyPIVersion' backs the single-version operation. It parses the same bytes
-    __selectively__ ("Ecluse.Core.Registry.PyPI.SelectiveDecode"), materialising only the files
-    of the requested release and skipping the rest unallocated. A cold artifact gate therefore
-    does not pay a whole-index decode to consult one release. It projects the selected files
-    through the /same/ per-release code the full path runs.
-
-The cached document this module injects carries the file-to-version index beside the raw
-'Data.Aeson.Value', computed once here at fetch, so the served assembly reaches a flat file
-array from a version key without re-parsing a distribution file name.
+One endpoint answers both needs: the Simple index carries each file's own @upload-time@, so the
+age signal needs no second document and the pypi.org JSON API is not fetched at all.
+'projectPyPIIndex' backs the full manifest, and 'projectPyPIVersion' backs the single-version
+read over the same bytes selectively, so a cold artifact gate pays no whole-index decode to
+consult one release. The cached document carries the file-to-version index computed once here
+at fetch, so the served assembly re-parses no distribution file name.
 -}
 module Ecluse.Core.Registry.PyPI.Metadata (
     -- * Per-request read handle
@@ -94,9 +80,8 @@ import Ecluse.Core.Telemetry.Record (MetricsPort)
 import Ecluse.Core.Telemetry.Span (TracingPort)
 import Ecluse.Core.Version (Version, renderVersion)
 
-{- | Build a per-request read handle for the PyPI protocol over one origin's fetch
-configuration. 'Ecluse.Core.Server.Metadata.newMetadataClient' wires the serve-path caching,
-metrics, and logs around these raw fetches.
+{- | Build a per-request read handle over one origin, with
+'Ecluse.Core.Server.Metadata.newMetadataClient' wiring caching, metrics, and logs around it.
 -}
 newPyPIMetadataClient ::
     TracingPort ->
@@ -120,12 +105,8 @@ fetchSimpleIndex origin name =
         (boundedFetch (ocManager origin) (ocLimits origin))
         (simpleIndexRequest (registryUrlText (ocBaseUrl origin)) (ocToken origin) noValidators name)
 
-{- | Fetch a project's Simple index and project it into a 'Manifest': the typed view, the raw
-document with its file-to-version index, and the wire bytes' 'ContentDigest'.
-
-The read is bounded against the origin's response budget, so an oversized upstream is refused
-fail-closed before anything buffers it whole. The digest is computed here, over the strict body
-that read produced, the one place the wire bytes exist.
+{- | Fetch a project's Simple index into a 'Manifest', bounded against the origin's response budget.
+The digest is computed here, the one place the wire bytes exist.
 -}
 fetchPyPIManifest :: TracingPort -> OriginClient -> PackageName -> IO (Either MetadataError Manifest)
 fetchPyPIManifest tracing origin name =
@@ -133,9 +114,8 @@ fetchPyPIManifest tracing origin name =
         manifestOf (digestOf body) . first (enforceArtifactLocations pypiArtifactAuthorities (originBaseUrl origin))
             <$> projectPyPIIndex (ocLimits origin) name body
   where
-    {- Inject the raw index and the file-to-version index the projection settled into the opaque
-    served-document carrier. The index is computed here, at the fetch, so no served request
-    re-parses a distribution file name. -}
+    -- The file-to-version index is computed here, at the fetch, so no served request re-parses
+    -- a distribution file name.
     manifestOf digest (info, raw) =
         Manifest
             { manifestInfo = info
@@ -143,13 +123,8 @@ fetchPyPIManifest tracing origin name =
             , manifestDigest = digest
             }
 
-{- | Project a fetched index's bytes into @(manifest, raw document)@, applying the serve path's
-response bounds and name validation. Pure and total.
-
-The raw 'Value' is the nesting-checked document the typed view was projected from, so both
-describe one parse. A decode failure or an absent\/undecodable name is 'MetadataUndecodable'. A
-self-reported /different/ name is 'MetadataNameMismatch'. A nesting-depth, release-count, or
-artifact-count breach is 'MetadataBoundExceeded'.
+{- | Project a fetched index's bytes into @(manifest, raw document)@, both readings of one
+nesting-checked parse. Pure and total, with each refusal its own 'MetadataError'.
 -}
 projectPyPIIndex :: Limits -> PackageName -> ByteString -> Either MetadataError (PackageInfo, Value)
 projectPyPIIndex limits name body = do
@@ -163,22 +138,14 @@ projectPyPIIndex limits name body = do
     boundedInfo <- first MetadataBoundExceeded (checkArtifactCount limits versionBounded)
     pure (boundedInfo, bounded)
 
-{- Fetch a project's Simple index and project __only the requested release__ into its
-'PackageDetails'. A 'Nothing' is a release genuinely absent from a sound index, a forwarded
-miss. -}
+-- 'Nothing' is a release genuinely absent from a sound index, a forwarded miss.
 fetchPyPIVersion :: TracingPort -> OriginClient -> PackageName -> Version -> IO (Either MetadataError (Maybe PackageDetails))
 fetchPyPIVersion tracing origin name version =
     fetchThenProject tracing (fetchSimpleIndex origin) name $
         fmap (>>= enforceArtifactLocationsOf pypiArtifactAuthorities (originBaseUrl origin)) . projectPyPIVersion (ocLimits origin) name version
 
-{- | Project a fetched index's bytes into __one release's__ 'PackageDetails', without decoding
-the files of the other releases. Pure and total.
-
-The outcome matches the one the whole-document path reaches for that release. An
-absent\/undecodable @name@ is 'MetadataUndecodable' and a self-reported /different/ name is
-'MetadataNameMismatch', the anti-shadowing distinction. A breach of
-'Ecluse.Core.Security.maxNestingDepth' or of the file-count backstop is 'MetadataBoundExceeded'.
-A release the index does not carry yields 'Nothing'.
+{- | Project a fetched index's bytes into one release's 'PackageDetails', without decoding the other
+releases' files. Pure, total, and the outcome the whole-document path reaches.
 -}
 projectPyPIVersion :: Limits -> PackageName -> Version -> ByteString -> Either MetadataError (Maybe PackageDetails)
 projectPyPIVersion limits name version body = do

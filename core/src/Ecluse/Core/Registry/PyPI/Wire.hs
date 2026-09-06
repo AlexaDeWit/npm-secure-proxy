@@ -4,35 +4,13 @@
 
 {- | The PEP 691 JSON Simple index as it arrives on the wire, and its lenient decoder.
 
-This module is the PyPI protocol __boundary__. PyPI is a file index rather than a document
-store, so the shape it models is a flat @files@ array: one entry per distribution file, with
-the release it belongs to spelled in the file name.
-"Ecluse.Core.Registry.PyPI.Project" turns that into the agnostic domain model.
-
-== What it models, and what it relays
-
-It captures only the fields the rules and the serving path decide on: a file's name, location,
-digests, interpreter constraint, size, upload instant, yank state, and provenance URL. The
-@meta@ object and the PEP 700 @versions@ array are __not__ carried. The served body is rebuilt
-from the raw document, so @meta._last-serial@ reaches a client without passing through a typed
-model, and the surviving release set is computed from the files that survive rather than
-relayed. Both are still walked, so a malformed entry in either is dropped and tracked.
-
-The PEP 658 @core-metadata@ key is deliberately unmodelled: the wheel carries the same
-metadata, so nothing above the projection reads it and no 'Ecluse.Core.Package.Artifact' field
-holds it.
-
-== Lenient on input, faithful on the decisive fields
-
-A malformed @files@ or @versions@ entry drops as an 'InvalidEntry' rather than failing the
-index, so one bad file cannot hide a whole project. @size@ is advisory and reads leniently, as
-does @upload-time@: a version with no known upload instant simply fails the age quarantine. The
-file name, location, and digests are required, because a file missing any of them can be
-neither gated nor served.
-
-@meta.api-version@ is the one field that can refuse the whole document. PEP 691 requires a
-client to reject a major API version it does not speak, so an index declaring one does not
-decode.
+PyPI is a file index rather than a document store, so the shape modelled here is a flat @files@
+array, with the release a file belongs to spelled in its name.
+"Ecluse.Core.Registry.PyPI.Project" turns that into the agnostic domain model. @meta@ and the
+PEP 700 @versions@ array are walked but never carried, because the served body is rebuilt from
+the raw document. A malformed entry in either drops as an 'InvalidEntry', so one bad file
+cannot hide a project. @meta.api-version@ is the one field that refuses the whole document, as
+PEP 691 requires of a client that does not speak the major version.
 -}
 module Ecluse.Core.Registry.PyPI.Wire (
     -- * The media type this shape travels under
@@ -67,14 +45,14 @@ import Ecluse.Core.Package (
  )
 import Ecluse.Core.Registry.WireSupport (partitionLenientList)
 
-{- | The media type the PEP 691 JSON form travels under, in both directions: the index read asks
-for it and the served index is written under it. No HTML form is requested, parsed, or served.
+{- | The media type the PEP 691 JSON form travels under, in both directions: the index read asks for
+it and the served index is written under it. No HTML form is requested, parsed, or served.
 -}
 simpleIndexMediaType :: ByteString
 simpleIndexMediaType = "application/vnd.pypi.simple.v1+json"
 
-{- | One project's PEP 691 Simple index: the name it reports for itself and the distribution
-files it offers. A dropped @files@ or @versions@ entry is recorded rather than served.
+{- | One project's PEP 691 Simple index: the name it reports for itself and the distribution files
+it offers. A dropped @files@ or @versions@ entry is recorded rather than served.
 -}
 data SimpleIndex = SimpleIndex
     { siName :: Text
@@ -110,16 +88,16 @@ data IndexFile = IndexFile
     , ifUrl :: Text
     -- ^ The file's absolute upstream location, on the ecosystem's files host or the index's own.
     , ifHashes :: Map Text Text
-    {- ^ Integrity digests keyed by algorithm name. @sha256@ is always present on public PyPI,
-    and an algorithm this build does not know is dropped at projection.
+    {- ^ Integrity digests keyed by algorithm name. @sha256@ is always present on public PyPI, and
+    an algorithm this build does not know is dropped at projection.
     -}
     , ifRequiresPython :: Maybe Text
     -- ^ The PEP 440 interpreter specifier a client filters on, if the file declares one.
     , ifSize :: Maybe Int
     -- ^ The file's byte count, if reported. Advisory, so a hostile value reads as absent.
     , ifUploadTime :: Maybe UTCTime
-    {- ^ When this file was published. It is per file, not per release, so a version's age
-    signal is a fold over its files.
+    {- ^ When this file was published. It is per file, not per release, so a version's age signal is
+    a fold over its files.
     -}
     , ifYanked :: YankState
     -- ^ Whether PEP 592 withdraws this file from resolution, and why.
@@ -140,8 +118,8 @@ instance FromJSON IndexFile where
             <*> (yankState <$> o .:? "yanked")
             <*> o .:? "provenance"
 
-{- | PEP 592's per-file yank marker. A yanked file stays installable by an exact pin and drops
-out of every range, so it is withdrawn from resolution rather than deleted.
+{- | PEP 592's per-file yank marker. A yanked file stays installable by an exact pin and drops out
+of every range, so it is withdrawn from resolution rather than deleted.
 -}
 data YankState
     = -- | The file resolves normally.
@@ -172,9 +150,8 @@ checkApiVersion o = do
 supportedApiMajor :: Text
 supportedApiMajor = "1"
 
-{- Decode @files@ element-wise, recording an entry with no name, no location, or an
-undecodable required field as an 'InvalidIndexFile': it cannot be gated, so it must not
-be served. -}
+-- An entry with no name, no location, or an undecodable required field cannot be gated, so it
+-- is recorded rather than served.
 lenientFiles :: Object -> Parser ([IndexFile], [InvalidEntry])
 lenientFiles o = do
     raw <- o .:? "files" .!= []

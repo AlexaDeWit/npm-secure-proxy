@@ -2,33 +2,15 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | A __selective__ decode of a PEP 691 Simple index: pull out __one release's files__ without
+{- | A __selective__ decode of a PEP 691 Simple index: pull out one release's files without
 materialising the files of every other release.
 
-A whole-index decode builds a 'Value' for every file entry. A project like @markupsafe@ ships
-89 files for one release and hundreds across its history, so on the artifact gate's cold path
-that decode dominates the cost. The gate consults a single release. This module walks the
-index's own JSON token stream and materialises a 'Value' only for the files of that release,
-__skipping every other file's tokens without allocating them__. The win is on the parse, not the
-fetch.
-
-The generic bounded token-walk engine this decode drives lives in "Ecluse.Core.Json.Selective".
-This module adds PyPI's file selection on top.
-
-== Deciding on a file's own name
-
-An index carries no per-release grouping, so which release a file belongs to is spelled in its
-own @filename@. The walk therefore probes each item for that one member and materialises the
-whole item only when the name names the requested release. The probe reads a lazy token
-structure, so a rejected file costs one string, not the object.
-
-== Faithful to the whole-document decode
-
-The skip is not a shortcut past validation. The walk consumes the __entire__ token stream, so
-malformed JSON anywhere is 'SelectiveUndecodable' and a value nested past the budget anywhere is
-'SelectiveTooDeeplyNested', exactly as a whole-document decode would refuse them. Every value it
-does build goes through the same depth gate, so the entries it yields are the entries the
-whole-document path would have yielded for that release.
+A project ships hundreds of files across its history and the artifact gate consults one
+release, so on the cold path a whole-index decode dominates the cost. This walk drives the
+bounded token engine in "Ecluse.Core.Json.Selective", probing each item for its @filename@
+alone (an index carries no per-release grouping) and building a 'Value' only for a match. It is
+not a shortcut past validation: the entire token stream is consumed, so malformed JSON or a
+value nested past the budget anywhere refuses exactly what a whole-document decode refuses.
 -}
 module Ecluse.Core.Registry.PyPI.SelectiveDecode (
     SelectedFiles (..),
@@ -52,9 +34,8 @@ import Ecluse.Core.Json.Selective (
     withRecord,
  )
 
-{- | The raw 'Value' pieces a selective decode pulls out of a Simple index for one release. A
-field is 'Nothing' when its key is absent, so the caller reproduces the whole-document outcome,
-and an absent @name@ is the empty-name decode failure.
+{- | The raw 'Value' pieces a selective decode pulls out for one release. A field is 'Nothing' when
+its key is absent, so the caller reproduces the whole-document outcome.
 -}
 data SelectedFiles = SelectedFiles
     { sfName :: Maybe Value
@@ -66,14 +47,8 @@ data SelectedFiles = SelectedFiles
     }
     deriving stock (Eq, Show)
 
-{- | Selectively decode a Simple index's bytes for one release, skipping every other release's
-file entries unallocated. @belongsTo@ says whether a file name names the requested release: the
-caller supplies it, because reading a release out of a distribution name is PyPI's grammar and
-not this walk's.
-
-Each value is bounded at @maxDepth@ levels, the 'Ecluse.Core.Security.maxNestingDepth' budget,
-so the bound matches a whole-document depth check. The body must be a well-formed JSON object
-with nothing but whitespace after it. Anything else is 'SelectiveUndecodable'.
+{- | Selectively decode a Simple index's bytes for one release. @belongsTo@ reads a release out of a
+distribution name, PyPI's grammar rather than this walk's, and @maxDepth@ bounds each value.
 -}
 selectFilesFromIndex :: Int -> (Text -> Bool) -> ByteString -> Either SelectiveError SelectedFiles
 selectFilesFromIndex maxDepth belongsTo body
@@ -90,9 +65,8 @@ selectFilesFromIndex maxDepth belongsTo body
 emptySelection :: SelectedFiles
 emptySelection = SelectedFiles Nothing [] 0
 
-{- The walk's threaded state. The flags mark a captured @name@ or @files@ so a later duplicate
-never overwrites the first, as @aeson@ resolves it. The selection alone cannot carry that: a
-captured key whose target was absent leaves nothing, and so does "not yet seen". -}
+-- The flags mark a captured @name@ or @files@ so a later duplicate never overwrites the first,
+-- as @aeson@ resolves it. The selection alone cannot carry that: absent and unseen look alike.
 data WalkState = WalkState
     { wsSelection :: SelectedFiles
     , wsSeenName :: Bool
@@ -117,9 +91,8 @@ walkTop childBudget belongsTo = fmap wsSelection . go initialWalk
             "name" -> adoptFirst wsSeenName captureName st valueToks
             _ -> skipValue childBudget valueToks >>= go st
 
-    {- Adopt a captured top-level key at its first occurrence, or skip a later duplicate, since
-    @aeson@ keeps the first. Either branch still walks the value to its end, depth-bounded and
-    never materialised, so a malformed or over-deep sibling anywhere still breaches. -}
+    -- @aeson@ keeps the first occurrence. Either branch still walks the value to its end, so a
+    -- malformed or over-deep sibling anywhere still breaches.
     adoptFirst captured capture st valueToks
         | captured st = skipValue childBudget valueToks >>= go st
         | otherwise = capture st valueToks >>= uncurry go
@@ -136,10 +109,8 @@ walkTop childBudget belongsTo = fmap wsSelection . go initialWalk
         (nameValue, cont) <- materialiseWithinBudget childBudget valueToks
         pure (st{wsSelection = (wsSelection st){sfName = Just nameValue}, wsSeenName = True}, cont)
 
-    {- Whether one file entry belongs to the requested release, read from its own @filename@
-    alone. The entry's tokens are walked to find that one member, so a file of another release
-    costs one materialised string rather than its whole object. An entry that is not a record,
-    or that declares no readable name, belongs to no release and is skipped. -}
+    -- Read from the entry's own @filename@ alone, so a file of another release costs one
+    -- materialised string. An entry declaring no readable name belongs to no release.
     belongsToRelease budget entryToks =
         case withRecord budget entryToks (findInRecord (budget - 1) "filename") of
             Left err -> Left err

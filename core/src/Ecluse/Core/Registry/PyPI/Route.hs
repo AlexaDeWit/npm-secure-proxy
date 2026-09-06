@@ -2,43 +2,18 @@
 --
 -- SPDX-License-Identifier: MIT
 -- TupleSections: local convenience for pairing a parsed capture with its trailing
--- segments in 'takeProject' ((,rest)). See STYLE.md §2.
+-- segments in 'takeProject' ((,rest)). See docs/style.md §2.
 {-# LANGUAGE TupleSections #-}
 
-{- | PyPI's route table: the list of routes a PyPI mount serves.
+{- | PyPI's route table: one 'Ecluse.Core.Server.Route.Route' record per served URL, folded
+into the mount's router by 'pypiRouter' and projected for the OpenAPI spec by 'pypiRouteSpecs'.
 
-Each entry is one 'Ecluse.Core.Server.Route.Route' record carrying the method condition, the
-media types it serves, the path template, what to /do/ on a match, and its prose. 'pypiRouter'
-folds the list into the mount's router, where the first match wins and no match is the
-deny-by-default @404@. 'pypiRouteSpecs' projects the same list for the OpenAPI spec.
-
-The surface is three URLs. @\/simple\/{project}@ serves the PEP 691 JSON index,
-@\/simple\/{project}\/{file}@ serves a distribution file and is the one spelling every rewritten
-file URL agrees with, and a @POST@ names the upload endpoint. There is no JSON-API route, no
-PEP 658 sidecar route, and no removal arm: PyPI spells no public wire endpoint for a client
-yank.
-
-Four PyPI-specific facts shape the matching:
-
-* __The index serves JSON only__. The index route declares
-  @application\/vnd.pypi.simple.v1+json@, so a client that requires HTML and admits no JSON
-  takes a @406@ decided from the record before any upstream work. No PEP 503 HTML renderer
-  exists to fall back to, and the client floor is pip 22.2, uv, and Poetry 1.5.
-
-* __A template is written without a terminal slash__. The router strips trailing empty segments
-  for every mount, so @\/simple\/{project}\/@ and @\/simple\/{project}@ both match one template.
-
-* __Only the canonical project name routes__. A non-PEP-503 spelling falls through to the
-  structural @404@. Écluse speaks no canonicalisation redirect, because a client that follows
-  one would then be resolving against a URL Écluse did not gate.
-
-* __A file name is cross-checked against the project__. 'Ecluse.Core.Registry.PyPI.Project.fileCoordinate'
-  is the one reader of a distribution name, so the route, the projection, and the served index
-  agree on which release a file belongs to. A name that belongs to another project is a
-  path-confusion attempt and denies.
-
-A refusal is a bare status with an empty body, matching upstream. With @server.helpMessage@
-configured the body is that message as @text\/plain@, through the same response leaf.
+The surface is three URLs: the PEP 691 JSON index, a distribution file (the spelling every
+rewritten file URL agrees with), and the upload endpoint. Four facts shape the matching. The
+index serves JSON alone, so a client admitting no JSON takes a @406@ decided before any
+upstream work. A template is written without its terminal slash, which the router strips. Only
+the canonical project name routes, because a canonicalisation redirect would resolve against a
+URL Écluse did not gate. And a file name is cross-checked against the project captured before it.
 -}
 module Ecluse.Core.Registry.PyPI.Route (
     -- * The mount's router and fallback action
@@ -126,14 +101,14 @@ import Ecluse.Core.Server.Route (
 import Ecluse.Core.Server.RouteSpec (ParamSpec (ParamSpec), RouteSpec, catchAllSpecs, specsOf)
 import Ecluse.Core.Version (Version, mkVersion)
 
-{- | PyPI's mount router. The first route that claims the request decides it, and a request no
-route claims takes the deny-by-default @404@ ('pypiNotFound').
+{- | PyPI's mount router. The first route that claims the request decides it, and a request no route
+claims takes the deny-by-default @404@ ('pypiNotFound').
 -}
 pypiRouter :: MountRouter
 pypiRouter = routerOf pypiNotFound pypiRoutes
 
-{- | The deny-by-default @404@ action for a path no route claims: a bare status, matching what
-an unknown project gets from the index itself.
+{- | The deny-by-default @404@ action for a path no route claims: a bare status, matching what an
+unknown project gets from the index itself.
 -}
 pypiNotFound :: RouteAction
 pypiNotFound = RouteAction unsupportedContract (AnswerRefusal (declaredRefusal "no route claims this path" []))
@@ -280,8 +255,8 @@ notAcceptable :: ResponseHeaders -> Maybe HelpMessage -> PyPIIndexResponse
 notAcceptable headers help =
     SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (declaredRefusal "no representation this index serves is acceptable" headers help))))))
 
-{- | The artifact route is deliberately an open relay: it forwards any upstream status, headers,
-media type, and bytes, so one @default@ document is more accurate than a closed list.
+{- | The artifact route is an open relay of any upstream status, headers, media type, and bytes,
+so one @default@ document is more accurate than a closed list.
 -}
 pypiArtifactContract :: ResponseContract PassthroughResponse
 pypiArtifactContract =
@@ -302,9 +277,8 @@ pypiUploadContract = refusalContract status405 "Publishing is not enabled on thi
 unsupportedContract :: ResponseContract (ResponseValue (Maybe LByteString))
 unsupportedContract = refusalContract status404 "Unrecognised path; deny by default."
 
-{- A refusal body: the operator help message alone, and nothing at all when no operator
-configured one. Écluse's own wording stays off the wire, because PyPI's refusal is a bare status
-and a client reads no envelope here. -}
+-- Écluse's own wording stays off the wire: PyPI's refusal is a bare status, so the body is the
+-- operator help message alone and nothing at all when none is configured.
 helpBody :: ResponseHeaders -> Refusal -> ResponseValue (Maybe LByteString)
 helpBody headers refusal = responseValue headers (helpBytes refusal)
 
@@ -332,9 +306,8 @@ buildIndex method = \case
   where
     perimeterFallback = packumentInternal pypiIndexReplies [] (mkRefusal Nothing "internal server error")
 
-{- @GET \/simple\/{project}\/{file}@: a distribution read. 'artifactCoordinate' applies the
-__cross-capture__ path-confusion check and reads the release. A file naming another project
-yields 'Nothing', so the route falls through to the @404@ instead of fabricating a coordinate. -}
+-- 'artifactCoordinate' applies the cross-capture path-confusion check, so a file naming another
+-- project falls through to the @404@ rather than having a coordinate fabricated for it.
 buildArtifact :: Method -> [PyPICap] -> Maybe (ResponseAction PassthroughResponse)
 buildArtifact method = \case
     [PyPIProject name, PyPIFile file] -> do
@@ -362,8 +335,8 @@ renderCapture = \case
     PyPIProject name -> [canonicalName name]
     PyPIFile file -> [file]
 
-{- | The project capture: one PEP 503 canonical project name. A non-canonical spelling matches
-no route, so it takes the structural @404@ rather than a redirect.
+{- | The project capture: one PEP 503 canonical project name. A non-canonical spelling matches no
+route, so it takes the structural @404@ rather than a redirect.
 -}
 capProject :: Capture PyPICap
 capProject =
@@ -384,27 +357,24 @@ capFile =
         (safeSegment PyPIFile)
         renderCapture
 
-{- | Peel the leading project unit off a path, returning its 'PackageName' and the remaining
-segments. The route parses no name of its own: 'projectName' owns the PyPI name grammar, and
-'isCanonicalName' is what keeps a spelling the index would redirect off this mount.
+{- | Peel the leading project unit off a path. 'projectName' owns the grammar and 'isCanonicalName'
+keeps a spelling the index would redirect off this mount.
 -}
 takeProject :: [Text] -> Maybe (PackageName, [Text])
 takeProject = \case
     seg : rest | isCanonicalName seg -> (,rest) <$> rightToMaybe (projectName seg)
     _ -> Nothing
 
-{- | Parse a distribution-file slot into the 'Version' and verbatim 'Filename' it names for
-@name@. A file naming another project is a path-confusion attempt, so it yields 'Nothing' and
-the route denies it.
+{- | Parse a distribution-file slot into the 'Version' and verbatim 'Filename' it names for @name@.
+A file naming another project is a path-confusion attempt and yields 'Nothing'.
 -}
 artifactCoordinate :: PackageName -> Text -> Maybe (Version, Filename)
 artifactCoordinate name file = do
     coordinate <- fileCoordinate name file
     (mkVersion PyPI (fcVersionKey coordinate),) <$> mkFilename file
 
-{- | The mount-relative path the distribution route serves one project's file under, rendered
-from that same route record so a served URL and the route that must claim it cannot drift.
-'Nothing' only for a template this build changed without changing the captures beside it.
+{- | The mount-relative path the distribution route serves one project's file under, rendered from
+that same record so a served URL and the route that must claim it cannot drift.
 -}
 distributionPath :: PackageName -> Text -> Maybe Text
 distributionPath name file = T.intercalate "/" <$> renderRoute artifactRoute [PyPIProject name, PyPIFile file]

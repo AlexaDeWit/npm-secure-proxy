@@ -565,8 +565,7 @@ tarballCoordinate name file =
         _ -> Nothing
 
 {- | The mount-relative path the artifact route serves one package's file under, rendered from
-that same route record so a served URL and the route that must claim it cannot drift. 'Nothing'
-only for a template this build changed without changing the captures beside it.
+that same record so a served URL and the route that must claim it cannot drift.
 -}
 tarballPath :: PackageName -> Text -> Maybe Text
 tarballPath name file = T.intercalate "/" <$> renderRoute tarballRoute [NpmPackage name, NpmFilename file]

@@ -2,64 +2,15 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The ecosystem-agnostic filtering /decision/ for a single public-upstream
-packument. It says which versions survive a rule set, which version @dist-tags.latest@
-resolves to, and the per-version decisions a no-survivors outcome must report.
+{- | The ecosystem-agnostic decisions one public-upstream document needs before it is served.
 
-This mirrors "Ecluse.Core.Package.Merge": the pure fold above the registry handle that
-emits a __plan__ rather than a finished document. It reasons over the typed
-'Ecluse.Core.Package.PackageInfo' domain model only, and never touches a registry's wire
-format. The per-ecosystem adapter __replays__ this plan onto the raw upstream
-document, so unmodeled wire keys survive. The typed model is lossy, so re-encoding it
-would drop them. See @docs\/architecture\/registry-model.md@ → "Decision surface vs
-served surface".
-
-__Decision, not served surface.__ A 'FilterPlan' carries exactly the decisions the
-filter owns:
-
-* __Survivors.__ A version key survives iff the rules engine 'Admitted' it. Every
-  other verdict drops it: a denial, deny-by-default, or an undecidable outcome.
-  Presence in the served packument /is/ availability, so the filter removes a
-  non-approved version rather than flagging it.
-
-* __Resolved @latest@.__ The surviving @dist-tags.latest@ under the shared
-  __keep-unless-denied, stable-preferring__ rule ('Ecluse.Core.Version.selectLatest').
-  The upstream @latest@ stays untouched while it survives. The filter repoints it to
-  the highest /stable/ survivor only when the tagged version was itself denied. This is
-  the @latest@ /within the public set/, which the cross-upstream merge then re-resolves
-  over the union. It is not the final served @latest@.
-
-* __Decisions.__ Every version's 'Decision', in version-key order, so a
-  no-survivors outcome can render each denial and choose a status.
-
-The plan deliberately omits any "dropped tags" list. A stale tag is one whose target
-did not survive. The survivor set alone drops it __structurally__: a tag survives iff
-its target is in 'fpSurvivors'. The replay therefore needs no extra field to find
-one. The plan stays minimal: the decisions the filter owns, nothing the replay
-can recompute.
-
-This filters a __single public packument__ (the gated set). Combining it with the
-trusted /private/ set is the cross-upstream merge ("Ecluse.Core.Package.Merge").
-
-== Served-location enforcement
-
-The module also owns the other ecosystem-agnostic reduction a fetched document needs before
-serve: which of a version's artifacts a client may be sent to. It reasons over the domain
-model and the agnostic egress and host policies alone, with no wire format in sight, so it is
-the projection post-step every ecosystem shares rather than copies. A divergent copy of an
-egress-policy application is exactly the drift the policy's correct-by-construction design
-exists to prevent.
-
-Two predicates decide one artifact. The __scheme__ normalises against the https-only egress
-policy ('Ecluse.Core.Security.Egress.resolveTarballUrl'): an https URL is kept, a same-host
-@http@ URL is upgraded, and anything else is dropped. The __authority__ must be honoured for
-the origin that served the document ('Ecluse.Core.Security.artifactAuthorityHonoured'), the
-same check the download gate applies, so the served listing and the gate agree file by file.
-
-The two run __per artifact__, and a version drops only when no artifact of it survives. A
-dropped file records an 'Ecluse.Core.Package.InvalidIndexFile' under its own name, and an
-emptied version an 'Ecluse.Core.Package.InvalidVersionManifest' under its version key. An
-ecosystem whose version owns one artifact, npm's, therefore only ever records the second.
+A 'FilterPlan' says which versions survive the rule set (presence in the served document /is/
+availability), where @dist-tags.latest@ resolves within the public set, and every version's
+'Decision' for a no-survivors outcome to render. It carries no dropped-tag list, because a tag
+survives exactly when its target does. The adapter replays the plan onto the raw document, so
+unmodelled wire keys survive. 'enforceArtifactLocations' is the other agnostic reduction: per
+artifact, the scheme normalises against the https-only egress policy and the authority must be
+honoured for the origin that served the document, the same check the download gate applies.
 -}
 module Ecluse.Core.Package.Filter (
     -- * Rule-filter plan
@@ -110,9 +61,8 @@ data FilterPlan = FilterPlan
     }
     deriving stock (Eq, Show)
 
-{- | Build a 'FilterPlan' from per-version 'Decision's already taken. The decision map __must__
-cover every version of the packument, because an undecided version does not survive.
-A version survives iff its decision is 'Admitted'. Every other verdict drops it, fail-closed.
+{- | Build a 'FilterPlan' from per-version 'Decision's already taken. A version survives iff its
+decision is 'Admitted', so an undecided one drops fail-closed.
 -}
 filterPlanFromDecisions :: Map Text Decision -> PackageInfo -> FilterPlan
 filterPlanFromDecisions decisions info =
@@ -156,11 +106,8 @@ restrictToSurvivors survivors info =
         , infoDistTags = Map.filter ((`Set.member` survivors) . renderVersion) (infoDistTags info)
         }
 
-{- | Reduce a document to the artifact locations a client may be sent to, dropping each
-artifact the scheme or the authority refuses and each version left with none.
-
-@ecosystemHosts@ is the ecosystem's own artifact authorities and @upstreamBaseUrl@ the base URL
-of the origin that served the document.
+{- | Reduce a document to the artifact locations a client may be sent to, dropping each artifact
+the scheme or the authority refuses and each version left with none.
 -}
 enforceArtifactLocations :: AllowedHostPorts -> Text -> PackageInfo -> PackageInfo
 enforceArtifactLocations ecosystemHosts upstreamBaseUrl info =
@@ -180,9 +127,8 @@ enforceArtifactLocationsOf :: AllowedHostPorts -> Text -> PackageDetails -> Mayb
 enforceArtifactLocationsOf ecosystemHosts upstreamBaseUrl details =
     fst (partitionArtifacts ecosystemHosts upstreamBaseUrl (renderVersion (pkgVersion details)) details)
 
-{- Partition one version's artifacts into the survivors and the drop records. 'Nothing'
-survivors means the version itself drops, recorded once under its version key rather than once
-per file, so an emptied version reads as one loss. -}
+-- 'Nothing' survivors means the version itself drops, recorded once under its version key
+-- rather than once per file, so an emptied version reads as one loss.
 partitionArtifacts :: AllowedHostPorts -> Text -> Text -> PackageDetails -> (Maybe PackageDetails, [InvalidEntry])
 partitionArtifacts ecosystemHosts upstreamBaseUrl rawVersion details =
     case nonEmpty (rights resolved) of
@@ -211,10 +157,8 @@ versionDrop :: Text -> ArtifactRefusal -> InvalidEntry
 versionDrop rawVersion refusal =
     mkInvalidEntry InvalidVersionManifest rawVersion (String (authorityLabel (refusedUrl refusal))) (refusedReason refusal)
 
-{- Decide one artifact: normalise its scheme against the egress policy, then check its
-authority against the origin that served the document. A non-https upstream is a test or dev
-loopback, which the scheme step leaves alone; the authority check still applies, because the
-download gate applies it whatever the upstream's scheme. -}
+-- A non-https upstream is a test or dev loopback, which the scheme step leaves alone. The
+-- authority check still applies, because the download gate applies it whatever the scheme.
 resolveArtifact :: AllowedHostPorts -> Text -> Artifact -> Either ArtifactRefusal Artifact
 resolveArtifact ecosystemHosts upstreamBaseUrl art = do
     normalised <- normaliseScheme

@@ -64,12 +64,8 @@ sealRequest request =
 finaliseRequest :: (Request -> Request) -> Request -> Request
 finaliseRequest attach = sealRequest . attach
 
-{- | One ecosystem's credential presentation: how it recovers a client's credential from
-presented headers, and how it carries one on an outbound request. The recovery yields the
-credential as a __value__, so an attach re-encodes rather than replaying a header verbatim.
-
-The constructor is hidden and 'attachCredential' is the only way to run the encoding, so no
-adapter spells its own attach point.
+{- | One ecosystem's credential presentation, recovered as a value so an attach re-encodes rather
+than replaying a header. The constructor is hidden, so no adapter spells its own attach point.
 -}
 data CredentialMapping = CredentialMapping
     { credentialRecover :: RequestHeaders -> Maybe ClientCredential

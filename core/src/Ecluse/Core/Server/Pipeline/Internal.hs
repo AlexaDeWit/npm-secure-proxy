@@ -150,14 +150,8 @@ logUpstreamUnreachable name origin fault =
     message :: Text
     message = "an upstream metadata fetch could not reach the origin; its contribution degrades this request"
 
-{- | Keep each version's artifacts whose strongest digest meets the integrity floor, prune
-@dist-tags@ to the versions that keep at least one, and refuse the rest
-('BelowIntegrityFloor' or 'MissingIntegrity').
-
-The gate partitions __per artifact__. A file below the floor cannot be tied to a tamper-evident
-fingerprint, so it is dropped rather than served to a client that could never verify it, and a
-version drops only when no file of it survives. The surviving set is what the merge plan then
-carries into the served listing, so the listing and the download gate refuse the same files.
+{- | Keep each version's artifacts whose strongest digest meets the integrity floor, per artifact,
+so a version drops only when no file of it survives and the listing matches the download gate.
 -}
 admitByIntegrity ::
     (IntegrityFloor floor) =>

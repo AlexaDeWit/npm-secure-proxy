@@ -494,9 +494,8 @@ renderManifest =
 simpleIndexSchemaName :: Text
 simpleIndexSchemaName = "PyPISimpleIndex"
 
-{- | The filtered PEP 691 Simple index: the document a @pypi@ mount serves for a project. Only
-the keys Écluse reads or rewrites are modelled; every other key is relayed unchanged from the
-contributing upstream.
+{- | The filtered PEP 691 Simple index a @pypi@ mount serves. Only the keys Écluse reads or
+rewrites are modelled, and every other key relays unchanged from the contributing upstream.
 -}
 simpleIndexSchema :: Schema
 simpleIndexSchema =

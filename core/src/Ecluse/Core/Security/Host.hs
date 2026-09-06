@@ -239,10 +239,7 @@ tarballHostAllowed ecosystemHosts origin allowed additionalBlockedRanges packume
         UntrustedOrigin -> not (isBlockedTarget additionalBlockedRanges (hpHost target))
 
 {- | Whether an artifact's authority is honoured for a document the given authority served: the
-same dial target, or one the ecosystem serves artifact bytes from by design. The projection
-drops a file this refuses and 'tarballHostAllowed' refuses the same file at download, so the
-served listing and the download gate cannot disagree. A missing authority on either side is
-'False'.
+same dial target, or one the ecosystem serves artifact bytes from by design.
 -}
 artifactAuthorityHonoured :: AllowedHostPorts -> Maybe HostPort -> Maybe HostPort -> Bool
 artifactAuthorityHonoured ecosystemHosts packumentOrigin artifactTarget =
@@ -251,9 +248,8 @@ artifactAuthorityHonoured ecosystemHosts packumentOrigin artifactTarget =
             sameAuthority target packument || isAllowedUpstreamHost ecosystemHosts target
         _ -> False
 
-{- | The authority set of an ecosystem's declared artifact hosts. 'tarballHostGate' and each
-adapter's projection derive 'artifactAuthorityHonoured''s first argument through it, so the two
-read one set.
+{- | The authority set of an ecosystem's declared artifact hosts, which the gate and each
+adapter's projection both derive 'artifactAuthorityHonoured''s first argument through.
 -}
 ecosystemArtifactAuthorities :: [Text] -> AllowedHostPorts
 ecosystemArtifactAuthorities = allowedHostPorts . Set.fromList . mapMaybe hostPortAddress

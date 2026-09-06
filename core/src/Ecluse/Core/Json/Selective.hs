@@ -101,16 +101,8 @@ are skipped unallocated. The scan runs to the end, so a malformed unpicked item 
 collectFromArray :: Int -> (Int -> Bool) -> TkArray k String -> Either SelectiveError ([Value], Int, k)
 collectFromArray budget pick = selectFromArray budget (\position _ -> Right (pick position))
 
-{- | Collect the items a probe accepts, deciding from the item's __own tokens__ so an item can be
-rejected on what it says about itself and then skipped unallocated.
-
-The probe sees each item's tokens at the array's item budget, and may walk them: they are a
-lazy structure, so a walk to read one discriminating member costs no materialised value, and an
-accepted item is materialised whole from the same tokens afterward. That is what lets a caller
-pick by content rather than by position while still materialising only what it picks.
-
-The scan runs to the array's end, so a malformed item the probe rejected still refuses the
-decode, exactly as a whole-document decode would.
+{- | Collect the items a probe accepts, deciding from an item's own lazy tokens so reading one
+discriminating member costs no materialised value. The scan still runs to the array's end.
 -}
 selectFromArray ::
     Int ->

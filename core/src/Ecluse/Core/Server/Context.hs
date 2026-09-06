@@ -348,13 +348,8 @@ response type. Dispatch renders the action without knowing an ecosystem's respon
 -}
 data RouteAction = forall response. RouteAction (ResponseContract response) (ResponseAction response)
 
-{- | An ecosystem's whole routing decision: what to do with a mount-relative request.
-
-The adapter supplies one ('Ecluse.Core.Registry.Adapter.Types.serveRouter'). A path it does not
-recognise yields the deny-by-default @404@. The 'Method' is part of the mapping, and a @HEAD@
-resolves to the head-mode handler of its @GET@. The request headers are part of it too, because
-a route may serve one media type and refuse a client that admits no such thing. Segments arrive
-mount-stripped and percent-decoded.
+{- | An ecosystem's whole routing decision over a mount-relative request, from its adapter. The
+method and the headers are part of the mapping, and segments arrive stripped and decoded.
 -}
 type MountRouter = Method -> RequestHeaders -> [Text] -> RouteAction
 

@@ -2,21 +2,15 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | PyPI's entry in the ecosystem adapter registry: the
-'Ecluse.Core.Registry.Adapter.Types.RegistryAdapter' assembled from the @Ecluse.Core.Registry.PyPI.*@
-modules. Pure assembly, with no protocol logic of its own.
+{- | PyPI's entry in the ecosystem adapter registry, assembled from the
+@Ecluse.Core.Registry.PyPI.*@ modules with no protocol logic of its own.
 
-Two of the capability slices are deliberately empty.
-
-'adapterPublish' is 'Nothing': a PyPI mount serves reads and mirrors nothing. The upload route
-answers its documented @405@, and the composition root refuses a @mirrorTarget@ on the mount
-rather than booting a mirror that could never write.
-
-'AdapterMaintenance' carries neither verb. PyPI spells no public wire endpoint for listing a
-store's projects or deleting a release, so @ecluse dredger@ against a store whose only control
-plane is this protocol refuses the mount and names the missing verb, rather than sweeping half
-of it. The name alphabet is still declared, because a store with a control plane of its own is
-walked in buckets over the ecosystem's own leading characters whatever the protocol spells.
+Two capability slices are empty. 'adapterPublish' is 'Nothing', so the upload route answers its
+documented @405@ and the composition root refuses a write destination on the mount.
+'AdapterMaintenance' carries neither verb, because PyPI spells no public wire endpoint for
+listing a store's projects or deleting a release, so @ecluse dredger@ refuses such a store and
+names the missing verb. The name alphabet stays declared: a store with a control plane of its
+own is still walked in buckets over the ecosystem's leading characters.
 -}
 module Ecluse.Core.Registry.PyPI.Adapter (
     pypiAdapter,

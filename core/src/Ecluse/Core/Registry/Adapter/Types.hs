@@ -57,10 +57,8 @@ data RegistryAdapter = RegistryAdapter
     anything else that turns a raw string into a 'PackageName' reads this one definition.
     -}
     , adapterPublish :: Maybe AdapterPublish
-    {- ^ The publish capability: the first-party relay, the name canonicaliser, the declared-name
-    extractor, and the mirror write's protocol codec. 'Nothing' for an ecosystem this build
-    writes nothing for: its publish route answers the opt-in @405@, and the composition root
-    refuses a @mirrorTarget@ on such a mount rather than booting a mirror with no write.
+    {- ^ The publish capability. 'Nothing' for an ecosystem this build writes nothing for, whose
+    publish route then answers the opt-in @405@ and whose declared write destination refuses the boot.
     -}
     , adapterMaintenance :: AdapterMaintenance
     {- ^ The store maintenance verbs, for a store whose only control plane is this protocol.

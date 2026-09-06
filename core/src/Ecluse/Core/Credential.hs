@@ -75,13 +75,8 @@ the class method.
 instance Show Secret where
     showsPrec _ _ = showString "Secret <REDACTED>"
 
-{- | A credential as a client presents it: the secret, and the username half a Basic
-presentation carries beside it.
-
-The username is not part of the secret. An edge gate compares 'credSecret' alone, so one
-configured token serves a client that sends it as a bearer token and one that sends it as a
-Basic password under a username of its own choosing. A passthrough leg renders the pair
-verbatim, because a private registry has username conventions of its own.
+{- | A credential as a client presents it. The username is not part of the secret: a gate
+compares 'credSecret' alone, and a passthrough leg renders the pair verbatim.
 -}
 data ClientCredential = ClientCredential
     { credUsername :: Maybe Text
@@ -91,9 +86,7 @@ data ClientCredential = ClientCredential
     }
     deriving stock (Eq, Show)
 
-{- | A credential carrying no username: what a bearer scheme recovers, and the form a
-configured token takes on its way outbound.
--}
+-- | A credential carrying no username, the form a bearer scheme recovers and a configured token takes.
 bareCredential :: Secret -> ClientCredential
 bareCredential = ClientCredential Nothing
 

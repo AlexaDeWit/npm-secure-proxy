@@ -2,19 +2,14 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | PyPI's credential presentation: the HTTP Basic pair a Python client presents on
-@Authorization@. This module recovers that pair from the headers a client sends, and attaches
-one under the same scheme to a request Écluse makes upstream.
+{- | PyPI's credential presentation: the HTTP Basic pair a Python client sends on
+@Authorization@, recovered here and attached under the same scheme going upstream.
 
-Every Python client speaks Basic on the index URL. @pip@ takes the pair from the URL, from
-@keyring@, or from @~\/.netrc@; @twine@ sends the fixed username @__token__@ with an API token
-as the password. The username is a client-side convention rather than an identity the index
-checks, so the recovery admits __any__ username and the edge gate compares the password half
-alone. A credential Écluse holds rather than receives carries no username, so the attach
-supplies @__token__@, the name PyPI's own tooling writes for a token.
-
-The pair travels verbatim on a passthrough read, because a private index has username
-conventions of its own and rewriting one would authenticate as somebody else.
+The username is a client-side convention rather than an identity the index checks (@twine@
+writes @__token__@, @pip@ takes whatever the URL, @keyring@, or @~\/.netrc@ holds), so the
+recovery admits any username and the edge gate compares the password half alone. A credential
+Écluse holds rather than receives carries no username and travels under @__token__@. A pair a
+client sent travels verbatim, because rewriting a username would authenticate as somebody else.
 -}
 module Ecluse.Core.Registry.PyPI.Credential (
     pypiCredential,
@@ -27,15 +22,14 @@ import Network.HTTP.Types.Header (RequestHeaders, hAuthorization)
 import Ecluse.Core.Credential (ClientCredential (ClientCredential, credSecret, credUsername), mkSecret, unSecret)
 import Ecluse.Core.Registry.Request (CredentialMapping, credentialMapping)
 
-{- | PyPI's credential mapping: HTTP Basic over @Authorization@ in both directions. The PyPI
-adapter registers it on 'Ecluse.Core.Registry.Adapter.Types.serveCredential'.
+{- | PyPI's credential mapping: HTTP Basic over @Authorization@ in both directions. The PyPI adapter
+registers it on 'Ecluse.Core.Registry.Adapter.Types.serveCredential'.
 -}
 pypiCredential :: CredentialMapping
 pypiCredential = credentialMapping recoverBasic hAuthorization renderBasic
 
-{- The client's Basic pair from @Authorization: Basic <base64(user:pass)>@. The password half
-may itself carry a colon, so the split takes the first one. Any other presentation yields
-'Nothing': another scheme, undecodable base64, no colon, an empty password, no header. -}
+-- The password half may itself carry a colon, so the split takes the first one. Another scheme,
+-- undecodable base64, no colon, an empty password, or no header yields 'Nothing'.
 recoverBasic :: RequestHeaders -> Maybe ClientCredential
 recoverBasic headers = do
     (_, raw) <- find ((== hAuthorization) . fst) headers

@@ -2,65 +2,14 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The two pure transforms an npm packument needs before Écluse serves it. The
-first rewrites the embedded artifact URLs under the mount's prefix. The second
-assembles the served document from a cross-upstream 'MergePlan' and the raw source
-documents.
+{- | The two pure transforms an npm packument needs before Écluse serves it: the artifact-URL
+rewrite, and the assembly of the served document from a 'MergePlan' and the raw sources.
 
-Both transforms operate __structurally over the raw @aeson@ 'Value'__, never by
-re-serialising a typed model. This is load-bearing. The served packument is an __open__
-document: its schema is @additionalProperties: true@. The proxy
-must __relay unchanged__ any field Écluse does not model: author keys, registry
-bookkeeping, per-version extras. Building the served body from the raw @Value@s keeps
-every unmodelled key. Rebuilding it from "Ecluse.Core.Package" would silently drop them.
-
-== The decision\/replay split
-
-Four decisions are ecosystem-agnostic: /which/ versions survive, which source wins each
-one, where @dist-tags.latest@ resolves, and each surviving version's publish instant.
-"Ecluse.Core.Package.Filter" and "Ecluse.Core.Package.Merge" take them over the typed
-'Ecluse.Core.Package.PackageInfo' and hand them here as a 'MergePlan'. This module owns
-the __npm wire-shape assembly__: rebuilding @versions@\/@dist-tags@\/@time@ onto the
-base document from the plan, and the tarball-URL rewrite over the raw upstream bytes.
-The npm wire knowledge lives here. The decision logic does not, because every ecosystem
-reuses it. See @docs\/architecture\/registry-model.md@ → "Decision surface vs served
-surface".
-
-== URL rewriting
-
-'rewriteVersion' rewrites one version object's @dist.tarball@ to
-@{mount-base}\/{pkg}\/-\/{file}@ through the shared
-'Ecluse.Core.Registry.ServedDocument.rebaseArtifactUrl', which owns the file-name
-derivation and its idempotence. npm supplies only the @\/-\/@ spelling. A client that
-resolves metadata /through/ the proxy then downloads the bytes through it, rather than
-going straight to upstream and bypassing the gate. See
-@docs\/architecture\/web-layer.md@ → "Multi-ecosystem mounts", whose URL rewriting is
-load-bearing. Keeping artifacts same-host also keeps npm's auth flowing, which a
-separate artifact host would silently drop. The caller __supplies__ the
-@{mount-base}\/{pkg}@ prefix. 'assembleMergedPackument' derives it from the mount base
-and the document's own safety-gated @name@ as it places each surviving version.
-
-== Assembling the served document
-
-'assembleMergedPackument' replays a 'MergePlan' onto the raw source @Value@s in
-__one pass__. Each surviving version's object comes from the raw document of the
-source that won it. The served bytes are therefore the winning upstream's, unmodelled
-keys and all. The assembly rewrites its @dist.tarball@ under the mount base as it
-places the version.
-
-It rebuilds @dist-tags@ and @time@ from the plan's reconciled decisions: the times as
-normalised ISO-8601, keeping the base document's @created@\/@modified@ bookkeeping.
-Every other top-level key comes from the base document. A version not in the plan's
-survivors is never taken, so a client's resolver only ever sees admitted versions.
-Presence in the packument /is/ availability.
-
-The fused single pass is deliberate. Restricting, assembling, and rewriting as
-separate whole-document edits would rebuild a many-version packument several times
-per request. This transform sits on the serve path's hot loop. The rewrite gates the
-interpolated name through the shared
-'Ecluse.Core.Registry.ServedDocument.safeDocumentName', which reads the base document's own
-@name@ under the npm grammar before anything interpolates it. A document with no usable name
-has no URLs rewritten.
+Both work structurally over the raw @aeson@ 'Value'. The served packument is an open document,
+so a field Écluse does not model relays unchanged, which rebuilding from
+"Ecluse.Core.Package" would silently drop. The plan owns which versions survive, which source
+won each, where @dist-tags.latest@ resolves, and each publish instant. This module owns the npm
+wire shape, replaying all of that onto the base document in one pass over the hot serve path.
 -}
 module Ecluse.Core.Registry.Npm.Filter (
     -- * URL rewriting
@@ -90,31 +39,19 @@ import Ecluse.Core.Registry.ServedDocument (overlaySurvivors, rebaseArtifactUrl,
 import Ecluse.Core.Text (joinUrlPath, renderIso8601Utc)
 import Ecluse.Core.Version (renderVersion)
 
-{- | The packument's own @name@ when it is safe to interpolate into a rewritten
-@dist.tarball@ path, read through the shared gate under npm's name grammar.
--}
+-- | The packument's own @name@, safety-gated before it is interpolated into a rewritten path.
 npmDocumentName :: KeyMap Value -> Maybe PackageName
 npmDocumentName = safeDocumentName (rightToMaybe . projectName)
 
-{- | Rewrite one version object's @dist.tarball@ to @{prefix}\/-\/{file}@, so the client
-fetches the artifact back through this mount. The @{file}@ is the tarball URL's filename,
-kept verbatim so the bytes a client integrity-checks do not change.
-
-Total, lossless, and idempotent: a version with no @dist@, no @tarball@ string, or no
-filename segment is left unchanged, and every unmodelled key is relayed.
-
-@prefix@ is the mount's @{base}\/{pkg}@. A @{pkg}@ read from a document's own @name@ is
-upstream-controlled, so the caller must gate it through 'npmDocumentName' first.
+{- | Rewrite one version object's @dist.tarball@ to @{prefix}\/-\/{file}@, keeping the file name
+verbatim. @prefix@ is upstream-controlled, so the caller gates it through 'npmDocumentName'.
 -}
 rewriteVersion :: (Text -> Maybe Text) -> Value -> Value
 rewriteVersion servedUrl = \case
     Object vo -> Object (adjustObject "dist" (rewriteDist servedUrl) vo)
     other -> other
 
-{- | Rewrite a @dist@ object's @tarball@ to @{prefix}\/-\/{file}@, where @file@ is
-the existing URL's filename. A @dist@ with no string @tarball@, or a tarball with
-no filename, is left unchanged.
--}
+-- | Rewrite a @dist@ object's @tarball@, leaving one with no readable file name unchanged.
 rewriteDist :: (Text -> Maybe Text) -> Value -> Value
 rewriteDist servedUrl = \case
     Object dist
@@ -123,13 +60,8 @@ rewriteDist servedUrl = \case
             Object (KeyMap.insert "tarball" (String rebased) dist)
     other -> other
 
-{- | Assemble the served packument for @mountBase@ from a 'MergePlan' and the raw source
-documents. The plan owns @versions@, @dist-tags@, and @time@, and every other top-level key
-comes from the base document.
-
-The assembly reads the raw @Value@s rather than the typed projections, so unmodelled fields
-survive. A survivor whose source object is missing drops out, never a fabricated one. The
-result is always an object, even for an empty plan or a non-object base document.
+{- | Assemble the served packument for @mountBase@. The plan owns @versions@, @dist-tags@, and
+@time@, every other top-level key comes from the base document, and the result is an object.
 -}
 assembleMergedPackument :: Text -> Map SourceId Value -> MergePlan -> Value -> Value
 assembleMergedPackument mountBase bySource plan base =
@@ -193,24 +125,20 @@ assembleMergedPackument mountBase bySource plan base =
         _ -> mempty
 
 {- | npm's served-document __assemble__ capability
-('Ecluse.Core.Registry.Adapter.Types.metadataAssemble'). The neutral pipeline threads the
-documents opaquely, so projecting them into npm's 'Value' and injecting the result back is
-npm's boundary.
+('Ecluse.Core.Registry.Adapter.Types.metadataAssemble'), across npm's own 'CachedDoc' boundary.
 -}
 assembleMergedDocument :: Text -> Map SourceId CachedDoc -> MergePlan -> Maybe CachedDoc -> CachedDoc
 assembleMergedDocument mountBase bySource plan base =
     fst npmCached (assembleMergedPackument mountBase (Map.mapMaybe npmValue bySource) plan (fromMaybe (Object mempty) (npmValue =<< base)))
 
 {- | npm's served-document __serialise__ capability
-('Ecluse.Core.Registry.Adapter.Types.metadataSerialise'): project the assembled
-'CachedDoc' to npm's 'Value' and encode it compactly to the wire bytes.
+('Ecluse.Core.Registry.Adapter.Types.metadataSerialise'), to the compact wire bytes.
 -}
 serialiseMergedDocument :: CachedDoc -> LByteString
 serialiseMergedDocument = encode . fromMaybe (Object mempty) . npmValue
 
-{- A source document in npm's own representation. One another ecosystem injected projects as
-'Nothing' and is dropped, the same rule the assembly applies to a survivor whose source holds no
-entry: a foreign document contributes nothing rather than an empty one. -}
+-- A document another ecosystem injected projects as 'Nothing' and contributes nothing, rather
+-- than reading as an empty one.
 npmValue :: CachedDoc -> Maybe Value
 npmValue = snd npmCached
 

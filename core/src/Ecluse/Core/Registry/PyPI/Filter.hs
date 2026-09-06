@@ -2,39 +2,15 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Assembling the PEP 691 Simple index Écluse serves, from a cross-upstream
-'Ecluse.Core.Package.Merge.MergePlan' and the raw source documents.
+{- | Assembling the PEP 691 Simple index Écluse serves, from a cross-upstream 'MergePlan' and
+the raw source documents.
 
-Like npm's counterpart, the assembly works __structurally over the raw @aeson@ 'Value'__ rather
-than re-serialising a typed model. The served index is an open document: a client reads keys
-this build does not model, and rebuilding from "Ecluse.Core.Package" would silently drop them.
-Reading the raw documents keeps every unmodelled key on every file entry that survives.
-
-== What the plan decides, and what this module replays
-
-The decisions are ecosystem-agnostic and belong to "Ecluse.Core.Package.Filter" and
-"Ecluse.Core.Package.Merge": which releases survive, which source won each, and which files of
-each survive the per-artifact partition. This module owns the __PEP 691 wire-shape assembly__:
-selecting the surviving files out of the winning source's flat @files@ array, rebasing each
-file's location onto this mount, and rebuilding the PEP 700 @versions@ array from the survivors.
-
-PyPI indexes files rather than versions, so the plan's version keys reach the flat array through
-the file-to-version index the cached document carries, computed once at fetch. The assembly
-re-parses no distribution file name.
-
-== What the served index carries, and what it drops
-
-@meta@ comes from the precedence-winning document, so @meta._last-serial@ survives and a mirror
-can still revalidate cheaply. @versions@ names the surviving releases alone. A file entry keeps
-@upload-time@, @yanked@, @requires-python@, @size@, and @hashes@ verbatim, so a client's own
-resolution and its integrity check see what the upstream published. The @core-metadata@ and
-@data-dist-info-metadata@ keys are dropped from every entry: Écluse serves no PEP 658 sidecar,
-and advertising one it does not serve would send a resolver to a @404@.
-
-The file URL is rebased through the shared
-'Ecluse.Core.Registry.ServedDocument.rebaseArtifactUrl', with PyPI supplying only the @url@ key
-and the artifact route's own spelling, so a served location and the route that must claim it
-cannot disagree.
+The served index is an open document, so the assembly works structurally over the raw @aeson@
+'Value' and every unmodelled key on a surviving entry reaches the client. The plan owns which
+releases and files survive. This module owns the wire shape: selecting entries out of the
+winning source's flat @files@ array through the file-to-version index the fetch computed,
+rebasing each location onto this mount, dropping the two PEP 658 sidecar keys Écluse serves no
+companion for, and rebuilding the PEP 700 @versions@ array.
 -}
 module Ecluse.Core.Registry.PyPI.Filter (
     -- * Assembling the served index
@@ -60,16 +36,8 @@ import Ecluse.Core.Registry.PyPI.Route (distributionPath)
 import Ecluse.Core.Registry.ServedDocument (rebaseArtifactUrl, stringField)
 import Ecluse.Core.Text (joinUrlPath)
 
-{- | Assemble the served Simple index for @mountBase@ from a 'MergePlan' and the raw source
-documents, each paired with the file-to-version index its fetch computed.
-
-@name@ and @meta@ come from the base document, @versions@ from the plan's survivors, and
-@files@ from the entries the plan's surviving artifacts name in the source that won each
-release. A named file the winning source does not hold drops out, never a fabricated one. The
-result is always an object, even for an empty plan or a non-object base document.
-
-Locations are rebased under the plan's own project name, never a document's self-reported
-spelling, so a served index carries no location this mount would not claim.
+{- | Assemble the served Simple index for @mountBase@, rebasing every location under the plan's own
+project name so the index carries none this mount would not claim. Always an object.
 -}
 assembleSimpleIndex :: Text -> Map SourceId (Value, FileVersionIndex) -> MergePlan -> Value -> Value
 assembleSimpleIndex mountBase bySource plan base =
@@ -84,9 +52,8 @@ assembleSimpleIndex mountBase bySource plan base =
         Object o -> o
         _ -> mempty
 
-    {- One pass over each source's flat array, keeping an entry when the plan kept its file and
-    named that source the winner of the release the file belongs to. The file-to-version index
-    the fetch computed is what maps an entry back to a release, so no file name is re-parsed. -}
+    -- An entry survives when the plan kept its file and named its source the winner of the
+    -- release it belongs to, which the fetch-time index resolves without re-parsing a name.
     survivingFiles :: [Value]
     survivingFiles =
         [ served entry
@@ -120,9 +87,7 @@ rebaseEntry renderUrl = \case
             Object (KeyMap.insert "url" (String rebased) entry)
     other -> other
 
-{- Drop the PEP 658 sidecar keys from a served entry. Écluse serves no @.metadata@ companion, so
-advertising one would send a resolver to a @404@ instead of the wheel it can read the same
-metadata out of. -}
+-- Écluse serves no @.metadata@ companion, and the wheel carries the same metadata.
 dropSidecarKeys :: Value -> Value
 dropSidecarKeys = \case
     Object entry -> Object (foldr KeyMap.delete entry sidecarKeys)
@@ -144,12 +109,8 @@ entryFilename = \case
     Object entry -> stringField "filename" entry
     _ -> Nothing
 
-{- | PyPI's served-document __assemble__ capability
-('Ecluse.Core.Registry.Adapter.Types.metadataAssemble'). The neutral pipeline threads the
-documents opaquely, so projecting them into PyPI's own representation and injecting the result
-back is PyPI's boundary. A source another ecosystem injected projects as 'Nothing' and
-contributes nothing, the same rule the assembly applies to a survivor whose source holds no
-entry for it.
+{- | PyPI's served-document __assemble__ capability. A source another ecosystem injected projects as
+'Nothing' and contributes nothing.
 -}
 assembleSimpleDocument :: Text -> Map SourceId CachedDoc -> MergePlan -> Maybe CachedDoc -> CachedDoc
 assembleSimpleDocument mountBase bySource plan base =
@@ -171,8 +132,7 @@ allKeptFiles :: MergePlan -> Set Text
 allKeptFiles plan = Set.fromList (concatMap toList (Map.elems (mpArtifacts plan)))
 
 {- | PyPI's served-document __serialise__ capability
-('Ecluse.Core.Registry.Adapter.Types.metadataSerialise'): project the assembled 'CachedDoc' to
-its 'Value' and encode it compactly to the wire bytes.
+('Ecluse.Core.Registry.Adapter.Types.metadataSerialise'), to the compact wire bytes.
 -}
 serialiseSimpleDocument :: CachedDoc -> LByteString
 serialiseSimpleDocument = encode . maybe (Object mempty) fst . snd pypiSimpleCached

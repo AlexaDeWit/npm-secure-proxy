@@ -77,9 +77,8 @@ metadataAccept = \case
     Abbreviated -> "application/vnd.npm.install-v1+json"
     Full -> "application/json"
 
-{- | npm's canonical artifact hosts: none, because a registry serves its own tarball bytes.
-The adapter declares it to the tarball-host gate, and the projection reads the same list, so
-an artifact authority has one meaning on both sides.
+{- | npm's canonical artifact hosts: none, because a registry serves its own tarball bytes. The
+gate and the projection read this one list, so an artifact authority means one thing on both.
 -}
 npmArtifactHosts :: [Text]
 npmArtifactHosts = []

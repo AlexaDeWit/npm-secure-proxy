@@ -31,7 +31,7 @@ overlaySpec = describe "overlaySurvivors" $ do
         overlay [(0, sourceOf [("1.0.0", "private"), ("2.0.0", "private")]), (1, sourceOf [("1.0.0", "public"), ("2.0.0", "public")])] [("1.0.0", 0), ("2.0.0", 1)]
             `shouldBe` [("1.0.0", "private"), ("2.0.0", "public")]
 
-    it "yields survivors in ascending version order, so the assembly is deterministic" $
+    it "yields survivors in key order, so the assembly is deterministic" $
         overlay [(0, sourceOf [("1.0.0", "a"), ("2.0.0", "a"), ("10.0.0", "a")])] [("2.0.0", 0), ("10.0.0", 0), ("1.0.0", 0)]
             `shouldBe` [("1.0.0", "a"), ("10.0.0", "a"), ("2.0.0", "a")]
 

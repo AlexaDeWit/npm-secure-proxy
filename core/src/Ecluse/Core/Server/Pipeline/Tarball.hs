@@ -290,12 +290,8 @@ serveTarballWithDeps mode replies deps clientToken name version file request res
                     liftIO (respond (artifactError replies deps firstPartyAbsent))
                 | otherwise -> servePublicArtifact mode replies rt deps validators name version file respond
 
-{- Stream the artifact from the trusted private upstream. A 2xx or an upstream 304 yields
-'Just' and answers the request. Any other status, an unformable URL, or a failure opening the
-connection yields 'Nothing', the clean miss the caller falls through on. The request never
-follows a redirect, so a private CDN 302 comes back rather than being chased with the
-credential. This leg applies no serve-time integrity floor, and the client and the mirror
-worker still verify the bytes. -}
+-- A 2xx or an upstream 304 answers the request, and anything else is the clean miss the caller
+-- falls through on. A private CDN 302 comes back rather than being chased with the credential.
 streamPrivateArtifact ::
     ArtifactServe ->
     TarballReplies response ->
@@ -316,15 +312,10 @@ streamPrivateArtifact mode replies rt deps token validators name version file re
                     <$> relayUpstreamWhen mode (srPrivateManager rt) (withValidators validators (withMethod mode req)) acceptArtifact relayUnjudged (relayResponder replies respond)
         Nothing -> pure Nothing
 
-{- The private artifact request, or 'Nothing' for a private miss: no private upstream, a host
-the artifact-host policy refuses, an unresolvable file, or a URL that will not form.
-
-Which arm runs is the ecosystem's own fact. An ecosystem whose registry serves its own artifact
-bytes declares no artifact host, and its file sits at a conventional path under the private
-base: a blind probe, which costs no metadata read on the private hit path. An ecosystem that
-declares artifact hosts cannot spell that path, because its index names each file's location
-itself, so the file is resolved through the private index and fetched at the location that
-index gave. -}
+{- Which arm runs is the ecosystem's own fact. A registry that serves its own artifact bytes
+declares no artifact host, so a blind probe of the conventional path costs no metadata read on a
+private hit. One that declares artifact hosts cannot spell that path, because its index names
+each file's location, so the file resolves through the index and is fetched where it said. -}
 privateArtifactRequest ::
     ServeRuntime ->
     PackumentDeps ->
@@ -347,10 +338,8 @@ privateArtifactRequest rt deps token name version file = case pdPrivateBaseUrl d
     byConventionalPath privateBase =
         rightToMaybe (artifactByFile (pdArtifact deps) (mountOrigin deps (srPrivateManager rt) privateBase token) name (unFilename file))
 
-    {- Resolve the file through the private index, then fetch it where that index put it. The
-    location is gated to the mount's reference authorities from the same definition the download
-    gate reads, and the mount credential rides only when the location is the private upstream
-    itself: a file the index puts elsewhere is fetched anonymously or not at all. -}
+    -- The location is gated from the same definition the download gate reads, and the credential
+    -- rides only when it is the private upstream itself.
     byIndexedLocation privateBase = do
         resolved <- tryAny (withPrivateMetadataClient rt deps privateBase token (\client -> fetchVersionDetails client name version))
         pure $ do

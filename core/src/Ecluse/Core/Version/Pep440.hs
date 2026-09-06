@@ -206,9 +206,8 @@ consumeDev s =
              in (Just (numOr0 digits), rest)
         Nothing -> (Nothing, s)
 
-{- | Render a parsed version back as one spelling, the form Python's
-@packaging.utils.canonicalize_version@ produces: the release keeps no trailing zeros, so
-@1.0@ and @1.0.0@ render alike and a merge lists that release once.
+{- | Render a parsed version as the one spelling Python's @packaging.utils.canonicalize_version@
+produces, keeping no trailing release zeros so @1.0@ and @1.0.0@ render alike.
 
 >>> renderPep440 <$> parsePep440 "1.0.0"
 Just "1"

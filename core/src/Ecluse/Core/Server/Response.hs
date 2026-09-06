@@ -334,13 +334,8 @@ A blank or absent help message contributes nothing.
 appendHelp :: Maybe HelpMessage -> Text -> Text
 appendHelp help = renderRefusal . mkRefusal help
 
-{- | A refusal's text kept in its two parts: the reason Écluse decided, and the operator help
-message configured beside it.
-
-An ecosystem renders whichever part its own denial surface carries. npm has a JSON envelope with
-room for both, and reads 'renderRefusal'. PyPI answers a bare status, so its body is the help
-message alone ('refusalHelp') and is absent when no operator configured one. Splitting the two
-here is what keeps the help message from being dropped for the ecosystem with no envelope.
+{- | A refusal's text in its two parts, so an ecosystem renders whichever its own denial surface
+carries and the help message is not dropped for one with no envelope to hold both.
 -}
 data Refusal = Refusal
     { refusalReason :: Text

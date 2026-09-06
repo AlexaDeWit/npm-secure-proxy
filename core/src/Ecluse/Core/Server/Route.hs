@@ -131,15 +131,11 @@ data Capture v = Capture
     , capConsume :: [Text] -> Maybe (v, [Text])
     -- ^ Consume the leading segments this capture claims, yielding its value and the tail.
     , capRender :: v -> [Text]
-    {- ^ The segments this capture claims, written back out. It is 'capConsume' inverted, so a
-    served URL is built from the same record that must claim it and the two cannot drift.
-    -}
+    -- ^ 'capConsume' inverted, so a served URL is built from the record that must claim it.
     }
 
-{- | What a route serves, and what it answers a client that will not take it.
-
-The refusal is rendered into the route's own 'ResponseContract', so the @406@ a negotiating
-route answers is documented from the same record that serves it.
+{- | What a route serves, and what it refuses a client that will not take it. The refusal renders
+into the route's own contract, so the @406@ is documented from the record that serves it.
 -}
 data MediaNegotiation response
     = -- | The route negotiates nothing: every request is admitted whatever it says it accepts.
@@ -170,17 +166,11 @@ methodMatches MethodPost m = m == methodPost
 methodMatches MethodDelete m = m == methodDelete
 methodMatches MethodRead m = m == methodGet || m == methodHead
 
-{- | Fold an ecosystem's route table into its mount's router. The first route that claims the
-request decides what happens to it.
+{- | Fold an ecosystem's route table into its mount's router: the first route that claims the
+request decides it, and deny-by-default is structural because there is no other way to answer.
 
-A request no route claims gets the mount's @404@ 'Answer' (npm's @{"error": "not found"}@), so
-deny-by-default is structural. 'routerOf' has no other way to answer, and there is no catch-all
-branch to forget.
-
-The request headers reach the router because a route may declare the media types it serves. A
-request that admits none of them takes that route's own refusal ('MediaNegotiation'), which is
-decided here rather than inside a handler, so no upstream work is done for a client that will
-not take the answer.
+The headers reach the router because a route may declare the media types it serves, and a
+request admitting none of them takes that route's refusal before any handler runs.
 -}
 routerOf :: RouteAction -> [Route v] -> MountRouter
 routerOf notFound routes method headers segments =
@@ -251,13 +241,8 @@ safeSegment build = \case
     seg : rest | isSafeComponent seg -> Just (build seg, rest)
     _ -> Nothing
 
-{- | The mount-relative path a route serves one set of captures under: its literal segments
-interleaved with what each capture renders, in template order. 'Nothing' when the captures do
-not fill the template, which is a caller error rather than a request.
-
-A rewritten artifact URL is built through this rather than by hand, so the URL Écluse serves
-and the route that must claim it are two readings of one record. A rewritten URL no route claims
-is a @404@ on every install, and one a /different/ route claims is worse.
+{- | The mount-relative path a route serves one set of captures under. A rewritten artifact URL
+is built through this, so the URL served and the route that must claim it are one record.
 -}
 renderRoute :: Route v -> [v] -> Maybe [Text]
 renderRoute Route{routeSegs = patternSegs} = fill patternSegs

@@ -187,12 +187,8 @@ mediaContract status description schema =
             Answer status headers (maybe NoAnswerBody (`MediaAnswer` bytes) (bodyMediaType schema))
         }
 
-{- | One exact response whose body is optional: the media type its 'BodySchema' names when the
-handler supplies bytes, and no body at all when it supplies none.
-
-It is the refusal shape of an ecosystem whose upstream answers a bare status. The one body such
-a refusal may carry is the operator help message, so both forms are one documented response
-rather than two the caller could answer under different statuses.
+{- | One exact response whose body is optional, the refusal shape of an ecosystem whose upstream
+answers a bare status. Both forms are one documented response rather than two.
 -}
 optionalBodyContract :: Status -> Text -> BodySchema -> ResponseContract (ResponseValue (Maybe LByteString))
 optionalBodyContract status description schema =

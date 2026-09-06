@@ -200,9 +200,10 @@ renderingSpec = describe "every rendered file URL is one this table claims" $ do
 
 -- | A project name in the canonical spelling the route claims.
 genCanonicalProject :: Gen PackageName
-genCanonicalProject = do
-    raw <- Gen.text (Range.linear 1 12) (Gen.frequency [(8, Gen.lower), (2, Gen.element ['-', '0', '9'])])
-    maybe genCanonicalProject pure (rightToMaybe (projectName (T.dropWhileEnd (== '-') (T.dropWhile (== '-') raw))))
+genCanonicalProject =
+    Gen.mapMaybe
+        (rightToMaybe . projectName . T.dropWhileEnd (== '-') . T.dropWhile (== '-'))
+        (Gen.text (Range.linear 1 12) (Gen.frequency [(8, Gen.lower), (2, Gen.element ['-', '0', '9'])]))
 
 {- | A distribution file name for one project, in either archive form PyPI serves. It is what a
 real index entry names, and what the route's cross-capture check accepts. A wheel escapes the

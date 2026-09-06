@@ -108,9 +108,8 @@ isStable = \case
     PyPIKey k -> isPep440Stable k
     RubyGemsKey k -> isGemStable k
 
-{- | The one spelling a PEP 440 version canonicalises to, or 'Nothing' when it does not parse.
-A PyPI projection keys its versions by this, so two spellings of one release merge into one
-entry; the raw spelling survives per artifact through the filename.
+{- | The one spelling a PEP 440 version canonicalises to, which a PyPI projection keys by so two
+spellings of one release merge. The raw spelling survives per artifact through the filename.
 
 >>> canonicalPep440 "1.0.0"
 Just "1"

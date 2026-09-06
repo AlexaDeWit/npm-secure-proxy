@@ -61,9 +61,7 @@ npmAdapter =
         , adapterMaintenance = npmMaintenance
         }
 
-{- | npm's publish capability, named beside the record that carries it so a consumer needing the
-capability alone reads one definition rather than unwrapping the optional field.
--}
+-- | npm's publish capability, named so a consumer of it alone need not unwrap the optional field.
 npmPublish :: AdapterPublish
 npmPublish =
     AdapterPublish

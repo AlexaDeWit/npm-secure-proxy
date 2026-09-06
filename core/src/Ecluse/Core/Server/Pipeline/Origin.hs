@@ -206,9 +206,8 @@ withMetadataClient rt deps upstream caching origin k =
     -- The log lines name the origin, and a diagnostic reads characters, not a witness.
     baseUrl = registryUrlText (ocBaseUrl origin)
 
-{- | The private origin's read handle: __uncached__, carrying the client's own credential. The
-private upstream is the per-client authority for who may read what, and the metadata cache keys
-on the base URL with no credential dimension, so one client's entry must never serve another's.
+{- | The private origin's read handle: uncached, carrying the client's own credential, because
+the cache keys on the base URL alone and one client's entry must never serve another's.
 -}
 withPrivateMetadataClient :: ServeRuntime -> PackumentDeps -> RegistryUrl -> Maybe ClientCredential -> (MetadataClient -> IO a) -> Handler a
 withPrivateMetadataClient rt deps baseUrl token =

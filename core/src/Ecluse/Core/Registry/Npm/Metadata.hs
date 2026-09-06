@@ -167,9 +167,8 @@ fetchNpmVersion tracing origin name version =
     fetchThenProject tracing (fetchNpmPackument origin) name $
         fmap (>>= enforceArtifactLocationsOf npmArtifactAuthorities (originBaseUrl origin)) . projectNpmVersion (ocLimits origin) name version
 
-{- npm's declared artifact authorities, derived once from the same list the adapter hands the
-tarball-host gate, so the projection and the download gate read one set. It is empty, so an
-npm artifact is honoured only on the authority that served its packument. -}
+-- Derived from the same list the adapter hands the tarball-host gate. It is empty, so an npm
+-- artifact is honoured only on the authority that served its packument.
 npmArtifactAuthorities :: AllowedHostPorts
 npmArtifactAuthorities = ecosystemArtifactAuthorities npmArtifactHosts
 
