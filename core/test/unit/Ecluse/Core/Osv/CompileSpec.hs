@@ -11,6 +11,7 @@ import Data.Text (unpack)
 import Data.Text qualified as T
 import Data.Version (showVersion)
 import Database.SQLite.Simple
+import Katip (LogEnv, closeScribes)
 import Paths_ecluse (version)
 import System.Directory (removeFile)
 import System.FilePath (takeFileName)
@@ -28,7 +29,8 @@ import Ecluse.Core.Telemetry.Metrics (
     AdvisoryCompileResult (CompileAborted, CompileCompleted),
     AdvisoryDropCause (DropMalformed, DropOversize),
  )
-import Ecluse.Test.Osv (osvZipOf, runOsvTestM)
+import Ecluse.Test.Log (captureStdout, jsonLogEnv)
+import Ecluse.Test.Osv (osvZipOf, runOsvTestM, runOsvTestMWith)
 import Ecluse.Test.OsvDb (epssFixtureFile)
 import Ecluse.Test.Port (RecordedCompile (RecordedCompile), recordingAdvisoryCompileMetricsPort)
 import Ecluse.Test.Stub (Stub, stubBaseUrl, withStub)
@@ -131,6 +133,42 @@ spec = describe "SQLite OSV Compilation" $ do
         takeFileName dbFile `shouldBe` "pypi-osv-schema3.db"
         Map.lookup "ecosystem" (Map.fromList metaRows) `shouldBe` Just "pypi"
 
+    it "writes an unorderable bound into the artifact and decodes the \"0\" lower bound" $ do
+        -- The malware feed's shape: an advisory naming versions outright. The date-stamped one
+        -- carries a bound semver cannot order, and it is kept, because dropping it would admit
+        -- every version it covers. The range's "0" lower bound lands as NULL rather than as a
+        -- bound nothing can compare.
+        zipData <-
+            osvZipOf
+                [ ("point.json", "{\"id\":\"MAL-point\",\"affected\":[{\"package\":{\"name\":\"pointy\",\"ecosystem\":\"npm\"},\"versions\":[\"1.0.0\",\"2026.05.1\"]}]}")
+                , ("range.json", "{\"id\":\"MAL-range\",\"affected\":[{\"package\":{\"name\":\"ranged\",\"ecosystem\":\"npm\"},\"ranges\":[{\"type\":\"SEMVER\",\"events\":[{\"introduced\":\"0\"},{\"fixed\":\"1.2.3\"}]}]}]}")
+                ]
+        epssData <- LBS.readFile epssFixtureFile
+        (metrics, _) <- recordingAdvisoryCompileMetricsPort
+        (dbFile, logged) <- captureStdout' $ \logEnv ->
+            withStub status200 zipData $ \stub ->
+                withStub status200 epssData $ \epssStub ->
+                    runOsvTestMWith logEnv (compileOsvToSqlite metrics Nothing "/tmp" (osvEcosystemFor Npm) (sourcesOf stub epssStub "/all.zip"))
+
+        -- The alarm names the package and the bound, rides the compile's summary line, and
+        -- stays below the level an operator pages on.
+        logged `shouldSatisfy` T.isInfixOf "for example pointy 2026.05.1"
+        logged `shouldSatisfy` T.isInfixOf "kept 1 unorderable"
+        logged `shouldSatisfy` (not . T.isInfixOf "\"sev\":\"Error\"")
+
+        conn <- open dbFile
+        rows <- query_ conn "SELECT package_name, introduced_version, fixed_version, last_affected_version FROM package_vulnerability_ranges ORDER BY package_name, introduced_version" :: IO [(Text, Maybe Text, Maybe Text, Maybe Text)]
+        close conn
+        catchIOError (removeFile dbFile) (const $ pure ())
+
+        -- The unorderable point is written as it was published, so the reader can match it
+        -- literally. Nothing the feed named is missing from the artifact.
+        rows
+            `shouldBe` [ ("pointy", Just "1.0.0", Nothing, Just "1.0.0")
+                       , ("pointy", Just "2026.05.1", Nothing, Just "2026.05.1")
+                       , ("ranged", Nothing, Just "1.2.3", Nothing)
+                       ]
+
     it "fails the pass when the EPSS feed answers non-2xx, so nothing reaches the export" $ do
         -- A 404 is permanent, so the fetch gives up at once rather than spending the backoff
         -- budget. The compile throws before it writes meta, and the caller's upload never runs.
@@ -157,6 +195,18 @@ spec = describe "SQLite OSV Compilation" $ do
         it "carries an unscored segment's null epss_score through" $
             osvToRow (ExtractedOsv "pkg" "npm" "GHSA-row" Nothing Unbounded Nothing Nothing)
                 `shouldBe` ("pkg", "GHSA-row", Nothing, Nothing, Nothing, Nothing, Nothing)
+
+{- Run a compile under a JSON scribe and hand back its result with everything it logged, so one
+test can read the artifact and the alarm the same pass raised. -}
+captureStdout' :: (LogEnv -> IO a) -> IO (a, Text)
+captureStdout' body = do
+    resultRef <- newIORef Nothing
+    logged <- captureStdout $ do
+        logEnv <- jsonLogEnv
+        body logEnv >>= writeIORef resultRef . Just
+        void (closeScribes logEnv)
+    result <- readIORef resultRef
+    maybe (fail "the compile under capture produced no result") (pure . (,logged)) result
 
 -- The two upstreams one compile reads, each served by its own stub on an ephemeral port.
 sourcesOf :: Stub -> Stub -> String -> CompileSources

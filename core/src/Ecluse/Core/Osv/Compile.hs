@@ -23,7 +23,7 @@ import UnliftIO.Exception (bracket, throwIO)
 
 import Ecluse.Core.BuildIdentity (productVersion)
 import Ecluse.Core.Osv.Advisory (ExtractedOsv (..))
-import Ecluse.Core.Osv.Ecosystem (OsvEcosystem (osvExportDirectory, osvWireName))
+import Ecluse.Core.Osv.Ecosystem (OsvEcosystem (osvEcosystemTag, osvExportDirectory, osvWireName))
 import Ecluse.Core.Osv.Epss (fetchEpssScores, maxEpssFeedBytes)
 import Ecluse.Core.Osv.Retry (defaultOsvRetryPolicy, withOsvRetry)
 import Ecluse.Core.Osv.Schema (MetaKey (..), metaTableDdl, osvDbFileName, osvSchemaEpoch, rangesTableDdl, renderMetaKey)
@@ -85,7 +85,7 @@ compileOsvToSqlite metrics mTracerProvider outDir eco sources = do
             -- The join needs the whole score table before the first advisory row lands, and a
             -- feed the retry budget cannot fetch fails the pass rather than shipping without.
             epss <- withOsvRetry defaultOsvRetryPolicy (fetchEpssScores maxEpssFeedBytes (csEpssFeedUrl sources))
-            ingest <- newOsvIngest defaultIngestLimits epss
+            ingest <- newOsvIngest defaultIngestLimits (osvEcosystemTag eco) epss
 
             bracket (liftIO $ open dbFile) (liftIO . close) $ \conn -> do
                 liftIO $ initSchema conn
@@ -115,6 +115,7 @@ concludeCompile metrics mSpan conn ecosystem sources stats = do
         addAttribute sp "ecluse.osv.accepted" (show (statAccepted stats) :: Text)
         addAttribute sp "ecluse.osv.dropped_oversize" (show (statDroppedOversize stats) :: Text)
         addAttribute sp "ecluse.osv.dropped_malformed" (show (statDroppedMalformed stats) :: Text)
+        addAttribute sp "ecluse.osv.unorderable" (show (statUnorderable stats) :: Text)
     liftIO (recordTallies metrics stats)
     when (systemicDrop stats) $ do
         forM_ mSpan $ \sp -> setStatus sp (Error "systemic advisory drop rate; compile abandoned")
@@ -137,7 +138,7 @@ recordTallies metrics stats = do
     acmpCompileDropped metrics DropOversize (statDroppedOversize stats)
     acmpCompileDropped metrics DropMalformed (statDroppedMalformed stats)
 
--- A one-line summary of an ingest pass's drop tally for the boot log.
+-- A one-line summary of an ingest pass's drop and anomaly tally for the boot log.
 renderDrops :: IngestStats -> Text
 renderDrops s =
     "accepted "
@@ -146,16 +147,19 @@ renderDrops s =
         <> show (statDroppedOversize s)
         <> " oversize / "
         <> show (statDroppedMalformed s)
-        <> " malformed"
+        <> " malformed, kept "
+        <> show (statUnorderable s)
+        <> " unorderable"
 
--- The drop tally as structured log fields. The completion line and the abort line share
--- it, so an operator can filter both on one shape.
+-- The tally as structured log fields. The completion line and the abort line share it, so
+-- an operator can filter both on one shape.
 dropFields :: Text -> IngestStats -> SimpleLogPayload
 dropFields ecosystem s =
     sl "ecosystem" ecosystem
         <> sl "accepted" (statAccepted s)
         <> sl "dropped_oversize" (statDroppedOversize s)
         <> sl "dropped_malformed" (statDroppedMalformed s)
+        <> sl "unorderable" (statUnorderable s)
 
 initSchema :: Connection -> IO ()
 initSchema conn = do

@@ -39,7 +39,8 @@ import Katip (KatipContext, Severity (..), logFM, ls)
 import Network.HTTP.Simple (getResponseBody, httpSource, parseRequest, setRequestCheckStatus)
 import OpenTelemetry.Trace.Core (SpanKind (Internal), TracerProvider, addAttribute)
 
-import Ecluse.Core.Osv.Advisory (ExtractedOsv, OsvAdvisory, extractFromAdvisory, osvId)
+import Ecluse.Core.Ecosystem (Ecosystem)
+import Ecluse.Core.Osv.Advisory (ExtractedOsv, OsvAdvisory, extPackage, extractFromAdvisory, orderableBounds, osvId, unorderableBounds)
 import Ecluse.Core.Osv.Epss (EpssScores)
 import Ecluse.Core.Security.Authority (authorityLabel)
 import Ecluse.Core.Telemetry.Span (closeOptionalSpan, openOptionalSpan)
@@ -81,11 +82,15 @@ data IngestStats = IngestStats
     -- ^ Entries dropped for breaching 'ilMaxAdvisoryBytes'.
     , statDroppedMalformed :: !Int
     -- ^ Entries dropped because their JSON did not decode.
+    , statUnorderable :: !Int
+    {- ^ Rows kept with a bound the grammar cannot parse ('orderableBounds'). Counted in
+    rows, so it stays out of 'systemicDrop'.
+    -}
     }
     deriving stock (Eq, Show)
 
 emptyIngestStats :: IngestStats
-emptyIngestStats = IngestStats 0 0 0
+emptyIngestStats = IngestStats 0 0 0 0
 
 -- The mutable drop tally for one ingest pass. Opaque: read it with 'readIngestStats'.
 newtype IngestCounter = IngestCounter {counterRef :: IORef IngestStats}
@@ -94,15 +99,19 @@ newtype IngestCounter = IngestCounter {counterRef :: IORef IngestStats}
 data OsvIngest = OsvIngest
     { ingestLimits :: IngestLimits
     , ingestCounter :: IngestCounter
+    , ingestEcosystem :: Maybe Ecosystem
+    {- ^ The version grammar that orders this pass's bounds. 'Nothing' for a name this build
+    does not serve, and then nothing is tallied.
+    -}
     , ingestEpss :: EpssScores
     -- ^ The pass's EPSS table, joined onto each advisory as it is extracted.
     }
 
--- | A fresh ingest context with the given bounds and EPSS table, and a zeroed tally.
-newOsvIngest :: (MonadIO m) => IngestLimits -> EpssScores -> m OsvIngest
-newOsvIngest limits scores = do
+-- | A fresh ingest context with the given bounds, grammar and EPSS table, and a zeroed tally.
+newOsvIngest :: (MonadIO m) => IngestLimits -> Maybe Ecosystem -> EpssScores -> m OsvIngest
+newOsvIngest limits eco scores = do
     counter <- IngestCounter <$> newIORef emptyIngestStats
-    pure (OsvIngest limits counter scores)
+    pure (OsvIngest limits counter eco scores)
 
 -- | Read the current drop tally.
 readIngestStats :: (MonadIO m) => OsvIngest -> m IngestStats
@@ -184,8 +193,8 @@ processZipEntries ingest =
 -- the byte cap. The signal carries the entry's full decompressed size, for the log.
 data EntryOutcome = EntryBytes !ByteString | EntryOversize !Int
 
--- Decide what one collected entry yields: drop-and-count an over-large or malformed
--- entry, or count and emit a decoded advisory's ranges (flagging an anomalous fan-out).
+-- Decide what one collected entry yields: a counted drop for an over-large or malformed
+-- entry, or the decoded advisory's rows.
 handleEntry :: (KatipContext m) => OsvIngest -> ZipEntry -> EntryOutcome -> ConduitT (Either ZipEntry ByteString) ExtractedOsv m ()
 handleEntry ingest entry = \case
     EntryOversize seen -> lift $ do
@@ -195,13 +204,36 @@ handleEntry ingest entry = \case
         Nothing -> lift $ do
             bumpMalformed (ingestCounter ingest)
             logFM WarningS (ls ("Failed to parse OSV advisory JSON from entry: " <> zipEntryNameText entry))
-        Just adv -> do
-            lift $ bumpAccepted (ingestCounter ingest)
-            let extracted = extractFromAdvisory (ingestEpss ingest) adv
-            lift $ warnOnFanOut ingest adv extracted
-            yieldMany extracted
+        Just adv -> admitAdvisory ingest adv
   where
     cap = ilMaxAdvisoryBytes (ingestLimits ingest)
+
+-- Emit every row one decoded advisory yields. Nothing here filters: a row whose bound the
+-- grammar cannot order is counted and logged, and still reaches the artifact.
+admitAdvisory :: (KatipContext m) => OsvIngest -> OsvAdvisory -> ConduitT (Either ZipEntry ByteString) ExtractedOsv m ()
+admitAdvisory ingest adv = do
+    lift $ bumpAccepted (ingestCounter ingest)
+    lift $ warnOnFanOut ingest adv extracted
+    lift $ forM_ (nonEmpty unorderable) (warnOnUnorderable ingest adv)
+    yieldMany extracted
+  where
+    extracted = extractFromAdvisory (ingestEpss ingest) adv
+    -- A name this build does not serve has no grammar to judge its bounds by, so nothing
+    -- about it is anomalous.
+    unorderable = maybe [] (\eco -> mapMaybe (unorderableExample eco) extracted) (ingestEcosystem ingest)
+
+-- The package and the first unorderable bound of one row, for the log line below.
+unorderableExample :: Ecosystem -> ExtractedOsv -> Maybe (Text, Text)
+unorderableExample eco row
+    | orderableBounds eco row = Nothing
+    | otherwise = (,) (extPackage row) <$> listToMaybe (unorderableBounds eco row)
+
+-- One line per advisory carrying one example, so a feed naming thousands of packages cannot
+-- flood the log. The rows are kept, so this is an alarm and never a refusal.
+warnOnUnorderable :: (KatipContext m) => OsvIngest -> OsvAdvisory -> NonEmpty (Text, Text) -> m ()
+warnOnUnorderable ingest adv unorderable@((pkg, bound) :| _) = do
+    bumpUnorderable (ingestCounter ingest) (length unorderable)
+    logFM WarningS (ls ("OSV advisory " <> osvId adv <> " carries " <> show (length unorderable) <> " range(s) the version grammar cannot order, for example " <> pkg <> " " <> bound <> "; keeping them"))
 
 warnOnFanOut :: (KatipContext m) => OsvIngest -> OsvAdvisory -> [ExtractedOsv] -> m ()
 warnOnFanOut ingest adv extracted =
@@ -219,6 +251,9 @@ bumpOversize (IngestCounter ref) = modifyIORef' ref (\s -> s{statDroppedOversize
 
 bumpMalformed :: (MonadIO m) => IngestCounter -> m ()
 bumpMalformed (IngestCounter ref) = modifyIORef' ref (\s -> s{statDroppedMalformed = statDroppedMalformed s + 1})
+
+bumpUnorderable :: (MonadIO m) => IngestCounter -> Int -> m ()
+bumpUnorderable (IngestCounter ref) n = modifyIORef' ref (\s -> s{statUnorderable = statUnorderable s + n})
 
 zipEntryNameText :: ZipEntry -> Text
 zipEntryNameText entry = case zipEntryName entry of

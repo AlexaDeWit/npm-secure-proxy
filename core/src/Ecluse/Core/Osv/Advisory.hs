@@ -14,6 +14,8 @@ module Ecluse.Core.Osv.Advisory (
     ExtractedOsv (..),
     advisorySeverity,
     extractFromAdvisory,
+    orderableBounds,
+    unorderableBounds,
     osvExportUrl,
 ) where
 
@@ -21,9 +23,11 @@ import Data.Aeson (FromJSON (..), withObject, (.:), (.:?))
 import Data.Text qualified as T
 import Security.CVSS (cvssScore, parseCVSS)
 
+import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Osv.Epss (EpssScores, epssForIds)
 import Ecluse.Core.Osv.Types (UpperBound (..))
 import Ecluse.Core.Text (joinUrlPath)
+import Ecluse.Core.Version (parseVersionKey)
 
 {- | An ecosystem's advisory export under an OSV-layout base URL
 (@\<base\>\/\<ecosystem\>\/all.zip@). The base comes from configuration
@@ -227,8 +231,32 @@ extractFromAdvisory scores adv = do
     -- over the advisory's own id and its aliases together.
     epss = epssForIds scores (osvId adv : fromMaybe [] (osvAliases adv))
 
+{- | Does every bound this segment carries parse under the ecosystem's version grammar? A bound
+that does not leaves 'Ecluse.Core.Cve.insideAffectedRange' matching every version, fail-closed.
+-}
+orderableBounds :: Ecosystem -> ExtractedOsv -> Bool
+orderableBounds eco = null . unorderableBounds eco
+
+-- | The bounds this segment carries that the ecosystem's version grammar cannot parse.
+unorderableBounds :: Ecosystem -> ExtractedOsv -> [Text]
+unorderableBounds eco osv = filter (not . parses) (catMaybes [extIntroduced osv, upperBound (extUpperBound osv)])
+  where
+    parses = isRight . parseVersionKey eco
+
+    upperBound = \case
+        FixedBefore f -> Just f
+        LastAffected la -> Just la
+        Unbounded -> Nothing
+
 -- One affected interval: an inclusive lower bound and where it closes.
 data Segment = Segment (Maybe Text) UpperBound
+
+-- OSV spells "affected from the beginning" as @introduced: "0"@, which semver rejects. Decoded here
+-- to no lower bound. An enumerated version of @"0"@ is a version, not a sentinel, and never comes here.
+rangeSegment :: Maybe Text -> UpperBound -> Segment
+rangeSegment introduced = Segment (introduced >>= beyondTheBeginning)
+  where
+    beyondTheBeginning i = if i == "0" then Nothing else Just i
 
 affectedSegments :: OsvAffected -> [Segment]
 affectedSegments aff =
@@ -251,12 +279,12 @@ extractRange :: [OsvEvent] -> [Segment]
 extractRange = go Nothing
   where
     go Nothing [] = []
-    go (Just i) [] = [Segment (Just i) Unbounded]
+    go (Just i) [] = [rangeSegment (Just i) Unbounded]
     go current (e : es)
         | Just i <- eventIntroduced e =
             case current of
-                Just prev -> Segment (Just prev) Unbounded : go (Just i) es
+                Just prev -> rangeSegment (Just prev) Unbounded : go (Just i) es
                 Nothing -> go (Just i) es
-        | Just f <- eventFixed e = Segment current (FixedBefore f) : go Nothing es
-        | Just la <- eventLastAffected e = Segment current (LastAffected la) : go Nothing es
+        | Just f <- eventFixed e = rangeSegment current (FixedBefore f) : go Nothing es
+        | Just la <- eventLastAffected e = rangeSegment current (LastAffected la) : go Nothing es
         | otherwise = go current es

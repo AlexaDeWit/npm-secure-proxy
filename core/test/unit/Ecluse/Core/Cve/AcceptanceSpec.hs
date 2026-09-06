@@ -24,14 +24,15 @@ import Ecluse.Test.OsvDb (withFixtureOsvDb)
 -- CorpusV1's rows in the fake's vocabulary. Keep them in lockstep with the corpus pins in
 -- Ecluse.Test.OsvSpec. Each severity is the CVSS band ceiling for the fixture's GHSA label
 -- (LOW 3.9, MODERATE 6.9, HIGH 8.9, CRITICAL 10.0), each EPSS score comes from the fixture
--- feed's row for the advisory's CVE alias, and no fixture carries a last_affected bound.
+-- feed's row for the advisory's CVE alias, and no fixture carries a last_affected bound. A
+-- fixture spelling its lower bound "0" compiles to no lower bound, the OSV sentinel decoded.
 corpusRows :: [(Text, AdvisoryRange)]
 corpusRows =
-    [ ("@corpus/scoped", AdvisoryRange "GHSA-corpus-0005" (Just 3.9) (Just "0") (FixedBefore "3.0.0") (Just 0.25))
-    , ("corpus-multi", AdvisoryRange "GHSA-corpus-0003" Nothing (Just "0") (FixedBefore "1.0.0") Nothing)
+    [ ("@corpus/scoped", AdvisoryRange "GHSA-corpus-0005" (Just 3.9) Nothing (FixedBefore "3.0.0") (Just 0.25))
+    , ("corpus-multi", AdvisoryRange "GHSA-corpus-0003" Nothing Nothing (FixedBefore "1.0.0") Nothing)
     , ("corpus-multi", AdvisoryRange "GHSA-corpus-0003" Nothing (Just "1.5.0") (FixedBefore "2.0.0") Nothing)
     , ("corpus-unfixed", AdvisoryRange "GHSA-corpus-0002" (Just 10.0) (Just "1.0.0") Unbounded (Just 0.5))
-    , ("corpus-vuln", AdvisoryRange "GHSA-corpus-0001" (Just 8.9) (Just "0") (FixedBefore "1.2.0") (Just 0.875))
+    , ("corpus-vuln", AdvisoryRange "GHSA-corpus-0001" (Just 8.9) Nothing (FixedBefore "1.2.0") (Just 0.875))
     , ("corpus-vuln", AdvisoryRange "GHSA-corpus-0004" (Just 6.9) (Just "2.0.0") (FixedBefore "2.5.0") (Just 0.0625))
     ]
 
@@ -55,7 +56,7 @@ lookupContract withLookup = do
         withLookup $ \l -> do
             ranges <- cveAdvisoriesFor l "corpus-vuln"
             sortOn arCveId ranges
-                `shouldBe` [ AdvisoryRange "GHSA-corpus-0001" (Just 8.9) (Just "0") (FixedBefore "1.2.0") (Just 0.875)
+                `shouldBe` [ AdvisoryRange "GHSA-corpus-0001" (Just 8.9) Nothing (FixedBefore "1.2.0") (Just 0.875)
                            , AdvisoryRange "GHSA-corpus-0004" (Just 6.9) (Just "2.0.0") (FixedBefore "2.5.0") (Just 0.0625)
                            ]
 

@@ -57,7 +57,7 @@ import UnliftIO.Exception (catch, catchAny, onException, throwIO)
 import Ecluse.Core.Cve.Internal (AdvisoryRange (..), CveDbRejected (..), advisoriesQuery, coveredNamesQuery, openHardenedConnection, probeQuery, provenanceQuery)
 import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Osv.Types (UpperBound (..))
-import Ecluse.Core.Version (compareVersions, mkVersion)
+import Ecluse.Core.Version (compareVersions, mkVersion, parseVersionKey)
 
 import Database.SQLite.Simple (Connection, SQLError, close)
 
@@ -150,11 +150,12 @@ taggedQuery :: Text -> IO a -> IO a
 taggedQuery tag act = act `catch` \(err :: SQLError) -> throwIO (CveQueryFault tag (show err))
 
 {- | Is this version inside the advisory segment's affected interval, under the ecosystem's
-version ordering? __Fail-closed:__ an unprovable comparison, from an unparseable bound or
-version, counts as __inside__.
+ordering? __Fail-closed:__ an unprovable comparison counts as __inside__, bar an 'unorderablePoint'.
 -}
 insideAffectedRange :: Ecosystem -> Text -> AdvisoryRange -> Bool
-insideAffectedRange eco versionText ar = atOrAboveIntroduced && withinUpperBound
+insideAffectedRange eco versionText ar = case unorderablePoint eco ar of
+    Just only -> versionText == only
+    Nothing -> atOrAboveIntroduced && withinUpperBound
   where
     v = mkVersion eco versionText
 
@@ -179,6 +180,16 @@ insideAffectedRange eco versionText ar = atOrAboveIntroduced && withinUpperBound
             Nothing -> True
         -- No upper bound: the range never ends.
         Unbounded -> True
+
+-- OSV writes an enumerated version as introduced == last_affected. When the grammar rejects that
+-- string, the segment names it literally, since nothing can order it against anything.
+unorderablePoint :: Ecosystem -> AdvisoryRange -> Maybe Text
+unorderablePoint eco ar = case (arIntroduced ar, arUpperBound ar) of
+    (Just introduced, LastAffected lastAffected)
+        | introduced == lastAffected
+        , isLeft (parseVersionKey eco introduced) ->
+            Just introduced
+    _ -> Nothing
 
 {- | Does this segment's score, a CVSS base score or an EPSS probability, meet the deny
 threshold? __Fail-closed:__ an absent score ('Nothing') meets every threshold, because an

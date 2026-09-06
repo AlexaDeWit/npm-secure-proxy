@@ -261,6 +261,23 @@ the reader requires `severity` and `epss_score` on `package_vulnerability_ranges
 missing a required column, or carrying it under a different declared type, fails schema
 conformance (`CveDbSchemaNonConformant`) and the last-good database keeps serving.
 
+Pilot writes every row the feed yields, because dropping one admits every version it covered.
+It decodes one spelling on the way: OSV writes "affected from the beginning" as an `introduced`
+of `0`, which semver rejects, so the compile records no lower bound and leaves the `fixed` or
+`last_affected` bound beside it unchanged. A version at or above the fix then computes as
+admitted and one below it as denied.
+
+A bound the ecosystem's version grammar cannot parse is a signal rather than a filter. The
+compile counts those rows, names one on a warning line, and carries the count on its summary
+line and its span, so an operator sees a feed going wrong without an advisory going missing.
+
+The reader keeps two readings of such a bound apart. A range whose endpoint no grammar can
+order stays fail-closed and denies every version of its package, since nothing can place a
+version against it. A segment whose lower and upper bound are the same unorderable string
+names one exact version, which is how OSV writes an enumerated version, so it matches that
+string and nothing else. A bound the grammar does parse keeps the ordered comparison
+throughout.
+
 Pilot filters rows to the target ecosystem, so an advisory spanning two ecosystems does
 not leak foreign package rows. Each denial's audit log records the advisory database ETag live
 at emit (`active_advisory_db_etag`). That is deliberately the ETag live at emit rather than the
