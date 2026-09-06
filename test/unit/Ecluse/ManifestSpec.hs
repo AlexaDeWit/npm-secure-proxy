@@ -119,6 +119,10 @@ spec = do
                 `shouldBe` Just ["application/json"]
         it "operations are tagged by ecosystem (npm)" $
             (InsOrdSet.member "npm" . _operationTags <$> getOp "/npm/{package}") `shouldBe` Just True
+        it "the pypi Simple index documents its 406 and its own served media type" $ do
+            (statusCodes <$> getOp "/pypi/simple/{project}") `shouldBe` Just [200, 304, 401, 403, 404, 406, 500, 502, 503]
+            (mediaTypesAt 200 <$> getOp "/pypi/simple/{project}")
+                `shouldBe` Just ["application/vnd.pypi.simple.v1+json"]
   where
     doc :: OpenApi
     doc = buildOpenApi canonicalManifestSource
@@ -137,6 +141,11 @@ spec = do
 
     statusCodes :: Operation -> [Int]
     statusCodes = sort . InsOrd.keys . _responsesResponses . _operationResponses
+
+    -- The media types one exact status is documented under.
+    mediaTypesAt :: Int -> Operation -> [String]
+    mediaTypesAt status =
+        maybe [] responseMediaTypes . InsOrd.lookup status . _responsesResponses . _operationResponses
 
     defaultMediaTypes :: Operation -> [String]
     defaultMediaTypes =
