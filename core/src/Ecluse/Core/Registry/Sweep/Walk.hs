@@ -107,7 +107,7 @@ collectBucket alphabet prefix source = case narrowerBuckets alphabet prefix of
 narrow nothing, and past the depth bound a further character has stopped dividing the names. -}
 narrowerBuckets :: NameAlphabet -> NamePrefix -> Maybe [NamePrefix]
 narrowerBuckets alphabet prefix
-    | T.length (renderNamePrefix prefix) >= bucketDepthLimit = Just []
+    | T.compareLength (renderNamePrefix prefix) bucketDepthLimit /= LT = Just []
     | null narrower = Nothing
     | otherwise = Just narrower
   where
