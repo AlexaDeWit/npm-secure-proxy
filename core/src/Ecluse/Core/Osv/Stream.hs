@@ -225,15 +225,8 @@ zipEntryNameText entry = case zipEntryName entry of
     Left txt -> txt
     Right bs -> decodeUtf8With lenientDecode bs
 
-{- | Accumulate one zip entry's decompressed bytes, up to @cap@. It checks the cap
-before retaining each chunk, so memory never exceeds the cap plus one chunk. On a breach
-it drains the entry to the next boundary, retains nothing, and reports 'EntryOversize'.
-
-This byte cap is the only guard on a small-but-deep payload. 'Data.Aeson.decodeStrict'
-materialises the whole intermediate value before any post-decode depth check could run,
-and 'OsvAdvisory' cannot represent unbounded nesting anyway, so the cap stands in for one
-by holding parse cost to a constant multiple of the input.
--}
+-- Checks @cap@ before each chunk, so memory never exceeds the cap plus one chunk. It is also the
+-- only depth guard: 'decodeStrict' materialises the whole value before any post-decode check.
 collectFile :: (Monad m) => Int -> ConduitT (Either ZipEntry ByteString) o m EntryOutcome
 collectFile cap = go 0 []
   where

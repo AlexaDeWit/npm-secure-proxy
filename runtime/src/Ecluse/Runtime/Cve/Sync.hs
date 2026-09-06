@@ -141,9 +141,8 @@ syncStep env lastSeen =
             | Just remote == lastSeen -> pure SyncUnchanged
             | otherwise -> syncNewArtifact env
 
--- The download lands beside the canonical path and 'openCveDb' verifies it there, so nothing
--- unverified is ever renamed onto the name the read path opens. The 'onException' guards absorb
--- nothing: they discard the temp file when a filesystem fault escapes, then re-propagate it.
+-- Nothing unverified is renamed onto the name the read path opens. The 'onException' guards
+-- absorb nothing: they discard the temp file when a filesystem fault escapes, then re-propagate.
 syncNewArtifact :: SyncEnv -> IO SyncOutcome
 syncNewArtifact env = do
     let temp = syncDbPath env <> ".tmp"

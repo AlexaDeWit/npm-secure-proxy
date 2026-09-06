@@ -97,7 +97,7 @@ That is safe, because the boot refuses a URL that carries a credential (see
 ## Alerting on `ERROR`
 
 **Point a monitor at `status: error` and page on it.** An `ERROR` line is a condition Écluse
-cannot resolve on its own, so each one wants a person. These are the shapes it takes:
+cannot resolve on its own, so each one wants a person. Among them:
 
 - A sweep cycle that halted, or a Dredger latched and running no cycle at all.
 - A store that refused a delete, or never received one.
