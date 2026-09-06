@@ -35,9 +35,13 @@ module Ecluse.Core.Registry.ServedDocument (
 
     -- * Rebasing an artifact location
     rebaseArtifactUrl,
+
+    -- * Reading a raw document
+    stringField,
 ) where
 
 import Data.Aeson (Value (String))
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
@@ -86,3 +90,9 @@ applying it more than once is safe.
 -}
 rebaseArtifactUrl :: (Text -> Maybe Text) -> Text -> Maybe Text
 rebaseArtifactUrl renderMountUrl url = renderMountUrl =<< urlFilename url
+
+-- | The 'Text' at @key@ in a raw document object, if present and a JSON string.
+stringField :: Key.Key -> KeyMap Value -> Maybe Text
+stringField key o = case KeyMap.lookup key o of
+    Just (String s) -> Just s
+    _ -> Nothing

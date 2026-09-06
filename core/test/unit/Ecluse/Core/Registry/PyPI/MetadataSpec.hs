@@ -11,7 +11,6 @@ module Ecluse.Core.Registry.PyPI.MetadataSpec (spec) where
 import Data.Aeson (Value (Object), encode, object, (.=))
 import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict qualified as Map
-import Data.Text qualified as T
 import Test.Hspec
 
 import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
@@ -33,6 +32,7 @@ import Ecluse.Core.Security (
     defaultLimits,
  )
 import Ecluse.Core.Version (Version, mkVersion)
+import Ecluse.Test.Registry.PyPI (simpleFile)
 
 spec :: Spec
 spec = do
@@ -123,17 +123,7 @@ indexOf = indexNamed "requests"
 
 -- | An index reporting the given name and offering one entry per file name.
 indexNamed :: Text -> [Text] -> ByteString
-indexNamed name files = bytes (object ["name" .= name, "files" .= map fileNamed files])
-
--- | A file entry complete enough to project: a name, a location, and a well-formed digest.
-fileNamed :: Text -> Value
-fileNamed filename =
-    object
-        [ "filename" .= filename
-        , "url" .= ("https://files.pythonhosted.org/packages/a0/" <> filename)
-        , "hashes" .= object ["sha256" .= T.replicate 64 "a"]
-        , "upload-time" .= ("2026-05-14T19:25:26Z" :: Text)
-        ]
+indexNamed name files = bytes (object ["name" .= name, "files" .= map simpleFile files])
 
 bytes :: Value -> ByteString
 bytes = BL.toStrict . encode

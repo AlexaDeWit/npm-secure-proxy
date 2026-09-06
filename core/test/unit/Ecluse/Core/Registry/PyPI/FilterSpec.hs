@@ -4,7 +4,7 @@
 
 module Ecluse.Core.Registry.PyPI.FilterSpec (spec) where
 
-import Data.Aeson (Value (Array, Number, Object, String), object, (.=))
+import Data.Aeson (Value (Array, Number, Object, String), object, toJSON, (.=))
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
 import Test.Hspec
@@ -13,6 +13,8 @@ import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
 import Ecluse.Core.Package (PackageName, mkPackageName)
 import Ecluse.Core.Package.Merge (MergePlan (..), SourceId)
 import Ecluse.Core.Registry.PyPI.Filter (assembleSimpleIndex)
+import Ecluse.Test.Package (validSha256)
+import Ecluse.Test.Registry.PyPI (simpleFile, withFileKeys)
 
 spec :: Spec
 spec = do
@@ -39,7 +41,7 @@ relaySpec = describe "what the assembly relays from the base document" $ do
         (entry >>= KeyMap.lookup "requires-python") `shouldBe` Just (String ">=3.10")
         (entry >>= KeyMap.lookup "size") `shouldBe` Just (Number 73075)
         (entry >>= KeyMap.lookup "yanked") `shouldBe` Just (String "withdrawn")
-        (entry >>= KeyMap.lookup "hashes") `shouldBe` Just (object ["sha256" .= ("2a0d60c1" :: Text)])
+        (entry >>= KeyMap.lookup "hashes") `shouldBe` Just (object ["sha256" .= validSha256])
 
     it "keeps an unmodelled key on a served file entry too" $
         (servedEntry (assembleOne allFiles) "requests-2.34.2-py3-none-any.whl" >>= KeyMap.lookup "provenance")
@@ -194,23 +196,22 @@ fileIndex =
 privateIndex :: Map Text Text
 privateIndex = Map.singleton "requests-2.34.2-private.tar.gz" "2.34.2"
 
-{- | A complete file entry, carrying every modelled key, both sidecar spellings, and one key
-this build does not model.
+{- | The shared entry with the keys this module's examples add: the two the assembly must drop,
+the two it must relay, and a size.
 -}
 fileNamed :: Text -> Value
 fileNamed filename =
-    object
-        [ "filename" .= filename
-        , "url" .= ("https://files.pythonhosted.org/packages/a0/" <> filename)
-        , "hashes" .= object ["sha256" .= ("2a0d60c1" :: Text)]
-        , "requires-python" .= (">=3.10" :: Text)
-        , "size" .= (73075 :: Int)
-        , "upload-time" .= ("2026-05-14T19:25:26Z" :: Text)
-        , "yanked" .= ("withdrawn" :: Text)
-        , "provenance" .= ("https://pypi.org/integrity/x/provenance" :: Text)
-        , "core-metadata" .= object ["sha256" .= ("8c384ba3" :: Text)]
-        , "data-dist-info-metadata" .= object ["sha256" .= ("8c384ba3" :: Text)]
+    withFileKeys
+        [ ("size", toJSON (73075 :: Int))
+        , ("yanked", toJSON ("withdrawn" :: Text))
+        , ("core-metadata", object ["sha256" .= sidecarDigest])
+        , ("data-dist-info-metadata", object ["sha256" .= sidecarDigest])
         ]
+        (simpleFile filename)
+
+-- | The digest a PEP 658 sidecar entry carries, which no served entry keeps.
+sidecarDigest :: Text
+sidecarDigest = "8c384ba3"
 
 -- | One top-level key of an assembled index.
 field :: Text -> Value -> Maybe Value

@@ -604,6 +604,7 @@ library ecluse-test-support
     Ecluse.Test.Port
     Ecluse.Test.Queue
     Ecluse.Test.Registry.Npm
+    Ecluse.Test.Registry.PyPI
     Ecluse.Test.Registry.PyPI.Wire
     Ecluse.Test.Registry.Rubygems.Wire
     Ecluse.Test.RegistryCapture

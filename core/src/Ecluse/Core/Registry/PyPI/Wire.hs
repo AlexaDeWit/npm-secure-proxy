@@ -35,6 +35,9 @@ client to reject a major API version it does not speak, so an index declaring on
 decode.
 -}
 module Ecluse.Core.Registry.PyPI.Wire (
+    -- * The media type this shape travels under
+    simpleIndexMediaType,
+
     -- * The Simple index
     SimpleIndex (..),
 
@@ -63,6 +66,12 @@ import Ecluse.Core.Package (
     InvalidEntryKind (InvalidIndexFile, InvalidVersionListing),
  )
 import Ecluse.Core.Registry.WireSupport (partitionLenientList)
+
+{- | The media type the PEP 691 JSON form travels under, in both directions: the index read asks
+for it and the served index is written under it. No HTML form is requested, parsed, or served.
+-}
+simpleIndexMediaType :: ByteString
+simpleIndexMediaType = "application/vnd.pypi.simple.v1+json"
 
 {- | One project's PEP 691 Simple index: the name it reports for itself and the distribution
 files it offers. A dropped @files@ or @versions@ entry is recorded rather than served.

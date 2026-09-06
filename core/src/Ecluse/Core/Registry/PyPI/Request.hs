@@ -48,6 +48,7 @@ import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Registry (UrlFormationError)
 import Ecluse.Core.Registry.PyPI.Credential (pypiCredential)
 import Ecluse.Core.Registry.PyPI.Project (canonicalName)
+import Ecluse.Core.Registry.PyPI.Wire (simpleIndexMediaType)
 import Ecluse.Core.Registry.Request (Validators, addValidators, attachCredential, joinPath, parseRequestEither)
 import Ecluse.Core.Registry.Request qualified as Request
 import Ecluse.Core.Server.Path (encodeComponent)
@@ -83,10 +84,6 @@ simpleIndexRequest baseUrl credential validators name = do
                     : (hAcceptEncoding, "gzip")
                     : requestHeaders base
             }
-
--- The PEP 691 media type the index read asks for. No HTML form is requested or parsed.
-simpleIndexMediaType :: ByteString
-simpleIndexMediaType = "application/vnd.pypi.simple.v1+json"
 
 {- | Build the artifact @GET@ at @{baseUrl}\/simple\/{canonical-name}\/{filename}@, the spelling
 this mount serves and a private index addresses its own files under.

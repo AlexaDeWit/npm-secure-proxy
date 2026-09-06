@@ -10,6 +10,8 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Text qualified as T
 import Test.Hspec
 
+import Ecluse.Test.Registry.PyPI (simpleFile)
+
 import Ecluse.Core.Registry.PyPI.SelectiveDecode (
     SelectedFiles (sfFileCount, sfFiles, sfName),
     SelectiveError (SelectiveTooDeeplyNested, SelectiveUndecodable),
@@ -104,7 +106,7 @@ belongsTo version filename = T.isInfixOf ("-" <> version <> ".") filename || T.i
 
 -- | An index for @requests@ offering one complete entry per file name.
 indexOf :: [Text] -> ByteString
-indexOf = rawIndex . map fileNamed
+indexOf = rawIndex . map simpleFile
 
 -- | An index offering the given raw entries.
 rawIndex :: [Value] -> ByteString
@@ -124,16 +126,6 @@ duplicateFilesIndex =
 -- | An index of 400 entries, two of which belong to the release under test.
 manyFileIndex :: ByteString
 manyFileIndex = indexOf (["requests-1.0.0.tar.gz", "requests-1.0.0-py3-none-any.whl"] <> [T.pack ("requests-2." <> show n <> ".0.tar.gz") | n <- [1 .. 398 :: Int]])
-
--- | A complete file entry, carrying a key this build does not model.
-fileNamed :: Text -> Value
-fileNamed filename =
-    object
-        [ "filename" .= filename
-        , "url" .= ("https://files.pythonhosted.org/packages/a0/" <> filename)
-        , "hashes" .= object ["sha256" .= ("2a0d60c1" :: Text)]
-        , "provenance" .= ("https://pypi.org/integrity/x/provenance" :: Text)
-        ]
 
 -- | The names of the selected entries, in index order.
 selectedNames :: SelectedFiles -> [Text]

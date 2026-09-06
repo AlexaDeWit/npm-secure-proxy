@@ -85,6 +85,7 @@ import Network.HTTP.Types (
 import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
 import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Registry.PyPI.Project (FileCoordinate (fcVersionKey), canonicalName, fileCoordinate, isCanonicalName, projectName)
+import Ecluse.Core.Registry.PyPI.Wire (simpleIndexMediaType)
 import Ecluse.Core.Server.Context (
     MountRouter,
     ResponseAction (AnswerRefusal, RunPipeline),
@@ -196,10 +197,6 @@ uploadRoute =
         \the deny-by-default `404` an unrouted path takes."
         Nothing
         pypiUploadContract
-
--- The media type the Simple index is served under, and the one form this mount negotiates.
-simpleIndexMediaType :: ByteString
-simpleIndexMediaType = "application/vnd.pypi.simple.v1+json"
 
 -- The named hand-authored schema the manifest holds for the index Écluse assembles.
 simpleIndexSchema :: Text

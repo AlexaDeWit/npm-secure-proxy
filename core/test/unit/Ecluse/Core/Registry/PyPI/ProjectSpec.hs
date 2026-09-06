@@ -4,9 +4,7 @@
 
 module Ecluse.Core.Registry.PyPI.ProjectSpec (spec) where
 
-import Data.Aeson (Value (Object), object, toJSON, (.=))
-import Data.Aeson.Key (Key)
-import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson (Value, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Test.Hspec
@@ -39,6 +37,8 @@ import Ecluse.Core.Registry.PyPI.Project (
  )
 import Ecluse.Core.Registry.WireSupport (Projection (NameMismatch, Projected))
 import Ecluse.Core.Version (renderVersion)
+import Ecluse.Test.Package (validSha256)
+import Ecluse.Test.Registry.PyPI (simpleFile, withFileKeys)
 
 spec :: Spec
 spec = do
@@ -143,14 +143,14 @@ projectionSpec = describe "projectSimpleIndexFromValue" $ do
 
     it "projects sha256 through the shared hash vocabulary" $ do
         info <- shouldProject requests (indexOf [wheelFile "2.34.2"])
-        map (\h -> (hashAlg h, hashValue h)) (artifactHashes info "2.34.2") `shouldBe` [(SHA256, sha256Digest)]
+        map (\h -> (hashAlg h, hashValue h)) (artifactHashes info "2.34.2") `shouldBe` [(SHA256, validSha256)]
 
     it "drops a digest under an algorithm this build does not know" $ do
-        info <- shouldProject requests (indexOf [fileWith [("hashes", object ["blake2b_256" .= ("ab" :: Text)])] (wheelFile "2.34.2")])
+        info <- shouldProject requests (indexOf [withFileKeys [("hashes", object ["blake2b_256" .= ("ab" :: Text)])] (wheelFile "2.34.2")])
         artifactHashes info "2.34.2" `shouldBe` []
 
     it "carries requires-python and the yank marker per file" $ do
-        info <- shouldProject requests (indexOf [fileWith [("yanked", toJSON True)] (wheelFile "2.34.2")])
+        info <- shouldProject requests (indexOf [withFileKeys [("yanked", toJSON True)] (wheelFile "2.34.2")])
         map artInterpreter (artifactsOf info "2.34.2") `shouldBe` [Just ">=3.10"]
         map artYanked (artifactsOf info "2.34.2") `shouldBe` [True]
 
@@ -194,8 +194,8 @@ versionFoldSpec = describe "the version-level folds over a release's files" $ do
             shouldProject
                 requests
                 ( indexOf
-                    [ fileWith [("upload-time", toJSON ("2026-01-01T00:00:00Z" :: Text))] (sdistFile "2.34.2")
-                    , fileWith [("upload-time", toJSON ("2026-06-01T00:00:00Z" :: Text))] (wheelFile "2.34.2")
+                    [ withFileKeys [("upload-time", toJSON ("2026-01-01T00:00:00Z" :: Text))] (sdistFile "2.34.2")
+                    , withFileKeys [("upload-time", toJSON ("2026-06-01T00:00:00Z" :: Text))] (wheelFile "2.34.2")
                     ]
                 )
         fmap show (pkgPublishedAt =<< Map.lookup "2.34.2" (infoVersions info))
@@ -261,37 +261,16 @@ indexNamed name files = object ["name" .= name, "files" .= files]
 
 -- | A wheel entry for the given release.
 wheelFile :: Text -> Value
-wheelFile version = fileNamed ("requests-" <> version <> "-py3-none-any.whl")
+wheelFile version = simpleFile ("requests-" <> version <> "-py3-none-any.whl")
 
 -- | A source-distribution entry for the given release.
 sdistFile :: Text -> Value
-sdistFile version = fileNamed ("requests-" <> version <> ".tar.gz")
+sdistFile version = simpleFile ("requests-" <> version <> ".tar.gz")
 
 -- | A source-distribution entry under a name of the caller's choosing.
 sdistFileNamed :: Text -> Value
-sdistFileNamed = fileNamed
-
--- | A complete file entry under the given name, on the ecosystem's files host.
-fileNamed :: Text -> Value
-fileNamed filename =
-    object
-        [ "filename" .= filename
-        , "url" .= ("https://files.pythonhosted.org/packages/a0/" <> filename)
-        , "hashes" .= object ["sha256" .= sha256Digest]
-        , "requires-python" .= (">=3.10" :: Text)
-        , "upload-time" .= ("2026-05-14T19:25:26Z" :: Text)
-        ]
-
--- | A well-formed sha256 digest, which the validating hash builder accepts.
-sha256Digest :: Text
-sha256Digest = "2a0d60c100000000000000000000000000000000000000000000000000000000"
-
--- | A file entry with the given keys overridden, so an example names only the axis it is about.
-fileWith :: [(Key, Value)] -> Value -> Value
-fileWith overrides = \case
-    Object base -> Object (foldr (uncurry KeyMap.insert) base overrides)
-    other -> other
+sdistFileNamed = simpleFile
 
 -- | A file entry PEP 592 withdraws, with a stated reason.
 yanked :: Value -> Value
-yanked = fileWith [("yanked", toJSON ("withdrawn" :: Text))]
+yanked = withFileKeys [("yanked", toJSON ("withdrawn" :: Text))]

@@ -57,7 +57,7 @@ import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Package.Merge (MergePlan (mpArtifacts, mpName, mpSurvivors), SourceId)
 import Ecluse.Core.Registry.CachedDocument (CachedDoc, FileVersionIndex, pypiSimpleCached)
 import Ecluse.Core.Registry.PyPI.Route (distributionPath)
-import Ecluse.Core.Registry.ServedDocument (rebaseArtifactUrl)
+import Ecluse.Core.Registry.ServedDocument (rebaseArtifactUrl, stringField)
 import Ecluse.Core.Text (joinUrlPath)
 
 {- | Assemble the served Simple index for @mountBase@ from a 'MergePlan' and the raw source
@@ -142,12 +142,6 @@ entriesOf = \case
 entryFilename :: Value -> Maybe Text
 entryFilename = \case
     Object entry -> stringField "filename" entry
-    _ -> Nothing
-
--- | The 'Text' at @key@ in an object, if present and a JSON string.
-stringField :: Key.Key -> KeyMap Value -> Maybe Text
-stringField key o = case KeyMap.lookup key o of
-    Just (String s) -> Just s
     _ -> Nothing
 
 {- | PyPI's served-document __assemble__ capability

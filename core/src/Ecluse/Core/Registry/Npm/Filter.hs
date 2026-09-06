@@ -86,7 +86,7 @@ import Ecluse.Core.Package.Merge (MergePlan (mpDistTags, mpTime), SourceId)
 import Ecluse.Core.Registry.CachedDocument (CachedDoc, npmCached)
 import Ecluse.Core.Registry.Npm.Project (projectName)
 import Ecluse.Core.Registry.Npm.Route (tarballPath)
-import Ecluse.Core.Registry.ServedDocument (overlaySurvivors, rebaseArtifactUrl, safeDocumentName)
+import Ecluse.Core.Registry.ServedDocument (overlaySurvivors, rebaseArtifactUrl, safeDocumentName, stringField)
 import Ecluse.Core.Text (joinUrlPath, renderIso8601Utc)
 import Ecluse.Core.Version (renderVersion)
 
@@ -241,9 +241,3 @@ adjustObject key f o = case KeyMap.lookup key o of
 must claim it. -}
 servedTarballUrl :: Text -> PackageName -> Text -> Maybe Text
 servedTarballUrl mountBase name file = joinUrlPath mountBase <$> tarballPath name file
-
--- | The 'Text' at @key@ in an object, if present and a JSON string.
-stringField :: Key.Key -> KeyMap Value -> Maybe Text
-stringField key o = case KeyMap.lookup key o of
-    Just (String s) -> Just s
-    _ -> Nothing
