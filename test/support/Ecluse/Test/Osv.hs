@@ -31,6 +31,7 @@ module Ecluse.Test.Osv (
     -- * The monad the OSV pipeline runs in
     OsvTestM,
     runOsvTestM,
+    runOsvTestMWith,
 ) where
 
 import Codec.Archive.Zip.Conduit.Zip (ZipData (..), ZipEntry (..), defaultZipOptions, zipStream)
@@ -277,6 +278,8 @@ instance KatipContext OsvTestM where
 
 -- | Run an 'OsvTestM' action against a scribe-free log environment.
 runOsvTestM :: OsvTestM a -> IO a
-runOsvTestM action = do
-    logEnv <- newTestLogEnv
-    runResourceT (runReaderT (unOsvTestM action) logEnv)
+runOsvTestM action = newTestLogEnv >>= \logEnv -> runOsvTestMWith logEnv action
+
+-- | 'runOsvTestM' over a caller-supplied 'LogEnv', so a spec reads back what the ingest logged.
+runOsvTestMWith :: LogEnv -> OsvTestM a -> IO a
+runOsvTestMWith logEnv action = runResourceT (runReaderT (unOsvTestM action) logEnv)

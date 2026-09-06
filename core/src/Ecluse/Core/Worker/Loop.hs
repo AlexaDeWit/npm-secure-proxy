@@ -15,7 +15,7 @@ module Ecluse.Core.Worker.Loop (
     workerLoop,
 ) where
 
-import Katip (Severity (DebugS, ErrorS), logFM, ls)
+import Katip (Severity (DebugS, WarningS), logFM, ls)
 import UnliftIO.Concurrent (threadDelay)
 
 import Ecluse.Core.Fault (tfDetail)
@@ -35,9 +35,10 @@ workerLoop policy = superviseLoop policy pollAndProcess
         queue <- asks wrQueue
         liftIO (receive queue) >>= \case
             Left fault -> do
-                -- No heartbeat advance: the loop is retrying, not healthy-idle. The supervisor
-                -- backs off only on residue, so this step paces the typed-fault channel itself.
-                logFM ErrorS (ls ("worker receive failed, backing off: " <> tfDetail fault))
+                -- No heartbeat advance: the loop is retrying, not healthy-idle, and the stale
+                -- heartbeat on @\/livez@ is what escalates. The supervisor backs off only on
+                -- residue, so this step paces the typed-fault channel itself.
+                logFM WarningS (ls ("worker receive failed, backing off: " <> tfDetail fault))
                 backoff
             Right messages -> do
                 case messages of

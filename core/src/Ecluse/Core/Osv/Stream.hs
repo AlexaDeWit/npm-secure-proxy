@@ -5,37 +5,19 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-{- | Streaming ingest of an osv.dev export archive, bounded against a pathological
-or tampered payload.
+{- | Streaming ingest of the osv.dev export archive Pilot compiles @osv.db@ from. The feed
+aggregates many upstream databases, so one poisoned record can ride in with every transport
+header honest, and the bounds here are per entry: a drop is counted in 'IngestStats' and the
+rest of the archive keeps flowing. 'ilMaxAdvisoryBytes' applies before the bytes are retained
+and before the JSON decodes, so an inflation bomb never reaches the decoder whole, and the
+offending entry drains to its boundary so the entries after it stay aligned. An advisory over
+'ilMaxAdvisoryFanOut' ranges is anomalous, logged, and kept. The aggregate verdict is the
+separate pure decision 'systemicDrop', which the compiler reads once the stream completes.
 
-Pilot fetches @\<base\>\/\<ecosystem\>\/all.zip@ from the public osv.dev mirror and
-decodes each advisory JSON on the way to compiling @osv.db@. Pilot trusts osv.dev in
-normal operation, but the feed is an /aggregation/ of many upstream databases. A single
-poisoned record can ride in with every transport header honest, so the bounds here are
-defence-in-depth. They are __generous__ (a real advisory is kilobytes) and
-__fail-soft per entry__. The ingest drops and logs one bad advisory, and the rest of
-the archive keeps flowing.
-
-Two levels of response, tallied in 'IngestStats':
-
-* The ingest drops and counts a single over-large or malformed entry. The
-  'ilMaxAdvisoryBytes' cap applies /before/ the ingest retains the bytes and /before/
-  it decodes the JSON, so an inflation bomb never reaches the decoder whole. The
-  ingest drains the offending entry to its boundary, so the following entries stay
-  aligned.
-* The ingest logs an advisory that expands into more than 'ilMaxAdvisoryFanOut' ranges
-  as anomalous, and still keeps it (log-only, non-gating).
-
-The aggregate verdict is a separate, pure decision ('systemicDrop'). The compiler reads
-the tally once the stream completes. If drops are /systemic/ rather than isolated, it
-abandons the run ('PilotIngestAborted'), so a consumer keeps its last-good artifact
-instead of adopting a hole-ridden one.
-
-Nothing here guards depth on the decoded value. 'Data.Aeson.decodeStrict' materialises
-the whole intermediate value before any post-decode check could run, and 'OsvAdvisory'
-cannot represent unbounded nesting anyway. The byte cap bounds a small-but-deep
-payload: it holds parse cost to a constant multiple of the input. The process heap
-ceiling resolved at boot ("Ecluse.Rts") bounds it too.
+Nothing here guards depth on the decoded value. 'Data.Aeson.decodeStrict' materialises the
+whole intermediate value before any post-decode check could run, and 'OsvAdvisory' cannot
+represent unbounded nesting anyway. The byte cap holds parse cost to a constant multiple of
+the input, and the boot-resolved heap ceiling ("Ecluse.Rts") bounds it too.
 -}
 module Ecluse.Core.Osv.Stream (
     streamOsvUrl,
@@ -213,7 +195,7 @@ handleEntry :: (KatipContext m) => OsvIngest -> ZipEntry -> EntryOutcome -> Cond
 handleEntry ingest entry = \case
     EntryOversize seen -> lift $ do
         bumpOversize (ingestCounter ingest)
-        logFM ErrorS (ls ("Dropping oversized OSV entry " <> zipEntryNameText entry <> ": " <> show seen <> " bytes exceeds the " <> show cap <> "-byte per-advisory cap"))
+        logFM WarningS (ls ("Dropping oversized OSV entry " <> zipEntryNameText entry <> ": " <> show seen <> " bytes exceeds the " <> show cap <> "-byte per-advisory cap"))
     EntryBytes fileBytes -> case decodeStrict fileBytes :: Maybe OsvAdvisory of
         Nothing -> lift $ do
             bumpMalformed (ingestCounter ingest)
@@ -229,7 +211,7 @@ handleEntry ingest entry = \case
 warnOnFanOut :: (KatipContext m) => OsvIngest -> OsvAdvisory -> [ExtractedOsv] -> m ()
 warnOnFanOut ingest adv extracted =
     when (n > limit) $
-        logFM ErrorS (ls ("OSV advisory " <> osvId adv <> " expanded into " <> show n <> " ranges, exceeding the sanity threshold of " <> show limit <> "; ingesting it regardless"))
+        logFM WarningS (ls ("OSV advisory " <> osvId adv <> " expanded into " <> show n <> " ranges, exceeding the sanity threshold of " <> show limit <> "; ingesting it regardless"))
   where
     n = length extracted
     limit = ilMaxAdvisoryFanOut (ingestLimits ingest)

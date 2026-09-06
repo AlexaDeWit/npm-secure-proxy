@@ -2,18 +2,10 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | One supervision combinator for every background loop. It reruns a step forever,
-absorbs transient faults with a bounded exponential backoff, and fails permanent ones
-up to the process supervisor.
-
-The proxy's background loops (the mirror worker's poll-and-process, the enqueue-buffer
-drain, the advisory sync tasks, Pilot's export cycle) all share one contract. This
-module logs a transient fault, a dependency outage the next iteration might clear, and
-retries it at a bounded rate. A permanent fault, a wiring error no retry can fix, fails
-up so the process exits loudly. Cancellation, the shutdown race tearing the loop down,
-passes through untouched. This module is that contract, written once. Each loop's file
-therefore carries only its step and its policy, not a private copy of the
-catch-log-backoff machinery.
+{- | One supervision combinator for every background loop: the mirror worker's
+poll-and-process, the enqueue-buffer drain, the advisory sync tasks, Pilot's export
+cycle. Each loop's file carries only its step and its policy, never a private copy of
+the catch-log-backoff machinery.
 
 The typed fault channels stay in the steps. A step that receives an @Either fault a@
 from a handle makes its own domain decision, its own pacing included. What reaches this
@@ -38,7 +30,7 @@ module Ecluse.Core.Supervision (
 
 import Control.Retry (RetryPolicyM, RetryStatus (rsIterNumber), retryPolicy)
 import Data.Time (NominalDiffTime)
-import Katip (KatipContext, Severity (ErrorS), logFM, ls)
+import Katip (KatipContext, Severity (ErrorS, WarningS), logFM, ls)
 import UnliftIO (MonadUnliftIO)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (throwIO, tryAny)
@@ -50,7 +42,7 @@ classifies an asynchronous exception: cancellation propagates untouched, so the
 shutdown race can always tear a supervised loop down.
 -}
 data FaultDisposition
-    = -- | Log at 'ErrorS', back off (bounded exponential), rerun the step.
+    = -- | Log at 'WarningS', back off (bounded exponential), rerun the step.
       Transient
     | -- | Rethrow: fail up to the process supervisor, taking the process down.
       Permanent
@@ -128,7 +120,9 @@ superviseLoop policy step = go 0
                     throwIO fault
                 Transient -> do
                     let delay = backoffMicros (spBackoff policy) consecutiveFaults
-                    logFM ErrorS (ls (spLabel policy <> ": iteration faulted (retrying in " <> show delay <> "µs): " <> displayExceptionT fault))
+                    -- A retry the loop makes for itself, so it warns. The stale heartbeat on
+                    -- @\/livez@ is what escalates a loop that never recovers.
+                    logFM WarningS (ls (spLabel policy <> ": iteration faulted (retrying in " <> show delay <> "µs): " <> displayExceptionT fault))
                     threadDelay delay
                     go (consecutiveFaults + 1)
 
