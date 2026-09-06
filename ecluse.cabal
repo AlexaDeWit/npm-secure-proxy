@@ -1052,7 +1052,7 @@ test-suite ecluse-integration
     Ecluse.AwsEndToEndIntegrationSpec
     Ecluse.Core.Security.EgressIntegrationSpec
     Ecluse.Core.Server.Pipeline.OriginIntegrationSpec
-    Ecluse.Core.Registry.PyPI.ServeIntegrationSpec
+    Ecluse.Core.Registry.PyPI.AdapterIntegrationSpec
     Ecluse.Core.Server.Pipeline.PackumentIntegrationSpec
     Ecluse.Core.Server.Pipeline.PublishIntegrationSpec
     Ecluse.Core.Server.Pipeline.SharedIntegrationSpec
