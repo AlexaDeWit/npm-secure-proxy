@@ -20,8 +20,8 @@ A **served** registry answers reads: the metadata a client resolves against and 
 bytes it installs, both gated by the same rules, integrity floors, and egress controls.
 
 A `pypi` mount serves reads and nothing else. It writes nothing, so a `publicationTarget` or a
-`mirrorTarget` on it refuses the boot naming the ecosystem, and its upload endpoint answers
-`405`. Mirroring and first-party publishing for PyPI land in later releases.
+`mirrorTarget` on it refuses the boot naming the ecosystem and the key, and its upload endpoint
+answers `405`. Mirroring and first-party publishing for PyPI land in later releases.
 
 A **planned** registry is already a valid `mounts` key, but no adapter answers its routes yet,
 so activating one refuses the boot.

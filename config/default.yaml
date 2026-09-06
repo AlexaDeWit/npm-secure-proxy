@@ -295,7 +295,7 @@ mounts:
     # rules: {}
   # A pypi mount serves reads: the PEP 691 Simple index and the distribution files
   # under it. It publishes nothing, so a publicationTarget or a mirrorTarget on it
-  # refuses the boot until the publish and mirror slices land.
+  # refuses the boot naming the ecosystem and the key.
   pypi:
     publicUpstream:
       registry:

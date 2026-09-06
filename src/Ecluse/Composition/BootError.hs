@@ -74,6 +74,11 @@ data BootError
       The mirror could never publish, so the mount is refused rather than booted half-wired.
       -}
       MirrorTargetWithoutPublish Ecosystem
+    | {- | A mount declares a publication target, but this build writes nothing for its
+      ecosystem. The relay could never publish, so the mount is refused rather than booted
+      half-wired.
+      -}
+      PublicationTargetWithoutPublish Ecosystem
     | {- | A publication target is set and the mount declares no first-party namespaces, so the
       anti-shadowing guard has nothing to enforce and any name could be shadowed.
       -}
@@ -193,6 +198,11 @@ renderBootError = \case
             <> " is set but this build writes nothing for the "
             <> ecosystemName eco
             <> " protocol: the mirror would drain its queue with no way to publish, so the mount is refused rather than served with a mirror that fails every job."
+    PublicationTargetWithoutPublish eco ->
+        mountKeyRef eco "publicationTarget"
+            <> " is set but this build writes nothing for the "
+            <> ecosystemName eco
+            <> " protocol: a publish would have no adapter to relay through, so the mount is refused rather than served with a publish route that refuses every attempt."
     FirstPartyMissing eco ->
         mountKeyRef eco "publicationTarget" <> " is set but " <> mountKeyRef eco "firstParty" <> " is not: a publication target needs the namespaces this deployment owns, written in the ecosystem's own shape (npm scopes such as @acme, PyPI distribution names and acme-* prefixes), for the anti-shadowing guard."
     PublishStaticCredentialNeedsEdge eco tag ->

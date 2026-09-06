@@ -22,7 +22,13 @@ module Ecluse.Composition.Validate (
 import Data.Map.Strict qualified as Map
 
 import Ecluse.Composition.BootError (
-    BootError (FirstPartyMissing, MirrorTargetWithoutPublish, MissingAdapter, PublishStaticCredentialNeedsEdge),
+    BootError (
+        FirstPartyMissing,
+        MirrorTargetWithoutPublish,
+        MissingAdapter,
+        PublicationTargetWithoutPublish,
+        PublishStaticCredentialNeedsEdge
+    ),
  )
 import Ecluse.Composition.Endpoints (
     PublicationTarget,
@@ -122,7 +128,8 @@ vetMount :: (Ecosystem, (Mount, MountConfig)) -> Vet (Maybe VettedMount)
 vetMount (eco, (mount, mcfg)) =
     vetted
         <$ rule (const (Refuse MissingAdapter)) unservedEcosystem eco
-        <* rule (const (Refuse MirrorTargetWithoutPublish)) mirrorsWithoutPublish eco
+        <* rule (const (Refuse MirrorTargetWithoutPublish)) (declaredWithoutPublish mirrors) eco
+        <* rule (const (Refuse PublicationTargetWithoutPublish)) (declaredWithoutPublish publishes) eco
   where
     vetted = adapterFor eco <&> \adapter -> VettedMount eco adapter mount mcfg
 
@@ -130,11 +137,14 @@ vetMount (eco, (mount, mcfg)) =
         | isNothing (adapterFor e) = Just e
         | otherwise = Nothing
 
-    {- A mirror target on an ecosystem this build writes nothing for. The mirror would drain a
-    queue it could never publish from, so the mount is refused at the boot rather than serving
-    with a mirror that silently fails every job. -}
-    mirrorsWithoutPublish e = do
-        guard (isJust (regMirrorTarget (mountRegistries mount)))
+    mirrors = isJust (regMirrorTarget (mountRegistries mount))
+    publishes = isJust (mntPublicationTarget mcfg)
+
+    {- A write destination declared on an ecosystem this build writes nothing for. The mirror
+    would drain a queue it could never publish from, and a publish relay would have no adapter to
+    reach its target, so the mount is refused at the boot rather than served half-wired. -}
+    declaredWithoutPublish declared e = do
+        guard declared
         adapter <- adapterFor e
         guard (isNothing (adapterPublish adapter))
         pure e

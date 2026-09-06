@@ -14,6 +14,7 @@ import Ecluse.Composition.BootError (
         MirrorTargetWithoutPublish,
         MissingAdapter,
         PublicationTargetOnPublicUpstream,
+        PublicationTargetWithoutPublish,
         PublishStaticCredentialNeedsEdge
     ),
  )
@@ -121,6 +122,17 @@ refusalSpec = describe "vetBoot -- the refusals its four groups earn" $ do
                         overrideEnv "ECLUSE_MOUNTS__PYPI__MIRROR_TARGET__REGISTRY__TOKEN" "t" staticEnvVars
             )
             `shouldReturn` [MirrorTargetWithoutPublish PyPI]
+
+    it "refuses a publication target on a mount whose ecosystem this build writes nothing for" $
+        -- The relay would have no adapter to reach the target with, so the boot stops rather
+        -- than serving a publish route that refuses every attempt an operator configured for.
+        refusalsFor
+            MirrorWriter
+            ( overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" $
+                overrideEnv "ECLUSE_MOUNTS__PYPI__FIRST_PARTY" "acme-*" $
+                    overrideEnv "ECLUSE_MOUNTS__PYPI__PUBLICATION_TARGET__REGISTRY__URL" "https://publish.example.test/pypi/" staticEnvVars
+            )
+            `shouldReturn` [PublicationTargetWithoutPublish PyPI]
 
     it "refuses a publication target that leaves the anti-shadowing guard nothing to enforce" $
         refusalsFor MirrorWriter (withoutFirstParty publishingEnv)
