@@ -382,8 +382,8 @@ spec = describe "Osv parsing and streaming" $ do
             logged `shouldSatisfy` T.isInfixOf "exceeding the sanity threshold"
             logged `shouldSatisfy` (not . T.isInfixOf "\"sev\":\"Error\"")
 
-        it "refuses a row whose bound the grammar cannot order, and keeps the rest" $ do
-            -- The refusal is per row, so the advisory's orderable range survives beside it.
+        it "counts a row the grammar cannot order, and still emits every row" $ do
+            -- The tally is an alarm, not a filter: both versions reach the artifact.
             zipData <-
                 osvZipOf
                     [("mixed.json", "{\"id\":\"GHSA-mixed\",\"affected\":[{\"package\":{\"name\":\"mixed\",\"ecosystem\":\"npm\"},\"versions\":[\"1.0.0\",\"2026.05.1\"]}]}")]
@@ -393,11 +393,11 @@ spec = describe "Osv parsing and streaming" $ do
                     rs <- runConduit $ yieldMany (LBS.toChunks zipData) .| parseOsvStream Nothing ingest .| sinkList
                     st <- readIngestStats ingest
                     pure (rs, st)
-            map extIntroduced results `shouldBe` [Just "1.0.0"]
+            map extIntroduced results `shouldBe` [Just "1.0.0", Just "2026.05.1"]
             statAccepted stats `shouldBe` 1
-            statDroppedUnorderable stats `shouldBe` 1
+            statUnorderable stats `shouldBe` 1
 
-        it "admits every row when the pass compiles a name this build does not serve" $ do
+        it "counts nothing unorderable for a name this build does not serve" $ do
             -- A one-shot compile of an unserved ecosystem carries no grammar to judge by.
             zipData <-
                 osvZipOf
@@ -409,7 +409,7 @@ spec = describe "Osv parsing and streaming" $ do
                     st <- readIngestStats ingest
                     pure (rs, st)
             map extIntroduced results `shouldBe` [Just "v1.2"]
-            statDroppedUnorderable stats `shouldBe` 0
+            statUnorderable stats `shouldBe` 0
 
     describe "orderableBounds" $ do
         let row intro upper = ExtractedOsv "pkg" "npm" "GHSA-bounds" intro upper Nothing Nothing
@@ -442,5 +442,5 @@ spec = describe "Osv parsing and streaming" $ do
             systemicDrop (IngestStats 50 30 20 0) `shouldBe` True
         it "does not trip when non-trivial drops are only a small fraction" $
             systemicDrop (IngestStats 10000 30 20 0) `shouldBe` False
-        it "ignores refused rows, which are tallied in rows rather than entries" $
+        it "ignores the unorderable tally, which counts rows rather than entries" $
             systemicDrop (IngestStats 40000 3 2 30000) `shouldBe` False

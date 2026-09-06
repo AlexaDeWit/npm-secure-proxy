@@ -15,6 +15,7 @@ module Ecluse.Core.Osv.Advisory (
     advisorySeverity,
     extractFromAdvisory,
     orderableBounds,
+    unorderableBounds,
     osvExportUrl,
 ) where
 
@@ -234,7 +235,11 @@ extractFromAdvisory scores adv = do
 that does not leaves 'Ecluse.Core.Cve.insideAffectedRange' matching every version, fail-closed.
 -}
 orderableBounds :: Ecosystem -> ExtractedOsv -> Bool
-orderableBounds eco osv = all parses (catMaybes [extIntroduced osv, upperBound (extUpperBound osv)])
+orderableBounds eco = null . unorderableBounds eco
+
+-- | The bounds this segment carries that the ecosystem's version grammar cannot parse.
+unorderableBounds :: Ecosystem -> ExtractedOsv -> [Text]
+unorderableBounds eco osv = filter (not . parses) (catMaybes [extIntroduced osv, upperBound (extUpperBound osv)])
   where
     parses = isRight . parseVersionKey eco
 

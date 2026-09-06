@@ -35,13 +35,12 @@ import Codec.Archive.Zip.Conduit.UnZip (unZipStream)
 import Conduit
 import Data.Aeson (decodeStrict)
 import Data.ByteString qualified as BS
-import Data.List (partition)
 import Katip (KatipContext, Severity (..), logFM, ls)
 import Network.HTTP.Simple (getResponseBody, httpSource, parseRequest, setRequestCheckStatus)
 import OpenTelemetry.Trace.Core (SpanKind (Internal), TracerProvider, addAttribute)
 
 import Ecluse.Core.Ecosystem (Ecosystem)
-import Ecluse.Core.Osv.Advisory (ExtractedOsv, OsvAdvisory, extractFromAdvisory, orderableBounds, osvId)
+import Ecluse.Core.Osv.Advisory (ExtractedOsv, OsvAdvisory, extPackage, extractFromAdvisory, orderableBounds, osvId, unorderableBounds)
 import Ecluse.Core.Osv.Epss (EpssScores)
 import Ecluse.Core.Security.Authority (authorityLabel)
 import Ecluse.Core.Telemetry.Span (closeOptionalSpan, openOptionalSpan)
@@ -83,10 +82,10 @@ data IngestStats = IngestStats
     -- ^ Entries dropped for breaching 'ilMaxAdvisoryBytes'.
     , statDroppedMalformed :: !Int
     -- ^ Entries dropped because their JSON did not decode.
-    , statDroppedUnorderable :: !Int
-    {- ^ Extracted rows refused because a bound they carry does not parse under the
-    ecosystem's version grammar ('orderableBounds'). Counted in rows, not entries, so it
-    stays out of 'systemicDrop'.
+    , statUnorderable :: !Int
+    {- ^ Rows carrying a bound the ecosystem's version grammar cannot parse
+    ('orderableBounds'). They are kept, so this is an alarm rather than a drop, and it is
+    counted in rows rather than entries.
     -}
     }
     deriving stock (Eq, Show)
@@ -196,7 +195,7 @@ processZipEntries ingest =
 data EntryOutcome = EntryBytes !ByteString | EntryOversize !Int
 
 -- Decide what one collected entry yields: a counted drop for an over-large or malformed
--- entry, or the rows the decoded advisory is admitted on.
+-- entry, or the decoded advisory's rows.
 handleEntry :: (KatipContext m) => OsvIngest -> ZipEntry -> EntryOutcome -> ConduitT (Either ZipEntry ByteString) ExtractedOsv m ()
 handleEntry ingest entry = \case
     EntryOversize seen -> lift $ do
@@ -210,28 +209,32 @@ handleEntry ingest entry = \case
   where
     cap = ilMaxAdvisoryBytes (ingestLimits ingest)
 
--- Emit one decoded advisory's rows, less those carrying a bound the ecosystem's version
--- grammar cannot order. A refused row is counted and logged, never emitted.
+-- Emit every row one decoded advisory yields. Nothing here filters: a row whose bound the
+-- grammar cannot order is counted and logged, and still reaches the artifact.
 admitAdvisory :: (KatipContext m) => OsvIngest -> OsvAdvisory -> ConduitT (Either ZipEntry ByteString) ExtractedOsv m ()
 admitAdvisory ingest adv = do
     lift $ bumpAccepted (ingestCounter ingest)
     lift $ warnOnFanOut ingest adv extracted
-    lift $ unless (null refused) (refuseUnorderable ingest adv refused)
-    yieldMany kept
+    lift $ forM_ (nonEmpty unorderable) (warnOnUnorderable ingest adv)
+    yieldMany extracted
   where
     extracted = extractFromAdvisory (ingestEpss ingest) adv
-    -- A name this build does not serve has no grammar to judge its bounds by, so it keeps
-    -- the rows it extracted.
-    (kept, refused) = case ingestEcosystem ingest of
-        Nothing -> (extracted, [])
-        Just eco -> partition (orderableBounds eco) extracted
+    -- A name this build does not serve has no grammar to judge its bounds by, so nothing
+    -- about it is anomalous.
+    unorderable = maybe [] (\eco -> mapMaybe (unorderableExample eco) extracted) (ingestEcosystem ingest)
 
--- The advisory id alone identifies the offending feed record, and it bounds the line an
--- advisory naming thousands of packages would otherwise write.
-refuseUnorderable :: (KatipContext m) => OsvIngest -> OsvAdvisory -> [ExtractedOsv] -> m ()
-refuseUnorderable ingest adv refused = do
-    bumpUnorderable (ingestCounter ingest) (length refused)
-    logFM WarningS (ls ("Refusing " <> show (length refused) <> " range(s) of OSV advisory " <> osvId adv <> ": a bound the ecosystem's version grammar cannot order would match every version of the package"))
+-- The package and the first unorderable bound of one row, for the log line below.
+unorderableExample :: Ecosystem -> ExtractedOsv -> Maybe (Text, Text)
+unorderableExample eco row
+    | orderableBounds eco row = Nothing
+    | otherwise = (,) (extPackage row) <$> listToMaybe (unorderableBounds eco row)
+
+-- One line per advisory carrying one example, so a feed naming thousands of packages cannot
+-- flood the log. The rows are kept, so this is an alarm and never a refusal.
+warnOnUnorderable :: (KatipContext m) => OsvIngest -> OsvAdvisory -> NonEmpty (Text, Text) -> m ()
+warnOnUnorderable ingest adv unorderable@((pkg, bound) :| _) = do
+    bumpUnorderable (ingestCounter ingest) (length unorderable)
+    logFM WarningS (ls ("OSV advisory " <> osvId adv <> " carries " <> show (length unorderable) <> " range(s) the version grammar cannot order, for example " <> pkg <> " " <> bound <> "; keeping them"))
 
 warnOnFanOut :: (KatipContext m) => OsvIngest -> OsvAdvisory -> [ExtractedOsv] -> m ()
 warnOnFanOut ingest adv extracted =
@@ -251,7 +254,7 @@ bumpMalformed :: (MonadIO m) => IngestCounter -> m ()
 bumpMalformed (IngestCounter ref) = modifyIORef' ref (\s -> s{statDroppedMalformed = statDroppedMalformed s + 1})
 
 bumpUnorderable :: (MonadIO m) => IngestCounter -> Int -> m ()
-bumpUnorderable (IngestCounter ref) n = modifyIORef' ref (\s -> s{statDroppedUnorderable = statDroppedUnorderable s + n})
+bumpUnorderable (IngestCounter ref) n = modifyIORef' ref (\s -> s{statUnorderable = statUnorderable s + n})
 
 zipEntryNameText :: ZipEntry -> Text
 zipEntryNameText entry = case zipEntryName entry of

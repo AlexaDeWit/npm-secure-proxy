@@ -115,7 +115,7 @@ concludeCompile metrics mSpan conn ecosystem sources stats = do
         addAttribute sp "ecluse.osv.accepted" (show (statAccepted stats) :: Text)
         addAttribute sp "ecluse.osv.dropped_oversize" (show (statDroppedOversize stats) :: Text)
         addAttribute sp "ecluse.osv.dropped_malformed" (show (statDroppedMalformed stats) :: Text)
-        addAttribute sp "ecluse.osv.refused_unorderable" (show (statDroppedUnorderable stats) :: Text)
+        addAttribute sp "ecluse.osv.unorderable" (show (statUnorderable stats) :: Text)
     liftIO (recordTallies metrics stats)
     when (systemicDrop stats) $ do
         forM_ mSpan $ \sp -> setStatus sp (Error "systemic advisory drop rate; compile abandoned")
@@ -138,7 +138,7 @@ recordTallies metrics stats = do
     acmpCompileDropped metrics DropOversize (statDroppedOversize stats)
     acmpCompileDropped metrics DropMalformed (statDroppedMalformed stats)
 
--- A one-line summary of an ingest pass's drop and refusal tally for the boot log.
+-- A one-line summary of an ingest pass's drop and anomaly tally for the boot log.
 renderDrops :: IngestStats -> Text
 renderDrops s =
     "accepted "
@@ -147,8 +147,8 @@ renderDrops s =
         <> show (statDroppedOversize s)
         <> " oversize / "
         <> show (statDroppedMalformed s)
-        <> " malformed, refused "
-        <> show (statDroppedUnorderable s)
+        <> " malformed, kept "
+        <> show (statUnorderable s)
         <> " unorderable"
 
 -- The tally as structured log fields. The completion line and the abort line share it, so
@@ -159,7 +159,7 @@ dropFields ecosystem s =
         <> sl "accepted" (statAccepted s)
         <> sl "dropped_oversize" (statDroppedOversize s)
         <> sl "dropped_malformed" (statDroppedMalformed s)
-        <> sl "refused_unorderable" (statDroppedUnorderable s)
+        <> sl "unorderable" (statUnorderable s)
 
 initSchema :: Connection -> IO ()
 initSchema conn = do
