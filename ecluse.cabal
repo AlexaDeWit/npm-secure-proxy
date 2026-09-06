@@ -1163,30 +1163,35 @@ test-suite ecluse-smoke
     Ecluse.Core.VersionSmokeSpec
     Ecluse.PilotSmokeSpec
     Ecluse.Runtime.Credential.CodeArtifactSmokeSpec
+    Ecluse.Runtime.Maintenance.CodeArtifactSmokeSpec
     Ecluse.Test.SupportLinkageSmokeSpec
 
   build-tool-depends: hspec-discover:hspec-discover ^>=2.11
   build-depends:
-    , aeson            >=2.2 && <2.4
-    , containers       ^>=0.7
-    , directory        ^>=1.3
+    , aeson                  >=2.2 && <2.4
+    , amazonka               ^>=2.0
+    , amazonka-codeartifact  ^>=2.0
+    , conduit                ^>=1.3
+    , containers             ^>=0.7
+    , directory              ^>=1.3
     , ecluse
     , ecluse:ecluse-core
     , ecluse:ecluse-runtime
     , ecluse:ecluse-test-support
-    , hedgehog         ^>=1.5
-    , hspec            ^>=2.11
-    , hspec-hedgehog   ^>=0.3
-    , http-client      ^>=0.7
-    , http-client-tls  >=0.3.6 && <0.5
-    , iproute          ^>=1.7
-    , katip            ^>=0.8.8
-    , network          ^>=3.2
-    , process          ^>=1.6
-    , sqlite-simple    ^>=0.4
-    , temporary        ^>=1.3
-    , text             ^>=2.1
-    , unliftio         ^>=0.2.25
+    , hedgehog               ^>=1.5
+    , hspec                  ^>=2.11
+    , hspec-hedgehog         ^>=0.3
+    , http-client            ^>=0.7
+    , http-client-tls        >=0.3.6 && <0.5
+    , iproute                ^>=1.7
+    , katip                  ^>=0.8.8
+    , microlens              ^>=0.4.13
+    , network                ^>=3.2
+    , process                ^>=1.6
+    , sqlite-simple          ^>=0.4
+    , temporary              ^>=1.3
+    , text                   ^>=2.1
+    , unliftio               ^>=0.2.25
 
 -- End-to-end tests: the whole system as the real OCI image, driven by the real npm
 -- CLI over its public HTTP surface. The suite covers the server↔worker round-trip

@@ -84,6 +84,16 @@ This tier is also where the one un-emulable cloud surface runs end-to-end: the r
 (`CredentialProvider`'s `mintToken`) against the live cloud. It needs real external access, so it is
 allowed to fail and stays isolated to one small function, an accepted residual risk.
 
+The store walk sits here for the same reason. No emulator carries the CodeArtifact control plane, so
+a live repository is the only place `listPackagesIn` pages a real `ListPackages` result. The case is
+read-only: it lists packages and publishes, deletes, and tags nothing. Run it with
+`ECLTEST_SMOKE_CODEARTIFACT_REGION`, `_DOMAIN`, `_DOMAIN_OWNER`, and `_REPOSITORY` set, and the
+standard AWS credential chain pointed at an identity holding `codeartifact:ListPackages` on that
+repository and nothing else. The repository needs two npm packages, seeded once by hand: the case
+forces one package per page, because the production request sets no page size and the service's own
+default is not a number we choose. Without the four variables it pends, which is what it does in CI,
+where no workflow carries AWS credentials.
+
 The telemetry Datadog check lives here too. With Datadog API credentials in the environment, it emits
 a uniquely stamped span and metric through the real export path. It then polls the Datadog API until
 they appear. It is secret-gated (skipped without credentials) and non-gating, so a Datadog outage or
