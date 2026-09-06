@@ -277,18 +277,20 @@ sdistSuffixes = [".tar.gz", ".tgz", ".zip", ".tar.bz2", ".tar.xz"]
 stem names another project, which on the artifact route is a path-confusion attempt. -}
 afterProjectName :: PackageName -> Text -> Maybe Text
 afterProjectName name stem =
-    listToMaybe (mapMaybe remainderAfter longestFirst)
+    listToMaybe [after | (before, after) <- separatorCuts stem, canonicalise PyPI before == canonicalName name]
+
+{- Every way to cut a stem at a PEP 503 separator, as the part before the separator and the part
+after it, longest leading part first: a project name that carries a separator then wins over a
+prefix of itself. -}
+separatorCuts :: Text -> [(Text, Text)]
+separatorCuts stem = reverse (cutsAfter "" stem)
   where
-    segments = T.split isNameSeparator stem
-
-    -- Longest project part first, so a name carrying a separator wins over a prefix of itself.
-    longestFirst = [length segments - 1, length segments - 2 .. 1]
-
-    remainderAfter parts =
-        let prefixLength = sum (map T.length (take parts segments)) + parts - 1
-         in if canonicalise PyPI (T.take prefixLength stem) == canonicalName name
-                then Just (T.drop (prefixLength + 1) stem)
-                else Nothing
+    cutsAfter before rest = case T.break isNameSeparator rest of
+        (chunk, separated) -> case T.uncons separated of
+            Nothing -> []
+            Just (separator, after) ->
+                let leading = before <> chunk
+                 in (leading, after) : cutsAfter (T.snoc leading separator) after
 
 -- The characters PEP 503 treats as one separator when it normalises a name.
 isNameSeparator :: Char -> Bool
