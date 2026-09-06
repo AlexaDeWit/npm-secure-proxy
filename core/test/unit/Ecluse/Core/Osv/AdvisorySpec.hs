@@ -14,6 +14,7 @@ import Test.Hspec (Spec, anyException, describe, it, shouldBe, shouldSatisfy, sh
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (unpack)
 import Data.Text qualified as T
+import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI))
 import Ecluse.Core.Osv.Advisory
 import Ecluse.Core.Osv.Epss (EpssScores, mkEpssScores)
 import Ecluse.Core.Osv.Stream (
@@ -254,7 +255,7 @@ spec = describe "Osv parsing and streaming" $ do
     it "streams an OSV zip archive and emits ExtractedOsv elements" $ do
         results <-
             runOsvTestM $ do
-                ingest <- newOsvIngest defaultIngestLimits noScores
+                ingest <- newOsvIngest defaultIngestLimits (Just Npm) noScores
                 runConduit $
                     sourceFile "test/unit/fixtures/osv/sample.zip"
                         .| parseOsvStream Nothing ingest
@@ -272,7 +273,7 @@ spec = describe "Osv parsing and streaming" $ do
     it "handles an empty zip archive gracefully without emitting anything" $ do
         results <-
             runOsvTestM $ do
-                ingest <- newOsvIngest defaultIngestLimits noScores
+                ingest <- newOsvIngest defaultIngestLimits (Just Npm) noScores
                 runConduit $
                     sourceFile "test/unit/fixtures/osv/empty.zip"
                         .| parseOsvStream Nothing ingest
@@ -282,7 +283,7 @@ spec = describe "Osv parsing and streaming" $ do
     it "skips malformed JSON files inside a zip archive and logs a warning" $ do
         results <-
             runOsvTestM $ do
-                ingest <- newOsvIngest defaultIngestLimits noScores
+                ingest <- newOsvIngest defaultIngestLimits (Just Npm) noScores
                 runConduit $
                     sourceFile "test/unit/fixtures/osv/malformed-json.zip"
                         .| parseOsvStream Nothing ingest
@@ -292,7 +293,7 @@ spec = describe "Osv parsing and streaming" $ do
     it "throws an exception when streaming a non-zip file" $ do
         let action =
                 runOsvTestM $ do
-                    ingest <- newOsvIngest defaultIngestLimits noScores
+                    ingest <- newOsvIngest defaultIngestLimits (Just Npm) noScores
                     runConduit $
                         sourceFile "test/unit/fixtures/osv/not-a-zip.zip"
                             .| parseOsvStream Nothing ingest
@@ -303,7 +304,7 @@ spec = describe "Osv parsing and streaming" $ do
         zipData <- LBS.readFile "test/unit/fixtures/osv/sample.zip"
         results <- withStub status200 zipData $ \stub -> do
             runOsvTestM $ do
-                ingest <- newOsvIngest defaultIngestLimits noScores
+                ingest <- newOsvIngest defaultIngestLimits (Just Npm) noScores
                 runConduit $
                     streamOsvUrl Nothing ingest (unpack (stubBaseUrl stub) <> "/sample.zip")
                         .| sinkList
@@ -319,13 +320,13 @@ spec = describe "Osv parsing and streaming" $ do
     it "throws an exception if the URL is invalid" $ do
         let action =
                 runOsvTestM $ do
-                    ingest <- newOsvIngest defaultIngestLimits noScores
+                    ingest <- newOsvIngest defaultIngestLimits (Just Npm) noScores
                     runConduit $
                         streamOsvUrl Nothing ingest "not-a-valid-url"
                             .| sinkList
         action `shouldThrow` anyException
 
-    describe "ingest bounds (issue #571)" $ do
+    describe "ingest bounds" $ do
         it "drops an over-large advisory and keeps ingesting the entries after it" $ do
             -- The stream drops the oversized entry before decode, so its bytes need
             -- not be valid JSON. It comes first, so the good entry after it surfaces
@@ -338,7 +339,7 @@ spec = describe "Osv parsing and streaming" $ do
             let limits = defaultIngestLimits{ilMaxAdvisoryBytes = 2000}
             (results, stats) <-
                 runOsvTestM $ do
-                    ingest <- newOsvIngest limits noScores
+                    ingest <- newOsvIngest limits (Just Npm) noScores
                     rs <- runConduit $ yieldMany (LBS.toChunks zipData) .| parseOsvStream Nothing ingest .| sinkList
                     st <- readIngestStats ingest
                     pure (rs, st)
@@ -354,7 +355,7 @@ spec = describe "Osv parsing and streaming" $ do
             let limits = defaultIngestLimits{ilMaxAdvisoryFanOut = 3}
             (results, stats) <-
                 runOsvTestM $ do
-                    ingest <- newOsvIngest limits noScores
+                    ingest <- newOsvIngest limits (Just Npm) noScores
                     rs <- runConduit $ yieldMany (LBS.toChunks zipData) .| parseOsvStream Nothing ingest .| sinkList
                     st <- readIngestStats ingest
                     pure (rs, st)
@@ -373,7 +374,7 @@ spec = describe "Osv parsing and streaming" $ do
             logged <- captureStdout $ do
                 logEnv <- jsonLogEnv
                 runOsvTestMWith logEnv $ do
-                    ingest <- newOsvIngest limits noScores
+                    ingest <- newOsvIngest limits (Just Npm) noScores
                     void . runConduit $ yieldMany (LBS.toChunks zipData) .| parseOsvStream Nothing ingest .| sinkList
                 void (closeScribes logEnv)
             logged `shouldSatisfy` T.isInfixOf "Dropping oversized OSV entry"
@@ -381,12 +382,65 @@ spec = describe "Osv parsing and streaming" $ do
             logged `shouldSatisfy` T.isInfixOf "exceeding the sanity threshold"
             logged `shouldSatisfy` (not . T.isInfixOf "\"sev\":\"Error\"")
 
+        it "refuses a row whose bound the grammar cannot order, and keeps the rest" $ do
+            -- The refusal is per row, so the advisory's orderable range survives beside it.
+            zipData <-
+                osvZipOf
+                    [("mixed.json", "{\"id\":\"GHSA-mixed\",\"affected\":[{\"package\":{\"name\":\"mixed\",\"ecosystem\":\"npm\"},\"versions\":[\"1.0.0\",\"2026.05.1\"]}]}")]
+            (results, stats) <-
+                runOsvTestM $ do
+                    ingest <- newOsvIngest defaultIngestLimits (Just Npm) noScores
+                    rs <- runConduit $ yieldMany (LBS.toChunks zipData) .| parseOsvStream Nothing ingest .| sinkList
+                    st <- readIngestStats ingest
+                    pure (rs, st)
+            map extIntroduced results `shouldBe` [Just "1.0.0"]
+            statAccepted stats `shouldBe` 1
+            statDroppedUnorderable stats `shouldBe` 1
+
+        it "admits every row when the pass compiles a name this build does not serve" $ do
+            -- A one-shot compile of an unserved ecosystem carries no grammar to judge by.
+            zipData <-
+                osvZipOf
+                    [("other.json", "{\"id\":\"GHSA-other\",\"affected\":[{\"package\":{\"name\":\"other\",\"ecosystem\":\"npm\"},\"versions\":[\"v1.2\"]}]}")]
+            (results, stats) <-
+                runOsvTestM $ do
+                    ingest <- newOsvIngest defaultIngestLimits Nothing noScores
+                    rs <- runConduit $ yieldMany (LBS.toChunks zipData) .| parseOsvStream Nothing ingest .| sinkList
+                    st <- readIngestStats ingest
+                    pure (rs, st)
+            map extIntroduced results `shouldBe` [Just "v1.2"]
+            statDroppedUnorderable stats `shouldBe` 0
+
+    describe "orderableBounds" $ do
+        let row intro upper = ExtractedOsv "pkg" "npm" "GHSA-bounds" intro upper Nothing Nothing
+
+        it "admits a row whose bounds the ecosystem's grammar parses" $
+            orderableBounds Npm (row (Just "1.0.0") (FixedBefore "2.0.0")) `shouldBe` True
+
+        it "refuses a row whose upper bound is no version of the ecosystem" $
+            -- Date-stamped and two-component bounds both ride the real npm feed. Unordered,
+            -- the segment matches every version of the package.
+            orderableBounds Npm (row (Just "1.0.0") (FixedBefore "2026.05.1")) `shouldBe` False
+
+        it "refuses a point segment naming a version the grammar rejects" $
+            orderableBounds PyPI (row (Just "0.1-bulbasaur") (LastAffected "0.1-bulbasaur")) `shouldBe` False
+
+        it "admits a segment carrying no bound to order" $
+            orderableBounds Npm (row Nothing Unbounded) `shouldBe` True
+
+        it "judges each ecosystem by its own grammar" $ do
+            -- "1.2" is not semver, and is a legal PEP 440 release.
+            orderableBounds Npm (row (Just "1.2") Unbounded) `shouldBe` False
+            orderableBounds PyPI (row (Just "1.2") Unbounded) `shouldBe` True
+
     describe "systemicDrop" $ do
         it "does not trip on a healthy feed with a few bad entries" $
-            systemicDrop (IngestStats 40000 3 2) `shouldBe` False
+            systemicDrop (IngestStats 40000 3 2 0) `shouldBe` False
         it "does not trip below the absolute floor even at a high fraction" $
-            systemicDrop (IngestStats 10 5 5) `shouldBe` False
+            systemicDrop (IngestStats 10 5 5 0) `shouldBe` False
         it "trips when drops are both non-trivial and a large fraction of entries" $
-            systemicDrop (IngestStats 50 30 20) `shouldBe` True
+            systemicDrop (IngestStats 50 30 20 0) `shouldBe` True
         it "does not trip when non-trivial drops are only a small fraction" $
-            systemicDrop (IngestStats 10000 30 20) `shouldBe` False
+            systemicDrop (IngestStats 10000 30 20 0) `shouldBe` False
+        it "ignores refused rows, which are tallied in rows rather than entries" $
+            systemicDrop (IngestStats 40000 3 2 30000) `shouldBe` False

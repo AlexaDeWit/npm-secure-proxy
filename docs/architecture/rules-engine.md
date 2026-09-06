@@ -261,6 +261,16 @@ the reader requires `severity` and `epss_score` on `package_vulnerability_ranges
 missing a required column, or carrying it under a different declared type, fails schema
 conformance (`CveDbSchemaNonConformant`) and the last-good database keeps serving.
 
+Pilot writes only the rows it can order. OSV spells "affected from the beginning" as an
+`introduced` of `0`, which semver rejects, so the compile decodes that sentinel to no lower
+bound instead of storing text no comparator can read. A bound left over that the ecosystem's
+version grammar cannot parse takes its row out of the artifact, counted and logged as a
+refusal. Both follow from `insideAffectedRange` failing closed toward affected: a bound
+nothing can order matches every version, so one unreadable bound would otherwise deny a whole
+package. The refusal is per row, so an advisory's orderable ranges survive beside a refused
+one, and a compile for a name this build does not serve keeps every row, having no grammar to
+judge it by.
+
 Pilot filters rows to the target ecosystem, so an advisory spanning two ecosystems does
 not leak foreign package rows. Each denial's audit log records the advisory database ETag live
 at emit (`active_advisory_db_etag`). That is deliberately the ETag live at emit rather than the

@@ -35,11 +35,13 @@ import Codec.Archive.Zip.Conduit.UnZip (unZipStream)
 import Conduit
 import Data.Aeson (decodeStrict)
 import Data.ByteString qualified as BS
+import Data.List (partition)
 import Katip (KatipContext, Severity (..), logFM, ls)
 import Network.HTTP.Simple (getResponseBody, httpSource, parseRequest, setRequestCheckStatus)
 import OpenTelemetry.Trace.Core (SpanKind (Internal), TracerProvider, addAttribute)
 
-import Ecluse.Core.Osv.Advisory (ExtractedOsv, OsvAdvisory, extractFromAdvisory, osvId)
+import Ecluse.Core.Ecosystem (Ecosystem)
+import Ecluse.Core.Osv.Advisory (ExtractedOsv, OsvAdvisory, extractFromAdvisory, orderableBounds, osvId)
 import Ecluse.Core.Osv.Epss (EpssScores)
 import Ecluse.Core.Security.Authority (authorityLabel)
 import Ecluse.Core.Telemetry.Span (closeOptionalSpan, openOptionalSpan)
@@ -81,11 +83,16 @@ data IngestStats = IngestStats
     -- ^ Entries dropped for breaching 'ilMaxAdvisoryBytes'.
     , statDroppedMalformed :: !Int
     -- ^ Entries dropped because their JSON did not decode.
+    , statDroppedUnorderable :: !Int
+    {- ^ Extracted rows refused because a bound they carry does not parse under the
+    ecosystem's version grammar ('orderableBounds'). Counted in rows, not entries, so it
+    stays out of 'systemicDrop'.
+    -}
     }
     deriving stock (Eq, Show)
 
 emptyIngestStats :: IngestStats
-emptyIngestStats = IngestStats 0 0 0
+emptyIngestStats = IngestStats 0 0 0 0
 
 -- The mutable drop tally for one ingest pass. Opaque: read it with 'readIngestStats'.
 newtype IngestCounter = IngestCounter {counterRef :: IORef IngestStats}
@@ -94,15 +101,19 @@ newtype IngestCounter = IngestCounter {counterRef :: IORef IngestStats}
 data OsvIngest = OsvIngest
     { ingestLimits :: IngestLimits
     , ingestCounter :: IngestCounter
+    , ingestEcosystem :: Maybe Ecosystem
+    {- ^ The version grammar that orders this pass's bounds. 'Nothing' for a name this build
+    does not serve, and then the pass admits every row unchecked.
+    -}
     , ingestEpss :: EpssScores
     -- ^ The pass's EPSS table, joined onto each advisory as it is extracted.
     }
 
--- | A fresh ingest context with the given bounds and EPSS table, and a zeroed tally.
-newOsvIngest :: (MonadIO m) => IngestLimits -> EpssScores -> m OsvIngest
-newOsvIngest limits scores = do
+-- | A fresh ingest context with the given bounds, grammar and EPSS table, and a zeroed tally.
+newOsvIngest :: (MonadIO m) => IngestLimits -> Maybe Ecosystem -> EpssScores -> m OsvIngest
+newOsvIngest limits eco scores = do
     counter <- IngestCounter <$> newIORef emptyIngestStats
-    pure (OsvIngest limits counter scores)
+    pure (OsvIngest limits counter eco scores)
 
 -- | Read the current drop tally.
 readIngestStats :: (MonadIO m) => OsvIngest -> m IngestStats
@@ -184,8 +195,8 @@ processZipEntries ingest =
 -- the byte cap. The signal carries the entry's full decompressed size, for the log.
 data EntryOutcome = EntryBytes !ByteString | EntryOversize !Int
 
--- Decide what one collected entry yields: drop-and-count an over-large or malformed
--- entry, or count and emit a decoded advisory's ranges (flagging an anomalous fan-out).
+-- Decide what one collected entry yields: a counted drop for an over-large or malformed
+-- entry, or the rows the decoded advisory is admitted on.
 handleEntry :: (KatipContext m) => OsvIngest -> ZipEntry -> EntryOutcome -> ConduitT (Either ZipEntry ByteString) ExtractedOsv m ()
 handleEntry ingest entry = \case
     EntryOversize seen -> lift $ do
@@ -195,13 +206,32 @@ handleEntry ingest entry = \case
         Nothing -> lift $ do
             bumpMalformed (ingestCounter ingest)
             logFM WarningS (ls ("Failed to parse OSV advisory JSON from entry: " <> zipEntryNameText entry))
-        Just adv -> do
-            lift $ bumpAccepted (ingestCounter ingest)
-            let extracted = extractFromAdvisory (ingestEpss ingest) adv
-            lift $ warnOnFanOut ingest adv extracted
-            yieldMany extracted
+        Just adv -> admitAdvisory ingest adv
   where
     cap = ilMaxAdvisoryBytes (ingestLimits ingest)
+
+-- Emit one decoded advisory's rows, less those carrying a bound the ecosystem's version
+-- grammar cannot order. A refused row is counted and logged, never emitted.
+admitAdvisory :: (KatipContext m) => OsvIngest -> OsvAdvisory -> ConduitT (Either ZipEntry ByteString) ExtractedOsv m ()
+admitAdvisory ingest adv = do
+    lift $ bumpAccepted (ingestCounter ingest)
+    lift $ warnOnFanOut ingest adv extracted
+    lift $ unless (null refused) (refuseUnorderable ingest adv refused)
+    yieldMany kept
+  where
+    extracted = extractFromAdvisory (ingestEpss ingest) adv
+    -- A name this build does not serve has no grammar to judge its bounds by, so it keeps
+    -- the rows it extracted.
+    (kept, refused) = case ingestEcosystem ingest of
+        Nothing -> (extracted, [])
+        Just eco -> partition (orderableBounds eco) extracted
+
+-- The advisory id alone identifies the offending feed record, and it bounds the line an
+-- advisory naming thousands of packages would otherwise write.
+refuseUnorderable :: (KatipContext m) => OsvIngest -> OsvAdvisory -> [ExtractedOsv] -> m ()
+refuseUnorderable ingest adv refused = do
+    bumpUnorderable (ingestCounter ingest) (length refused)
+    logFM WarningS (ls ("Refusing " <> show (length refused) <> " range(s) of OSV advisory " <> osvId adv <> ": a bound the ecosystem's version grammar cannot order would match every version of the package"))
 
 warnOnFanOut :: (KatipContext m) => OsvIngest -> OsvAdvisory -> [ExtractedOsv] -> m ()
 warnOnFanOut ingest adv extracted =
@@ -219,6 +249,9 @@ bumpOversize (IngestCounter ref) = modifyIORef' ref (\s -> s{statDroppedOversize
 
 bumpMalformed :: (MonadIO m) => IngestCounter -> m ()
 bumpMalformed (IngestCounter ref) = modifyIORef' ref (\s -> s{statDroppedMalformed = statDroppedMalformed s + 1})
+
+bumpUnorderable :: (MonadIO m) => IngestCounter -> Int -> m ()
+bumpUnorderable (IngestCounter ref) n = modifyIORef' ref (\s -> s{statDroppedUnorderable = statDroppedUnorderable s + n})
 
 zipEntryNameText :: ZipEntry -> Text
 zipEntryNameText entry = case zipEntryName entry of

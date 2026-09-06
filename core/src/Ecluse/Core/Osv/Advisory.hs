@@ -14,6 +14,7 @@ module Ecluse.Core.Osv.Advisory (
     ExtractedOsv (..),
     advisorySeverity,
     extractFromAdvisory,
+    orderableBounds,
     osvExportUrl,
 ) where
 
@@ -21,9 +22,11 @@ import Data.Aeson (FromJSON (..), withObject, (.:), (.:?))
 import Data.Text qualified as T
 import Security.CVSS (cvssScore, parseCVSS)
 
+import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Osv.Epss (EpssScores, epssForIds)
 import Ecluse.Core.Osv.Types (UpperBound (..))
 import Ecluse.Core.Text (joinUrlPath)
+import Ecluse.Core.Version (parseVersionKey)
 
 {- | An ecosystem's advisory export under an OSV-layout base URL
 (@\<base\>\/\<ecosystem\>\/all.zip@). The base comes from configuration
@@ -226,6 +229,20 @@ extractFromAdvisory scores adv = do
     -- The feed keys on CVE ids, and an npm row keys on the GHSA id, so the join runs
     -- over the advisory's own id and its aliases together.
     epss = epssForIds scores (osvId adv : fromMaybe [] (osvAliases adv))
+
+{- | Does every bound this segment carries parse under the ecosystem's version grammar?
+A bound that does not parse leaves 'Ecluse.Core.Cve.insideAffectedRange' unable to order the
+segment, and its fail-closed default then matches every version of the package.
+-}
+orderableBounds :: Ecosystem -> ExtractedOsv -> Bool
+orderableBounds eco osv = all parses (catMaybes [extIntroduced osv, upperBound (extUpperBound osv)])
+  where
+    parses = isRight . parseVersionKey eco
+
+    upperBound = \case
+        FixedBefore f -> Just f
+        LastAffected la -> Just la
+        Unbounded -> Nothing
 
 -- One affected interval: an inclusive lower bound and where it closes.
 data Segment = Segment (Maybe Text) UpperBound

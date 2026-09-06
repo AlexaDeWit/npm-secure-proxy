@@ -2,11 +2,12 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | How one ecosystem is spelled through an OSV compile pass.
+{- | What one OSV compile pass needs to know about the ecosystem it compiles.
 
 osv.dev and Écluse do not always agree on the spelling, so a pass that carried one name would
-either fetch a directory that does not exist or write an artifact the proxy's sync refuses.
-This module holds the pair, and "Ecluse.Core.Osv.Compile" takes it rather than a bare name.
+either fetch a directory that does not exist or write an artifact the proxy's sync refuses. The
+pass also needs the version grammar that orders the advisory bounds it ingests. This module
+holds all three, and "Ecluse.Core.Osv.Compile" takes it rather than a bare name.
 -}
 module Ecluse.Core.Osv.Ecosystem (
     OsvEcosystem (..),
@@ -16,7 +17,7 @@ module Ecluse.Core.Osv.Ecosystem (
 
 import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI, RubyGems), ecosystemName, parseEcosystem)
 
--- | The two spellings one compile pass needs.
+-- | The two spellings and the version grammar one compile pass needs.
 data OsvEcosystem = OsvEcosystem
     { osvExportDirectory :: Text
     {- ^ osv.dev's own spelling: the directory its export archive sits under, and the value an
@@ -26,16 +27,25 @@ data OsvEcosystem = OsvEcosystem
     {- ^ Écluse's spelling ('ecosystemName'): it names the published artifact and stamps the
     @meta@ row the proxy's sync checks.
     -}
+    , osvEcosystemTag :: Maybe Ecosystem
+    {- ^ The ecosystem whose version grammar orders this pass's advisory bounds. 'Nothing' for a
+    name this build does not serve, and then the pass admits every bound unchecked.
+    -}
     }
     deriving stock (Eq, Show)
 
 {- | An ecosystem's pair of spellings. npm agrees with osv.dev, PyPI and RubyGems do not.
 
 >>> osvEcosystemFor PyPI
-OsvEcosystem {osvExportDirectory = "PyPI", osvWireName = "pypi"}
+OsvEcosystem {osvExportDirectory = "PyPI", osvWireName = "pypi", osvEcosystemTag = Just PyPI}
 -}
 osvEcosystemFor :: Ecosystem -> OsvEcosystem
-osvEcosystemFor eco = OsvEcosystem{osvExportDirectory = exportDirectory, osvWireName = ecosystemName eco}
+osvEcosystemFor eco =
+    OsvEcosystem
+        { osvExportDirectory = exportDirectory
+        , osvWireName = ecosystemName eco
+        , osvEcosystemTag = Just eco
+        }
   where
     exportDirectory = case eco of
         Npm -> "npm"
@@ -46,8 +56,9 @@ osvEcosystemFor eco = OsvEcosystem{osvExportDirectory = exportDirectory, osvWire
 'osvEcosystemFor', and any other spells itself on both halves.
 
 >>> osvEcosystemNamed "pypi"
-OsvEcosystem {osvExportDirectory = "PyPI", osvWireName = "pypi"}
+OsvEcosystem {osvExportDirectory = "PyPI", osvWireName = "pypi", osvEcosystemTag = Just PyPI}
 -}
 osvEcosystemNamed :: Text -> OsvEcosystem
-osvEcosystemNamed name =
-    maybe (OsvEcosystem{osvExportDirectory = name, osvWireName = name}) osvEcosystemFor (parseEcosystem name)
+osvEcosystemNamed name = maybe unserved osvEcosystemFor (parseEcosystem name)
+  where
+    unserved = OsvEcosystem{osvExportDirectory = name, osvWireName = name, osvEcosystemTag = Nothing}

@@ -131,6 +131,32 @@ spec = describe "SQLite OSV Compilation" $ do
         takeFileName dbFile `shouldBe` "pypi-osv-schema3.db"
         Map.lookup "ecosystem" (Map.fromList metaRows) `shouldBe` Just "pypi"
 
+    it "keeps an unorderable bound out of the artifact and decodes the \"0\" lower bound" $ do
+        -- The malware feed's shape: an advisory naming versions outright. The date-stamped one
+        -- carries a bound semver cannot order, which would otherwise deny every version of the
+        -- package, and the range's "0" lower bound lands as NULL rather than as a bound nothing
+        -- can compare.
+        zipData <-
+            osvZipOf
+                [ ("point.json", "{\"id\":\"MAL-point\",\"affected\":[{\"package\":{\"name\":\"pointy\",\"ecosystem\":\"npm\"},\"versions\":[\"1.0.0\",\"2026.05.1\"]}]}")
+                , ("range.json", "{\"id\":\"MAL-range\",\"affected\":[{\"package\":{\"name\":\"ranged\",\"ecosystem\":\"npm\"},\"ranges\":[{\"type\":\"SEMVER\",\"events\":[{\"introduced\":\"0\"},{\"fixed\":\"1.2.3\"}]}]}]}")
+                ]
+        epssData <- LBS.readFile epssFixtureFile
+        (metrics, _) <- recordingAdvisoryCompileMetricsPort
+        dbFile <- withStub status200 zipData $ \stub ->
+            withStub status200 epssData $ \epssStub ->
+                runOsvTestM (compileOsvToSqlite metrics Nothing "/tmp" (osvEcosystemFor Npm) (sourcesOf stub epssStub "/all.zip"))
+
+        conn <- open dbFile
+        rows <- query_ conn "SELECT package_name, introduced_version, fixed_version, last_affected_version FROM package_vulnerability_ranges ORDER BY package_name" :: IO [(Text, Maybe Text, Maybe Text, Maybe Text)]
+        close conn
+        catchIOError (removeFile dbFile) (const $ pure ())
+
+        rows
+            `shouldBe` [ ("pointy", Just "1.0.0", Nothing, Just "1.0.0")
+                       , ("ranged", Nothing, Just "1.2.3", Nothing)
+                       ]
+
     it "fails the pass when the EPSS feed answers non-2xx, so nothing reaches the export" $ do
         -- A 404 is permanent, so the fetch gives up at once rather than spending the backoff
         -- budget. The compile throws before it writes meta, and the caller's upload never runs.
