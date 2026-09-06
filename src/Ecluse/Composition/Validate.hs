@@ -23,6 +23,7 @@ import Data.Map.Strict qualified as Map
 
 import Ecluse.Composition.BootError (
     BootError (
+        DredgerChunkPauseBeneathFloor,
         FirstPartyMissing,
         MirrorTargetWithoutPublish,
         MissingAdapter,
@@ -36,10 +37,12 @@ import Ecluse.Composition.Endpoints (
     vetEndpoints,
  )
 import Ecluse.Composition.Maintenance (ClearedBackend, vetStoreBackends)
-import Ecluse.Composition.Vet (Severity (Refuse), Vet, rule)
+import Ecluse.Composition.Types (RegistryRole (MirrorPruner, MirrorWriter))
+import Ecluse.Composition.Vet (Severity (Ignore, Refuse), Vet, rule)
 import Ecluse.Config (
-    AppConfig (cfgMounts, cfgServer),
+    AppConfig (cfgDredger, cfgMounts, cfgServer),
     Config (configApp, configMounts),
+    DredgerSettings (drgChunkPause),
     FirstParty,
     Mount,
     MountConfig (mntFirstParty, mntPublicationTarget),
@@ -53,6 +56,7 @@ import Ecluse.Config (
 import Ecluse.Core.Credential (Secret)
 import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Registry.Adapter (RegistryAdapter, adapterFor, adapterPublish)
+import Ecluse.Core.Registry.Sweep.Types (minimumChunkPause)
 
 {- | What the pure boot pass cleared: the mounts a role may serve, the endpoints it may use, and
 the settings no rule vets.
@@ -89,8 +93,8 @@ data VettedPublication = VettedPublication
     , vpubStaticToken :: Maybe Secret
     }
 
-{- | Vet the whole loaded configuration for one role. The four groups compose with '<*>', so one
-run reports every refusal and every advisory rather than the first group's alone.
+{- | Vet the whole loaded configuration for one role. The groups compose with '<*>', so one run
+reports every refusal and every advisory rather than the first group's alone.
 -}
 vetBoot :: Config -> Vet ValidatedPlan
 vetBoot config =
@@ -99,6 +103,7 @@ vetBoot config =
         <*> vetPublishPolicy app
         <*> vetEndpoints (cfgMounts app)
         <*> vetStoreBackends adapterFor (configMounts config)
+        <* vetSweepPacing app
   where
     app = configApp config
 
@@ -111,6 +116,17 @@ vetBoot config =
             }
 
     cleared target (firstParty, staticToken) = VettedPublication target firstParty staticToken
+
+{- The floor under the sweep's own pace. Deletion is permanent, so the deleting role refuses a
+pause that would sweep faster than an operator can stop it, and every other role reads none. -}
+vetSweepPacing :: AppConfig -> Vet ()
+vetSweepPacing app = rule severity beneathFloor (drgChunkPause (cfgDredger app))
+  where
+    severity = \case
+        MirrorPruner -> Refuse (`DredgerChunkPauseBeneathFloor` minimumChunkPause)
+        MirrorWriter -> Ignore
+
+    beneathFloor configured = configured <$ guard (configured < minimumChunkPause)
 
 {- Every active mount, refusing the ecosystems this build ships no adapter for. Serving one would
 answer every route with a stub, which is a wiring fault rather than a posture an operator chose. -}

@@ -39,6 +39,10 @@ Set the pace with the `dredger` group in your configuration. `chunkSize` and `ch
 many packages one chunk examines and how long it waits between chunks. `cyclePause` sets the wait
 between cycles.
 
+`chunkPause` has a floor of two seconds, and the Dredger refuses to boot beneath it, naming the key,
+your value, and the floor. The pause is what leaves you time to stop a mistaken sweep, so you may
+raise it and never lower it.
+
 ## What is deleted, and what never is
 
 A version is deleted **only** on a named decisive deny. Everything else keeps it:
@@ -82,6 +86,10 @@ legitimate deployment and is not refused.
 `deletionCap` bounds how many versions one cycle may hand over for deletion. It is the breaker
 against an advisory database that denies far more than it should.
 
+Left unset, it is computed at boot as 100 per sweepable mirror store, because one cycle covers
+every store in turn. That default is deliberately small. Rehearse first: a dry run reports the
+count a real sweep would reach, which is the number to write into `deletionCap`.
+
 Reaching it **halts the Dredger for the life of the process**, whether or not there was more it
 would have deleted. No further cycle runs, the readiness probe answers `503`, liveness stays
 healthy, and an error line repeats at each cycle interval naming the advisory generation and the
@@ -119,9 +127,10 @@ indefinitely.
 carries the backend's own rehearsal where one exists, and a call-nothing stub where none does, so
 the run cannot delete because nothing it holds can.
 
-It reads consent and classification and reports them. The cap applies as logging only, so a
-rehearsal reports the full count a real run would reach rather than stopping at the breaker. It
-writes no walk marker. Its counter is `would_delete`, never `deleted`.
+It reads consent and classification and reports them. The cap applies as logging only: passing it
+writes one line naming where a real run would have halted, and the rehearsal counts on, so its
+closing tally reports the full reach. It writes no walk marker. Its counter is `would_delete`,
+never `deleted`.
 
 Use it before the first real sweep of a store, and after any rule change you are unsure of.
 

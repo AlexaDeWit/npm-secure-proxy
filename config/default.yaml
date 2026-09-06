@@ -193,7 +193,9 @@ dredger:
   # Candidate packages one chunk examines before the sweep pauses.
   chunkSize: 50
   # Seconds between chunks. It is also the wait after a store fault whose retry advice
-  # names no delay of its own.
+  # names no delay of its own. This is the floor as well as the default: the Dredger
+  # refuses to boot beneath it, because the pause is what leaves you time to stop a
+  # mistaken sweep. Raise it to sweep more gently.
   chunkPause: 2
   # Seconds between the end of one cycle and the start of the next. A cycle that halted
   # waits the same pause and repeats its error line at each one.
@@ -201,7 +203,10 @@ dredger:
   # Versions one cycle may hand over for deletion. Reaching it halts the sweep for the
   # life of the process: no further cycle runs until you restart the Dredger deliberately.
   # It is the breaker against an advisory database that denies far more than it should.
-  deletionCap: 1000
+  # Computed at boot as 100 per sweepable mirror store, because one cycle covers every
+  # store in turn and one pinned total would starve the later mounts. Set it to override
+  # that, after a dry run has reported the count a real sweep would reach.
+  # deletionCap: 100
   # Walk every package in the store each cycle instead of the advisory and identity-deny
   # candidates. Turn it on after a rule change, which is the one cause a candidate cycle
   # cannot see, and turn it off once a walk has completed. A full walk replaces the

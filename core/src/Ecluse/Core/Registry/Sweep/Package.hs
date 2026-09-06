@@ -131,23 +131,43 @@ disposeOf pacing ports counters store etag name condemned
     | null condemned = pure Nothing
     | otherwise = do
         issued <- readIORef (stIssued counters)
-        let allowance = max 0 (swpDeletionCap pacing - issued)
-            (taken, held) = splitAt (if reportCapHalts (sweepReport ports) then allowance else length condemned) condemned
+        let allowance = max 0 (cap - issued)
+            (taken, held) = splitAt (if capHalts then allowance else length condemned) condemned
             reached = issued + length taken
         traverse_ (const (record ports counters SweepGuardSkipped)) held
         unless (null taken) $ do
             traverse_ (announce ports etag name) taken
             writeIORef (stIssued counters) reached
+            when (crossedCap issued reached) (announceCap ports cap reached etag)
             outcomes <- sendDeletes store name (map cdVersion taken)
             traverse_ (recordOutcome ports counters name) outcomes
         pure (cappedHalt pacing reached etag <$ guard (halts reached))
   where
+    cap = swpDeletionCap pacing
+    capHalts = reportCapHalts (sweepReport ports)
+
     -- Reaching the cap latches, whether or not this package had more to hand over.
-    halts reached = reportCapHalts (sweepReport ports) && reached >= swpDeletionCap pacing
+    halts reached = capHalts && reached >= cap
+
+    -- A run that counts past the cap says once where a run that halts on it would have stopped.
+    crossedCap issued reached = not capHalts && issued < cap && reached >= cap
 
 -- The halt the cap raises, carrying what an operator needs to judge the generation that filled it.
 cappedHalt :: SweepPacing -> Int -> Maybe DbEtag -> CycleHalt
 cappedHalt pacing = HaltDeletionCap (swpDeletionCap pacing)
+
+{- The cap as a run that does not halt on it reports it: where a halting run would have stopped,
+and that this one carries on, so the closing tally names the full reach. -}
+announceCap :: SweepPorts -> Int -> Int -> Maybe DbEtag -> IO ()
+announceCap ports cap reached etag =
+    auditInfo (sweepAudit ports) $
+        "the cycle has handed over "
+            <> show reached
+            <> " versions and reached the deletion cap of "
+            <> show cap
+            <> " under advisory generation "
+            <> renderGeneration etag
+            <> ". This run counts past the cap rather than halting, so its closing tally reports the full reach"
 
 {- Every deletion's audit line: the package, the version, the rule that denied it, and the
 advisory generation pinned when it was decided. -}

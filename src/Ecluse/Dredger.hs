@@ -97,6 +97,7 @@ runDredger bootEnv opts pruner = do
     -- effectful rules' deferred reporters live for the rest of the run.
     installMetrics (pwDeferredMetrics pruner) metrics
     status <- newSweepStatus
+    moduleLog logEnv dredgerModule InfoS capLine
     traverse_ (logBlastRadius logEnv opts pacing) mounts
     moduleLog logEnv dredgerModule InfoS ("Dredger starting up, health probes on port " <> show (scPort (cfg status)))
     raceServerAgainstLoop
@@ -107,7 +108,7 @@ runDredger bootEnv opts pruner = do
     logEnv = beLogEnv bootEnv
     telemetry = beTelemetry bootEnv
     appConfig = configApp (beConfig bootEnv)
-    pacing = sweepPacingFor appConfig
+    (pacing, capLine) = sweepPacingFor appConfig (length (pwMounts pruner))
     -- A dry run holds a store that cannot delete, so the loop never asks which run it is in.
     mounts = case doMode opts of
         SweepDeletes -> pwMounts pruner

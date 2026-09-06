@@ -121,6 +121,12 @@ renderBootErrorSpec = describe "renderBootError" $
             `shouldSatisfy` infixed "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__CODE_ARTIFACT and ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__VERDACCIO"
         renderBootError (StoreTagConflict Npm "mirrorTarget.codeArtifact" Npm "privateUpstream.verdaccio" "https://one.example.test")
             `shouldSatisfy` infixed "one store has one backend, so declare both endpoints under the same tag"
+        -- The sweep-pace refusal names the key, the value it read, and the floor it fell under,
+        -- so an operator can fix it without reading the source for the floor.
+        renderBootError (DredgerChunkPauseBeneathFloor 1 2)
+            `shouldSatisfy` infixed "ECLUSE_DREDGER__CHUNK_PAUSE (dredger.chunkPause) is 1s, beneath the floor of 2s"
+        renderBootError (DredgerChunkPauseBeneathFloor 1 2)
+            `shouldSatisfy` infixed "may be raised and never lowered"
         -- The idle-Pilot refusal names both keys: the one that is set and the ones that are not.
         renderBootError PilotWithoutEcosystem
             `shouldSatisfy` infixed "ECLUSE_ADVISORIES__URL is set but no mount is declared"
