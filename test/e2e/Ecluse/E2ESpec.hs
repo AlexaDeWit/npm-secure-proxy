@@ -53,6 +53,7 @@ spec = do
             telemetryScenarios
             publishScenarios
             dredgerScenarios
+            dredgerFirstPartyScenario
             pendingScenarios
 
 {- | The active scenarios, grouped into @describe@ blocks that each share one proxy under
@@ -338,6 +339,34 @@ dredgerScenarios =
             unless (consentKey `T.isInfixOf` dredgerOutput run) $
                 failWithLog run "the refusal did not name the key an operator sets"
 
+{- | The Dredger against a store holding a first-party version. It needs its own proxy, because
+publishing takes a publication target the other blocks do not configure.
+-}
+dredgerFirstPartyScenario :: SpecWith GlobalDataPlane
+dredgerFirstPartyScenario =
+    describe "the Dredger against a first-party version" $
+        aroundAllWith (withPlaneAndProxyWith E2EConfig{ecCollector = False, ecExtraEnv = publishTargetEnv}) $
+            it "keeps a first-party version even when a deny names it" $ \(gdp, e2e) -> do
+                void $ withPublishProject e2e publishDredgerName publishVersion npmPublishIn >>= shouldSucceed
+                onTarget <- verdaccioHasVersion e2e publishDredgerName publishVersion
+                onTarget `shouldBe` True
+                -- The deny names this very version, so surviving is the belt's doing and not the
+                -- candidate set's. The Dredger reads the same namespace the publish was scoped to.
+                run <-
+                    runDredgerOnce
+                        gdp
+                        ["--once"]
+                        [ ("ECLUSE_RULES", identityDenyOfName publishDredgerName publishVersion)
+                        , ("ECLUSE_MOUNTS__NPM__FIRST_PARTY", publishScope)
+                        ]
+                unless (dredgerExit run == ExitSuccess) (failWithLog run "the sweep exited non-zero")
+                -- The belt skips a first-party version before reading its metadata, so it counts
+                -- under guard-skipped and never under examined.
+                unless ("guard-skipped 1" `T.isInfixOf` dredgerOutput run) $
+                    failWithLog run "the sweep did not skip the version the belt shields"
+                kept <- verdaccioHasVersionNow e2e publishDredgerName publishVersion
+                unless kept (failWithLog run "the first-party version was deleted")
+
 -- The audit line a rehearsal writes for a version it would have deleted.
 wouldDeleteLineFor :: PkgSpec -> Text
 wouldDeleteLineFor p = "dry run, would delete " <> psName p <> "@" <> psVersion p
@@ -353,17 +382,25 @@ failWithLog run reason =
 
 -- The proxy that seeds the store, beside the data plane the sweep container joins.
 withPlaneAndProxy :: ((GlobalDataPlane, E2E) -> IO ()) -> GlobalDataPlane -> IO ()
-withPlaneAndProxy action gdp = withE2E (\e2e -> action (gdp, e2e)) gdp
+withPlaneAndProxy = withPlaneAndProxyWith defaultE2EConfig
+
+-- | 'withPlaneAndProxy' over a proxy the case configures, for one that publishes as well as seeds.
+withPlaneAndProxyWith :: E2EConfig -> ((GlobalDataPlane, E2E) -> IO ()) -> GlobalDataPlane -> IO ()
+withPlaneAndProxyWith cfg action gdp = withE2EWith cfg (\e2e -> action (gdp, e2e)) gdp
 
 {- | A rule set with one identity deny and no advisory rule, so the sweep needs no advisory
 database and only the named version is condemned.
 -}
 identityDenyOf :: PkgSpec -> Text
-identityDenyOf p =
+identityDenyOf p = identityDenyOfName (psName p) (psVersion p)
+
+-- | 'identityDenyOf' over a name a fixture does not carry, for a package a case publishes itself.
+identityDenyOfName :: Text -> Text -> Text
+identityDenyOfName name version =
     "{\"revoke-swept\":{\"type\":\"DenyByIdentity\",\"identity\":\""
-        <> psName p
+        <> name
         <> "@"
-        <> psVersion p
+        <> version
         <> "\"}}"
 
 {- | Placeholders for unimplemented work, kept outside @aroundAll@ so they boot no environment.

@@ -17,8 +17,10 @@ module Ecluse.E2E.Harness.Npm (
 
     -- * Constants
     publishTargetEnv,
+    publishScope,
     publishInScopeName,
     publishOutOfScopeName,
+    publishDredgerName,
     publishVersion,
 ) where
 
@@ -175,8 +177,9 @@ publishTargetEnv =
     , ("ECLUSE_MOUNTS__NPM__FIRST_PARTY", publishScope)
     ]
 
--- The first-party namespace 'publishTargetEnv' configures. 'publishInScopeName'
--- derives from it, so the configured scope and the in-scope name cannot drift apart.
+{- | The first-party namespace 'publishTargetEnv' configures. Every in-scope name derives from
+it, so the configured scope and the names cannot drift apart.
+-}
 publishScope :: Text
 publishScope = "@acme"
 
@@ -191,6 +194,12 @@ publishInScopeName = publishScope <> "/e2e-publish"
 -}
 publishOutOfScopeName :: Text
 publishOutOfScopeName = "@rogue/e2e-shadow"
+
+{- | A first-party package the sweep scenarios publish and no other case touches, so its survival
+after a sweep that names it is attributable to the first-party belt alone.
+-}
+publishDredgerName :: Text
+publishDredgerName = publishScope <> "/e2e-dredger-first-party"
 
 -- | The single version the publish scenarios publish (and read back).
 publishVersion :: Text
