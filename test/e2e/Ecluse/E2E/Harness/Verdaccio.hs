@@ -10,6 +10,8 @@ module Ecluse.E2E.Harness.Verdaccio (
     verdaccioNamesUnder,
 ) where
 
+import Data.Aeson (Object, decodeStrict)
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text qualified as T
 import Network.HTTP.Client (
@@ -72,15 +74,41 @@ unlistedReport :: E2E -> Text -> IO Text
 unlistedReport e2e pkg =
     handleAny (\err -> pure (preamble <> "the listing could not be read: " <> show err)) $ do
         body <- verdaccioListingBody e2e
+        served <- packumentReport e2e pkg
         pure
             ( preamble
                 <> "the projector read: "
                 <> either parseErrorMessage (T.intercalate ", " . map renderPackageName) (parsePackageListing body)
+                <> "\nthe same handle's packument for it: "
+                <> served
                 <> "\nthe store served (first 2048 characters): "
                 <> T.take 2048 (decodeUtf8 body)
             )
   where
     preamble = "the store never listed " <> pkg <> "; "
+
+{- Whether the same handle serves the package it never listed, and whether that document carries
+the @time@ key every listed entry has. It separates a store holding one package two ways from a
+store that never took the publish at all.
+-}
+packumentReport :: E2E -> Text -> IO Text
+packumentReport e2e pkg =
+    handleAny (\err -> pure ("unreadable: " <> show err)) $ do
+        req <- parseRequest (toString (e2eVerdaccio e2e <> "/" <> pkg))
+        resp <- httpLbs req (e2eManager e2e)
+        let body = LBS.toStrict (responseBody resp)
+        pure
+            ( "status "
+                <> show (statusCode (responseStatus resp))
+                <> ", time key "
+                <> (if hasTimeKey body then "present" else "absent")
+                <> ", first 512 characters: "
+                <> T.take 512 (decodeUtf8 body)
+            )
+
+-- Verdaccio's listing entries all carry @time@, so its absence is worth reporting.
+hasTimeKey :: ByteString -> Bool
+hasTimeKey body = maybe False (KeyMap.member "time") (decodeStrict body :: Maybe Object)
 
 {- | The names the store lists that fall in one bucket of the name space, through the same
 predicate a store with no prefix filter of its own is walked by.
