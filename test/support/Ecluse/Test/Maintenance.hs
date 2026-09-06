@@ -165,9 +165,8 @@ readSeededManifest config name =
 orFault :: FakeStoreConfig -> IO a -> IO (Either StoreFault a)
 orFault config action = maybe (Right <$> action) (pure . Left) (fakeFault config)
 
-{- | The manifest read for a case that drives enumeration alone. The read is the composition
-root's, not a backend leaf's, so a case that never enumerates metadata says so rather than reaching
-a store.
+{- | The manifest read for a case that drives enumeration alone: the composition root wires the
+real one, so a case that never reads metadata faults with a message instead of reaching a store.
 -}
 unwiredRead :: StoreManifestRead
 unwiredRead _ = pure (Left (protocolFault "the spec wired no manifest read"))
