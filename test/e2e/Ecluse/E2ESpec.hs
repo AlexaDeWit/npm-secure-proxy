@@ -30,6 +30,7 @@ import Ecluse.E2E.Fixtures (
     PkgSpec,
     allowPkg,
     denyPkg,
+    dredgerDryRunPkg,
     dredgerKeepPkg,
     dredgerPkg,
     headPkg,
@@ -307,6 +308,43 @@ dredgerScenarios =
             when gone (failWithLog run "the condemned version is still served")
             kept <- verdaccioHasVersionNow e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
             unless kept (failWithLog run "the version no rule named was deleted too")
+
+        it "reports what a dry run would delete, and leaves the version the store serves" $ \(gdp, e2e) -> do
+            void $ npmInstall e2e (psName dredgerDryRunPkg) >>= shouldSucceed
+            mirrored <- verdaccioHasVersion e2e (psName dredgerDryRunPkg) (psVersion dredgerDryRunPkg)
+            mirrored `shouldBe` True
+            run <- runDredgerOnce gdp ["--once", "--dry-run"] [("ECLUSE_RULES", identityDenyOf dredgerDryRunPkg)]
+            unless (dredgerExit run == ExitSuccess) (failWithLog run "the rehearsal exited non-zero")
+            -- The rehearsal counts in the cycle's deleted column, so one dry run reports the reach
+            -- a real run would have. Both the audit line and that count have to say so.
+            unless (wouldDeleteLineFor dredgerDryRunPkg `T.isInfixOf` dredgerOutput run) $
+                failWithLog run "the rehearsal named no version it would delete"
+            unless ("deleted 1" `T.isInfixOf` dredgerOutput run) $
+                failWithLog run "the rehearsal reported no would-delete count"
+            served <- verdaccioHasVersionNow e2e (psName dredgerDryRunPkg) (psVersion dredgerDryRunPkg)
+            unless served (failWithLog run "the rehearsal deleted the version it only rehearsed")
+
+        it "refuses to boot without the consent key, and names it" $ \(gdp, _) -> do
+            -- The harness's own environment carries the consent, so the case withholds it by
+            -- overriding the key. A withheld key and an absent one take the same arm.
+            run <-
+                runDredgerOnce
+                    gdp
+                    ["--once"]
+                    [ ("ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__PERMIT_DELETION", "false")
+                    , ("ECLUSE_RULES", identityDenyOf dredgerPkg)
+                    ]
+            when (dredgerExit run == ExitSuccess) (failWithLog run "the sweep booted without consent")
+            unless (consentKey `T.isInfixOf` dredgerOutput run) $
+                failWithLog run "the refusal did not name the key an operator sets"
+
+-- The audit line a rehearsal writes for a version it would have deleted.
+wouldDeleteLineFor :: PkgSpec -> Text
+wouldDeleteLineFor p = "dry run, would delete " <> psName p <> "@" <> psVersion p
+
+-- The key an operator sets to consent to deletion from the store the harness sweeps.
+consentKey :: Text
+consentKey = "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__PERMIT_DELETION"
 
 -- Fail with what the sweep itself reported, so the next run needs no second look.
 failWithLog :: DredgerRun -> Text -> Expectation

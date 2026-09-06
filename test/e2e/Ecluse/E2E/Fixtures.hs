@@ -28,6 +28,7 @@ module Ecluse.E2E.Fixtures (
     mirrorPkg,
     dredgerPkg,
     dredgerKeepPkg,
+    dredgerDryRunPkg,
     tamperPkg,
     headPkg,
     telemetryPkg,
@@ -101,6 +102,12 @@ deleted it would prove the sweep deletes more than the rule condemned.
 dredgerKeepPkg :: PkgSpec
 dredgerKeepPkg = defaultPkgSpec "e2e-dredger-keep"
 
+{- | A package a rehearsal condemns and no real sweep touches, so its survival is what shows a
+dry run deleted nothing.
+-}
+dredgerDryRunPkg :: PkgSpec
+dredgerDryRunPkg = defaultPkgSpec "e2e-dredger-dry-run"
+
 -- | A package used to exercise telemetry domain-span emission.
 telemetryPkg :: PkgSpec
 telemetryPkg = defaultPkgSpec "e2e-telemetry"
@@ -110,7 +117,7 @@ telemetryDdPkg = defaultPkgSpec "e2e-telemetry-datadog"
 
 -- | The full fixture set the stub serves.
 fixturePackages :: [PkgSpec]
-fixturePackages = [allowPkg, denyPkg, mirrorPkg, tamperPkg, headPkg, dredgerPkg, dredgerKeepPkg, telemetryPkg, telemetryDdPkg]
+fixturePackages = [allowPkg, denyPkg, mirrorPkg, tamperPkg, headPkg, dredgerPkg, dredgerKeepPkg, dredgerDryRunPkg, telemetryPkg, telemetryDdPkg]
 
 {- | Write every fixture package under @root@, the nginx stub's document root, with each
 packument's @dist.integrity@ fixed to the artifact's real sha-512.
