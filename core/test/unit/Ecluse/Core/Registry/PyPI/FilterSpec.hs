@@ -10,7 +10,7 @@ import Data.Map.Strict qualified as Map
 import Test.Hspec
 
 import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
-import Ecluse.Core.Package (mkPackageName)
+import Ecluse.Core.Package (PackageName, mkPackageName)
 import Ecluse.Core.Package.Merge (MergePlan (..), SourceId)
 import Ecluse.Core.Registry.PyPI.Filter (assembleSimpleIndex)
 
@@ -85,12 +85,18 @@ rebaseSpec = describe "where a served file points" $ do
         (servedEntry (assembleOne allFiles) "requests-2.34.2-py3-none-any.whl" >>= KeyMap.lookup "url")
             `shouldBe` Just (String "https://ecluse.test/pypi/simple/requests/requests-2.34.2-py3-none-any.whl")
 
-    it "leaves a location alone when the document's own name would not clear the grammar" $ do
-        -- The name reaches an interpolated URL, so a document reporting a spelling the route
-        -- would not claim has nothing rebased under it.
-        let served = assembleSources [(0, (indexNamed "Requests" allFiles, fileIndex))] [("2.34.2", 0)] [("2.34.2", ["requests-2.34.2.tar.gz"])]
-        (servedEntry served "requests-2.34.2.tar.gz" >>= KeyMap.lookup "url")
-            `shouldBe` Just (String "https://files.pythonhosted.org/packages/a0/requests-2.34.2.tar.gz")
+    it "rebases under the requested project, not the spelling the document reported" $ do
+        -- An index may report the published spelling of a name whose canonical form the request
+        -- used. Agreement is checked before the assembly, so the location renders under the
+        -- canonical name the distribution route claims rather than one it would 404.
+        let served =
+                assembleSimpleIndex
+                    mountBase
+                    (Map.singleton 0 (zopeIndex, Map.singleton zopeFile "7.2"))
+                    (planFor zopeInterface [("7.2", 0)] [("7.2", [zopeFile])])
+                    zopeIndex
+        (servedEntry served zopeFile >>= KeyMap.lookup "url")
+            `shouldBe` Just (String ("https://ecluse.test/pypi/simple/zope-interface/" <> zopeFile))
 
 sidecarSpec :: Spec
 sidecarSpec = describe "the PEP 658 sidecar keys" $
@@ -121,11 +127,15 @@ assembleSources sources survivors kept =
         source : _ -> source
         [] -> (0, (Object mempty, mempty))
 
--- | A merge plan carrying the survivors and the files the partition kept for each.
+-- | A merge plan for @requests@, carrying the survivors and the files the partition kept.
 planOver :: [(Text, SourceId)] -> [(Text, [Text])] -> MergePlan
-planOver survivors kept =
+planOver = planFor (mkPackageName PyPI Nothing "requests")
+
+-- | 'planOver' for a project of the caller's choosing.
+planFor :: PackageName -> [(Text, SourceId)] -> [(Text, [Text])] -> MergePlan
+planFor name survivors kept =
     MergePlan
-        { mpName = mkPackageName PyPI Nothing "requests"
+        { mpName = name
         , mpSurvivors = Map.fromList survivors
         , mpArtifacts = Map.fromList [(version, fromList files) | (version, files) <- kept, not (null files)]
         , mpDistTags = Map.empty
@@ -158,6 +168,18 @@ allFiles =
 -- | The file the private source offers for @2.34.2@.
 privateFile :: Value
 privateFile = fileNamed "requests-2.34.2-private.tar.gz"
+
+{- | A project published under a non-canonical spelling, with the index reporting that spelling
+for itself as a real one does.
+-}
+zopeInterface :: PackageName
+zopeInterface = mkPackageName PyPI Nothing "zope-interface"
+
+zopeIndex :: Value
+zopeIndex = indexNamed "Zope.Interface" [fileNamed zopeFile]
+
+zopeFile :: Text
+zopeFile = "zope_interface-7.2-py3-none-any.whl"
 
 -- | Which release each file of the standard index belongs to.
 fileIndex :: Map Text Text

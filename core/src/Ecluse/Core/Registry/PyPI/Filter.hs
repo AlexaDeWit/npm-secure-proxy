@@ -54,11 +54,10 @@ import Data.Set qualified as Set
 import Data.Vector qualified as V
 
 import Ecluse.Core.Package (PackageName)
-import Ecluse.Core.Package.Merge (MergePlan (mpArtifacts, mpSurvivors), SourceId)
+import Ecluse.Core.Package.Merge (MergePlan (mpArtifacts, mpName, mpSurvivors), SourceId)
 import Ecluse.Core.Registry.CachedDocument (CachedDoc, FileVersionIndex, pypiSimpleCached)
-import Ecluse.Core.Registry.PyPI.Project (isCanonicalName, projectName)
 import Ecluse.Core.Registry.PyPI.Route (distributionPath)
-import Ecluse.Core.Registry.ServedDocument (rebaseArtifactUrl, safeDocumentName)
+import Ecluse.Core.Registry.ServedDocument (rebaseArtifactUrl)
 import Ecluse.Core.Text (joinUrlPath)
 
 {- | Assemble the served Simple index for @mountBase@ from a 'MergePlan' and the raw source
@@ -68,6 +67,9 @@ documents, each paired with the file-to-version index its fetch computed.
 @files@ from the entries the plan's surviving artifacts name in the source that won each
 release. A named file the winning source does not hold drops out, never a fabricated one. The
 result is always an object, even for an empty plan or a non-object base document.
+
+Locations are rebased under the plan's own project name, never a document's self-reported
+spelling, so a served index carries no location this mount would not claim.
 -}
 assembleSimpleIndex :: Text -> Map SourceId (Value, FileVersionIndex) -> MergePlan -> Value -> Value
 assembleSimpleIndex mountBase bySource plan base =
@@ -99,21 +101,9 @@ assembleSimpleIndex mountBase bySource plan base =
     keptFiles :: Set Text
     keptFiles = allKeptFiles plan
 
-    {- One served entry: its location rebased onto this mount, and the sidecar keys dropped. A
-    document whose own name does not clear the grammar has nothing interpolated under it, so its
-    entries keep their upstream locations and the artifact-host gate refuses them at download. -}
+    -- One served entry: its location rebased onto this mount, and the sidecar keys dropped.
     served :: Value -> Value
-    served = case safeDocumentName canonicalProject baseObject of
-        Just project -> dropSidecarKeys . rebaseEntry (servedFileUrl mountBase project)
-        Nothing -> dropSidecarKeys
-
-{- The project a document claims for itself, admitted only in the PEP 503 canonical spelling
-the distribution route claims. Any other spelling would rebase a location onto a URL this mount
-does not serve. -}
-canonicalProject :: Text -> Maybe PackageName
-canonicalProject raw = do
-    guard (isCanonicalName raw)
-    rightToMaybe (projectName raw)
+    served = dropSidecarKeys . rebaseEntry (servedFileUrl mountBase (mpName plan))
 
 {- The mount-local URL a served file resolves to, rendered from the distribution route that must
 claim it. -}
