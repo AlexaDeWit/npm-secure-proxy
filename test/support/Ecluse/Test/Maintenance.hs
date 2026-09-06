@@ -14,6 +14,9 @@ module Ecluse.Test.Maintenance (
     defaultFakeStoreConfig,
     newFakeStore,
     withBucket,
+
+    -- * The manifest read a listing case does not wire
+    unwiredRead,
 ) where
 
 import Data.Conduit (ConduitT, (.|))
@@ -32,12 +35,14 @@ import Ecluse.Core.Registry.Maintenance (
     StoreFacts (..),
     StoreFault,
     StoreMaintenance (..),
+    StoreManifestRead,
     StoredVersion (..),
     VersionOutcome (VersionRefused, VersionRemoving),
     inBucket,
     mkNameAlphabet,
     noNameAlphabet,
     parseNamePrefix,
+    protocolFault,
     storeFaultOfMetadata,
     storeRefusal,
     unreachedBatch,
@@ -159,6 +164,13 @@ readSeededManifest config name =
 -- Every read answers the configured fault instead, when there is one.
 orFault :: FakeStoreConfig -> IO a -> IO (Either StoreFault a)
 orFault config action = maybe (Right <$> action) (pure . Left) (fakeFault config)
+
+{- | The manifest read for a case that drives enumeration alone. The read is the composition
+root's, not a backend leaf's, so a case that never enumerates metadata says so rather than reaching
+a store.
+-}
+unwiredRead :: StoreManifestRead
+unwiredRead _ = pure (Left (protocolFault "the spec wired no manifest read"))
 
 {- | Run an assertion over the bucket one spelling names, through the parser a cursor read uses.
 The alphabet carries the spelling, so a refusal means the prefix vocabulary changed under the spec.

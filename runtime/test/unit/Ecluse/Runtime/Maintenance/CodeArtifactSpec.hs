@@ -28,7 +28,6 @@ import Ecluse.Core.Registry.Maintenance (
     StoreFacts (..),
     StoreFault (..),
     StoreMaintenance (..),
-    StoreManifestRead,
     StoredVersion (..),
     VersionOutcome (VersionRefused, VersionRemoved, VersionUnreached),
     VersionPresence (VersionServed),
@@ -50,7 +49,7 @@ import Ecluse.Runtime.Maintenance.CodeArtifact.Decide (
     consentTagValue,
     cursorTagKey,
  )
-import Ecluse.Test.Maintenance (withBucket)
+import Ecluse.Test.Maintenance (unwiredRead, withBucket)
 
 {- | The CodeArtifact handle's facts and the sequencing around its calls, driven over 'ControlPlane'
 answers built from @amazonka@'s own types. Each decision is covered in "Ecluse.Runtime.Maintenance.CodeArtifact.DecideSpec".
@@ -436,11 +435,6 @@ testAlphabet = mkNameAlphabet "al"
 
 handleOver :: CodeArtifactStore -> ControlPlane -> StoreMaintenance
 handleOver = maintenanceFor testAlphabet unwiredRead
-
-{- The manifest read is the composition root's, not this leaf's, so these cases hand it one that
-reports being unwired rather than one that reaches a store. -}
-unwiredRead :: StoreManifestRead
-unwiredRead _ = pure (Left (faultSaying "the spec wired no manifest read"))
 
 listBucket :: CodeArtifactStore -> ControlPlane -> Text -> IO (Either StoreFault [PackageName])
 listBucket store plane raw =
