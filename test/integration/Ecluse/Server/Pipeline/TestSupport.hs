@@ -15,8 +15,8 @@ module Ecluse.Server.Pipeline.TestSupport (
 
     -- * Upstream doubles
     Upstream,
-    recordingUpstream,
     servingUpstream,
+    servingUpstreamPer,
     failingUpstream,
     mutatingUpstream,
     twoServingUpstreams,
@@ -63,7 +63,6 @@ module Ecluse.Server.Pipeline.TestSupport (
     -- * The proxy harness
     newTestEnvWithQueue,
     withProxyOver,
-    withProxyEnvQueueDepsHosts,
     withProxyEnvQueueDeps,
     withProxyEnvQueue,
     withProxyEnv,
@@ -72,6 +71,8 @@ module Ecluse.Server.Pipeline.TestSupport (
 
     -- * Request drivers
     getPath,
+    getPathWith,
+    postPath,
     getThing,
     getThingWith,
     headThing,
@@ -106,7 +107,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (UTCTime), fromGregorian, nominalDay)
 import Katip (LogEnv)
 import Network.HTTP.Client (Manager, defaultManagerSettings, newManager)
-import Network.HTTP.Types (Header, Method, hAuthorization, methodGet, methodHead, status200, status304, status404, status500)
+import Network.HTTP.Types (Header, Method, hAuthorization, methodGet, methodHead, methodPost, status200, status304, status404, status500)
 import Network.HTTP.Types.Header (hETag, hHost)
 import Network.Wai (Application, Request (rawPathInfo, requestHeaders, requestMethod), Response, responseLBS, responseRaw)
 import Network.Wai.Handler.Warp (testWithApplication)
@@ -146,8 +147,8 @@ import Ecluse.Test.Queue (newTestMemoryQueue)
 import Ecluse.Test.Registry.Npm (VersionSpec (..), packumentValue, versionSpec, versionValue)
 import Ecluse.Test.Registry.Npm qualified as NpmFixture (publishedDaysAgo)
 import Ecluse.Test.Rules (atDefaultPrecedence, inertRuleDeps)
-import Ecluse.Test.Server.Mount (npmServeDeps, withEcosystemHosts)
-import Ecluse.Test.Wai (decodedBody, localhost, lookupAuth, lookupIfNoneMatch, selfBaseUrl)
+import Ecluse.Test.Server.Mount (npmServeDeps)
+import Ecluse.Test.Wai (decodedBody, localhost, lookupAuth, lookupIfNoneMatch, rebaseAuthority, selfBaseUrl)
 
 -- | A fixed "now" so the age-based admit/deny axis is deterministic under test.
 now :: UTCTime
@@ -194,9 +195,18 @@ recordingUpstreamIO respondTo = do
 upstreamRespondingWith :: Response -> IO Upstream
 upstreamRespondingWith response = recordingUpstream (const response)
 
--- | An upstream double serving a fixed packument body with @200@.
+{- | An upstream double serving a fixed packument body with @200@, its artifact locations
+re-pointed at the port this double came up on ('fixtureAuthority').
+-}
 servingUpstream :: LByteString -> IO Upstream
-servingUpstream body = upstreamRespondingWith (responseLBS status200 [] body)
+servingUpstream = servingUpstreamPer . const
+
+{- | 'servingUpstream' over a body that depends on the request, for a double whose answer turns on
+what the client sent.
+-}
+servingUpstreamPer :: (Request -> LByteString) -> IO Upstream
+servingUpstreamPer bodyFor =
+    recordingUpstream (\req -> bodyAt (\base -> rebaseAuthority fixtureAuthority base (bodyFor req)) req)
 
 {- | An upstream double that always answers @500@: a failed or unavailable upstream,
 for the partial-upstream-availability and no-survivors paths.
@@ -210,7 +220,9 @@ A test changes what upstream returns between two requests inside the cache TTL.
 mutatingUpstream :: NonEmpty LByteString -> IO Upstream
 mutatingUpstream bodies = do
     remaining <- newIORef (toList bodies)
-    recordingUpstreamIO (const (responseLBS status200 [] <$> atomicModifyIORef' remaining serveNext))
+    recordingUpstreamIO $ \req -> do
+        body <- atomicModifyIORef' remaining serveNext
+        pure (bodyAt (\base -> rebaseAuthority fixtureAuthority base body) req)
   where
     -- Serve the head and advance, but hold on the last body once exhausted.
     serveNext :: [LByteString] -> ([LByteString], LByteString)
@@ -465,12 +477,18 @@ The @scripts@ field flags an install script when asked.
 versionObject :: Text -> Text -> Bool -> Value
 versionObject version integrity hasInstall =
     versionValue
-        ( (versionFixture version ("https://upstream.example/thing/-/thing-" <> version <> ".tgz"))
+        ( (versionFixture version (fixtureAuthority <> "/thing/-/thing-" <> version <> ".tgz"))
             { vsIntegrity = Just integrity
             , vsShasum = Just validShasum
             , vsHasInstallScript = hasInstall
             }
         )
+
+{- | The authority a committed version fixture names its @dist.tarball@ on. A serving double
+re-points it at its own, so the location the projection gates is one the double served.
+-}
+fixtureAuthority :: Text
+fixtureAuthority = "https://upstream.example"
 
 -- A @thing@ version fixture with the unmodelled field the relay assertions preserve.
 versionFixture :: Text -> Text -> VersionSpec
@@ -500,7 +518,7 @@ refuses such a version from a public upstream, and exempts a private one.
 shasumOnlyVersion :: Text -> Value
 shasumOnlyVersion version =
     versionValue
-        ( (versionFixture version ("https://upstream.example/thing/-/thing-" <> version <> ".tgz"))
+        ( (versionFixture version (fixtureAuthority <> "/thing/-/thing-" <> version <> ".tgz"))
             { vsShasum = Just validShasum
             }
         )
@@ -510,7 +528,7 @@ refuses such a version from a public upstream.
 -}
 hashlessVersion :: Text -> Value
 hashlessVersion version =
-    versionValue (versionFixture version ("https://upstream.example/thing/-/thing-" <> version <> ".tgz"))
+    versionValue (versionFixture version (fixtureAuthority <> "/thing/-/thing-" <> version <> ".tgz"))
 
 {- | A version whose @dist@ carries empty-string @integrity@ and @shasum@. The projection normalises
 an empty digest to absent, so admission refuses it as 'NoIntegrity', not 'BelowFloor'.
@@ -518,7 +536,7 @@ an empty digest to absent, so admission refuses it as 'NoIntegrity', not 'BelowF
 emptyDigestVersion :: Text -> Value
 emptyDigestVersion version =
     versionValue
-        ( (versionFixture version ("https://upstream.example/thing/-/thing-" <> version <> ".tgz"))
+        ( (versionFixture version (fixtureAuthority <> "/thing/-/thing-" <> version <> ".tgz"))
             { vsIntegrity = Just ""
             , vsShasum = Just ""
             }
@@ -585,35 +603,18 @@ withProxyOver ::
     Upstream ->
     Upstream ->
     Maybe Text ->
-    (PackumentDeps -> [Text]) ->
     (PackumentDeps -> PackumentDeps) ->
     -- The continuation sees the proxy application, its 'Env' (to drain the queue),
     -- and the public upstream's ephemeral port (to assert an enqueued artifact URL).
     (forall a. (Application -> Env -> Int -> IO a) -> IO a)
-withProxyOver logEnv queue privateUp publicUp inbound hostsOf tweakDeps k =
+withProxyOver logEnv queue privateUp publicUp inbound tweakDeps k =
     testWithApplication (pure (upApp privateUp)) $ \privatePort ->
         testWithApplication (pure (upApp publicUp)) $ \publicPort -> do
             manager <- newManager defaultManagerSettings
             env <- newTestEnvLogging logEnv queue (manager, manager) telemetryDisabled
             baseDeps <- deps privatePort publicPort inbound
-            let tweaked = tweakDeps baseDeps
-                cfg = mkServerConfig (maybeToList (mountBindingFor Npm (withEcosystemHosts (hostsOf tweaked) tweaked) Nothing))
+            let cfg = mkServerConfig (maybeToList (mountBindingFor Npm (tweakDeps baseDeps) Nothing))
             k (application cfg env) env publicPort
-
-{- | 'withProxyOver' over the default test log environment, with the tarball-host gate also
-declaring ecosystem artifact hosts computed from the tweaked deps.
--}
-withProxyEnvQueueDepsHosts ::
-    MirrorQueue ->
-    Upstream ->
-    Upstream ->
-    Maybe Text ->
-    (PackumentDeps -> [Text]) ->
-    (PackumentDeps -> PackumentDeps) ->
-    (forall a. (Application -> Env -> Int -> IO a) -> IO a)
-withProxyEnvQueueDepsHosts queue privateUp publicUp inbound hostsOf tweakDeps k = do
-    logEnv <- newTestLogEnv
-    withProxyOver logEnv queue privateUp publicUp inbound hostsOf tweakDeps k
 
 {- | Like 'withProxyEnvQueue', but the mount's 'PackumentDeps' passes through the given transform
 first, so a test can break one origin's base URL without a new harness.
@@ -625,8 +626,9 @@ withProxyEnvQueueDeps ::
     Maybe Text ->
     (PackumentDeps -> PackumentDeps) ->
     (forall a. (Application -> Env -> Int -> IO a) -> IO a)
-withProxyEnvQueueDeps queue privateUp publicUp inbound =
-    withProxyEnvQueueDepsHosts queue privateUp publicUp inbound (const [])
+withProxyEnvQueueDeps queue privateUp publicUp inbound tweakDeps k = do
+    logEnv <- newTestLogEnv
+    withProxyOver logEnv queue privateUp publicUp inbound tweakDeps k
 
 {- | Run an assertion against a proxy over the two in-process upstream doubles and the given mirror
 queue. Warp hosts the doubles on ephemeral ports. The test drives the proxy through a WAI session.
@@ -695,6 +697,18 @@ requestAt method path base = runSession (request (setPath base path){requestMeth
 -- | A @GET@ at the given path with no credential: the arbitrary-path generalisation of 'getThing'.
 getPath :: ByteString -> Application -> IO SResponse
 getPath path = requestAt methodGet path defaultRequest
+
+{- | A @GET@ at the given path carrying the given request headers, for a path whose answer turns
+on what the client says it accepts.
+-}
+getPathWith :: [Header] -> ByteString -> Application -> IO SResponse
+getPathWith extra path = requestAt methodGet path (headersRequest extra)
+
+{- | A @POST@ at the given path with no credential and no body, for a route whose answer turns
+on the method alone.
+-}
+postPath :: ByteString -> Application -> IO SResponse
+postPath path = requestAt methodPost path defaultRequest
 
 -- | A @GET \/npm\/thing@ request carrying the given (optional) bearer credential.
 getThing :: Maybe Text -> Application -> IO SResponse

@@ -319,9 +319,9 @@ spec = do
 
         it "refuses an enabled ecosystem with no adapter with exit 2" $ do
             traverse_ (uncurry setEnv) runEnv
-            setEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true"
+            setEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true"
             outcome <- try (withArgs ["check-config"] run) :: IO (Either ExitCode ())
-            unsetEnv "ECLUSE_MOUNTS__PYPI__ENABLED"
+            unsetEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED"
             traverse_ (unsetEnv . fst) runEnv
             outcome `shouldBe` Left (ExitFailure 2)
 

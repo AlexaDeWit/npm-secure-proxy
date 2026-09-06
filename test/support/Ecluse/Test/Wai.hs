@@ -12,6 +12,8 @@ module Ecluse.Test.Wai (
     -- * Addressing an in-process stub
     localhost,
     selfBaseUrl,
+    selfBaseUrlOf,
+    rebaseAuthority,
     freePort,
 
     -- * Reading a request
@@ -36,6 +38,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as LBS
 import Data.CaseInsensitive qualified as CI
 import Data.List (lookup)
+import Data.Text qualified as T
 import Network.HTTP.Types (Header, hAuthorization, statusCode, statusMessage)
 import Network.HTTP.Types.Header (hHost, hIfNoneMatch)
 import Network.Socket (close)
@@ -53,7 +56,18 @@ localhost port = "http://localhost:" <> show port
 harness's ephemeral port appears. An absent header falls back to @http:\/\/localhost@.
 -}
 selfBaseUrl :: Request -> Text
-selfBaseUrl req = "http://" <> maybe "localhost" decodeUtf8 (lookup hHost (requestHeaders req))
+selfBaseUrl = selfBaseUrlOf . requestHeaders
+
+-- | 'selfBaseUrl' over headers alone, for a stub that records what it was sent rather than serving.
+selfBaseUrlOf :: [Header] -> Text
+selfBaseUrlOf headers = "http://" <> maybe "localhost" decodeUtf8 (lookup hHost headers)
+
+{- | Re-point every location a fixture body names at another authority. A committed fixture names
+one fixed host, and an artifact location on any authority but the one that served the document is
+dropped at projection, so a stub serving that fixture must first make the locations its own.
+-}
+rebaseAuthority :: Text -> Text -> LByteString -> LByteString
+rebaseAuthority from to = encodeUtf8 . T.replace from to . decodeUtf8
 
 {- | A TCP port nothing holds, released as soon as it is found so the listener under test binds
 it itself. A brief race with another process is tolerable on loopback.

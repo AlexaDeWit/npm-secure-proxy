@@ -94,7 +94,7 @@ spec = do
         it "a path claimed by no documented route denies by default" $
             -- The catch-all the manifest documents is real: no route in the table claims
             -- this path, so the router answers it with the deny-by-default 404.
-            isJust (matchRoute npmRoutes (renderStdMethod GET) ["not", "a", "known", "route"]) `shouldBe` False
+            isJust (matchRoute npmRoutes (renderStdMethod GET) [] ["not", "a", "known", "route"]) `shouldBe` False
         it "Search carries 501" $
             (statusCodes <$> getOp "/npm/-/v1/search") `shouldBe` Just [501]
         it "the dist-tag read, write, and removal all carry 501" $ do
@@ -119,6 +119,10 @@ spec = do
                 `shouldBe` Just ["application/json"]
         it "operations are tagged by ecosystem (npm)" $
             (InsOrdSet.member "npm" . _operationTags <$> getOp "/npm/{package}") `shouldBe` Just True
+        it "the pypi Simple index documents its 406 and its own served media type" $ do
+            (statusCodes <$> getOp "/pypi/simple/{project}") `shouldBe` Just [200, 304, 401, 403, 404, 406, 500, 502, 503]
+            (mediaTypesAt 200 <$> getOp "/pypi/simple/{project}")
+                `shouldBe` Just ["application/vnd.pypi.simple.v1+json"]
   where
     doc :: OpenApi
     doc = buildOpenApi canonicalManifestSource
@@ -137,6 +141,11 @@ spec = do
 
     statusCodes :: Operation -> [Int]
     statusCodes = sort . InsOrd.keys . _responsesResponses . _operationResponses
+
+    -- The media types one exact status is documented under.
+    mediaTypesAt :: Int -> Operation -> [String]
+    mediaTypesAt status =
+        maybe [] responseMediaTypes . InsOrd.lookup status . _responsesResponses . _operationResponses
 
     defaultMediaTypes :: Operation -> [String]
     defaultMediaTypes =

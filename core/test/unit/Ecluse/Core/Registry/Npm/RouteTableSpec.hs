@@ -43,22 +43,41 @@ import Test.Hspec.QuickCheck (modifyMaxSuccess)
 
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (PackageName, mkPackageName, mkScope, unscopedName)
-import Ecluse.Core.Registry.Npm.Route (npmRoutes, takePackage, tarballCoordinate)
+import Ecluse.Core.Registry.Npm.Route (NpmCap (NpmFilename, NpmPackage), npmRoutes, takePackage, tarballCoordinate, tarballPath)
 import Ecluse.Core.Server.Path (isSafeComponent)
 import Ecluse.Core.Server.Route (Route (routeName), RouteName (RouteName), matchRoute)
 import Ecluse.Core.Version (mkVersion)
 import Ecluse.Test.Package (unsafeFilename)
 import Ecluse.Test.Registry.Npm (genPathSegments)
+import Ecluse.Test.Server.Route (claimsEveryRendering)
 
 {- | The route a request takes: the name of the first route to claim it, or 'Nothing' when
 none does (the deny-by-default @404@). These examples assert only which route claimed the
 request, never what its closure serves.
 -}
 matchedId :: Method -> [Text] -> Maybe RouteName
-matchedId method segments = routeName . fst <$> matchRoute npmRoutes method segments
+-- npm's routes negotiate no media type, so the reference routes with no Accept header.
+matchedId method segments = routeName . fst <$> matchRoute npmRoutes method [] segments
 
 spec :: Spec
 spec = do
+    describe "every rendered tarball URL is one this table claims" $ do
+        it "claims the artifact route's own rendering, scoped or not" $
+            -- A rewritten dist.tarball no route claims is a 404 on every install, and one a
+            -- different route claims is worse. The render and the match are one record. The
+            -- file name is one the route's own coordinate check accepts, because a rendering
+            -- for a name it refuses is a URL this mount would never have served.
+            hedgehog $ do
+                name <- forAll genPackageName
+                file <- forAll (genTarballName name)
+                claimsEveryRendering npmRoutes (RouteName "tarball") [NpmPackage name, NpmFilename file]
+
+        it "renders the path the served packument rewrites a tarball onto" $ do
+            tarballPath (mkPackageName Npm Nothing "lodash") "lodash-4.17.21.tgz"
+                `shouldBe` Just "lodash/-/lodash-4.17.21.tgz"
+            tarballPath (mkPackageName Npm (Just (mkScope "babel")) "code-frame") "code-frame-7.0.0.tgz"
+                `shouldBe` Just "@babel/code-frame/-/code-frame-7.0.0.tgz"
+
     describe "npm's route table (differential against an independent reference)" $ do
         modifyMaxSuccess (const 5000) $
             it "claims the same route as the reference, over generated requests" $
@@ -199,6 +218,23 @@ genPackageUnit =
         , (2, (\scope base -> [scope, base]) <$> Gen.element ["@babel", "@acme"] <*> Gen.element ["core", "widget"])
         , (2, (: []) <$> Gen.element ["-", "..", "foo/bar", "@babel", ""])
         ]
+
+-- A package identity the render property builds a URL for: unscoped or scoped, both encodings
+-- of which the artifact route claims.
+genPackageName :: Gen PackageName
+genPackageName =
+    Gen.choice
+        [ mkPackageName Npm Nothing <$> Gen.element ["lodash", "is-odd", "pkg"]
+        , mkPackageName Npm . Just . mkScope <$> Gen.element ["babel", "acme"] <*> Gen.element ["core", "widget"]
+        ]
+
+{- An artifact file name for one package, in npm's own convention: the unscoped name, the
+version, and the @.tgz@ suffix. It is what a real dist.tarball ends in, and what the route's
+cross-capture check accepts. -}
+genTarballName :: PackageName -> Gen Text
+genTarballName name = do
+    version <- Gen.element ["1.0.0", "4.17.21", "0.0.1-rc.1", "7.0.0"]
+    pure (unscopedName name <> "-" <> version <> ".tgz")
 
 -- The tag slot: four names the capture accepts, two components it must refuse.
 genTagSeg :: Gen Text

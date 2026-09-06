@@ -96,7 +96,8 @@ module Ecluse.Runtime.Server (
 import Data.List (dropWhileEnd)
 import Katip (Severity (ErrorS), katipAddContext, logFM, sl)
 import Network.HTTP.Types (Method, status500)
-import Network.Wai (Application, Middleware, Request, Response, ResponseReceived, pathInfo, rawPathInfo, requestMethod)
+import Network.HTTP.Types.Header (RequestHeaders)
+import Network.Wai (Application, Middleware, Request, Response, ResponseReceived, pathInfo, rawPathInfo, requestHeaders, requestMethod)
 import Network.Wai.Handler.Warp qualified as Warp
 import Network.Wai.Middleware.RealIp (realIp)
 import Network.Wai.Middleware.Timeout (timeout)
@@ -108,9 +109,10 @@ import UnliftIO.Exception (catchAny, throwIO)
 import Ecluse.Core.Server.Context (
     MountBinding (..),
     RequestCtx (RequestCtx),
-    ResponseAction (AnswerLocally, RunPipeline),
+    ResponseAction (AnswerLocally, AnswerRefusal, RunPipeline),
     RouteAction (RouteAction),
     ServeRuntime (srMetrics),
+    pdHelp,
     runHandler,
  )
 import Ecluse.Core.Server.Contract (responseToWai)
@@ -221,7 +223,7 @@ health probes, which answer @\/livez@ and @\/readyz@ and give the rest the neutr
 -}
 dispatch :: ServerConfig -> Env -> Application
 dispatch cfg env request respond =
-    case matchMount (requestMethod request) (scMounts cfg) (pathInfo request) of
+    case matchMount (requestMethod request) (requestHeaders request) (scMounts cfg) (pathInfo request) of
         Just (binding, action) -> serve env binding action request respond
         Nothing -> probeApplication (scDrain cfg) (scCheckReady cfg) (scCheckLive cfg) request respond
 
@@ -232,6 +234,9 @@ serve :: Env -> MountBinding -> RouteAction -> Request -> (Response -> IO Respon
 serve env binding (RouteAction contract action) request respond =
     case action of
         AnswerLocally answer -> send answer
+        -- This is where a route's own refusal meets the mount's help message: the table decides
+        -- the refusal, and the binding beside it renders the body.
+        AnswerRefusal render -> send (render (pdHelp (bindingPackumentDeps binding)))
         RunPipeline fallback handler -> perimeterGuard observeFault send fallback (run . handler request)
   where
     send value = respond (responseToWai contract value)
@@ -296,14 +301,15 @@ perimeterGuard observeFault respond fallback handlerOn = do
 paired with the action its router names for the remainder. A prefix matches with or
 without a trailing slash, so @\/npm\/pkg@ and a bare @\/npm@ both hit the @\/npm@ mount.
 -}
-matchMount :: Method -> [MountBinding] -> [Text] -> Maybe (MountBinding, RouteAction)
-matchMount method mounts segments = asum (map match mounts)
+matchMount :: Method -> RequestHeaders -> [MountBinding] -> [Text] -> Maybe (MountBinding, RouteAction)
+matchMount method headers mounts segments = asum (map match mounts)
   where
-    -- The method is part of the mapping: the npm router tells a @PUT@ publish from a @GET@
-    -- read over the same path, and a @HEAD@ from the @GET@ it varies.
+    {- The method is part of the mapping: the npm router tells a @PUT@ publish from a @GET@
+    read over the same path, and a @HEAD@ from the @GET@ it varies. The headers are too: a
+    route serving one media type refuses a client that admits no such thing. -}
     match :: MountBinding -> Maybe (MountBinding, RouteAction)
     match binding =
-        (binding,) . bindingRouter binding method
+        (binding,) . bindingRouter binding method headers
             <$> stripPrefixSegments (toList (bindingPrefix binding)) segments
 
 {- Strip a mount's prefix segments off the front of a request path. The root mount (an

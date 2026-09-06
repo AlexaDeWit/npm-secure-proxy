@@ -99,7 +99,7 @@ import Network.Wai (Request, ResponseReceived, requestHeaders)
 import UnliftIO (concurrently)
 import UnliftIO.Exception (catchAny, throwIO)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Package (
     PackageInfo (infoVersions),
     PackageName,
@@ -159,11 +159,12 @@ import Ecluse.Core.Server.Pipeline.Origin (
 import Ecluse.Core.Server.Pipeline.Shared
 import Ecluse.Core.Server.Response (
     PackumentStatus (PackumentBadGateway, PackumentForbidden, PackumentOk, PackumentServerError, PackumentUnavailable),
+    Refusal,
     RejectReason (Unavailable, UpstreamInvalid),
     Rejection (Rejection, rejectionMessage),
     ServeDecision (Admit, Reject),
     Transience (WillResolve),
-    appendHelp,
+    mkRefusal,
     packumentStatus,
     serveDecisionOf,
  )
@@ -178,12 +179,12 @@ The pipeline receives no WAI responder, so every branch selects one of these alt
 data PackumentReplies response = PackumentReplies
     { packumentOk :: ResponseHeaders -> LByteString -> response
     , packumentNotModified :: ResponseHeaders -> response
-    , packumentUnauthorised :: ResponseHeaders -> Text -> response
-    , packumentForbidden :: ResponseHeaders -> Text -> response
-    , packumentNotFound :: ResponseHeaders -> Text -> response
-    , packumentInternal :: ResponseHeaders -> Text -> response
-    , packumentBadGateway :: ResponseHeaders -> Text -> response
-    , packumentUnavailable :: ResponseHeaders -> Text -> response
+    , packumentUnauthorised :: ResponseHeaders -> Refusal -> response
+    , packumentForbidden :: ResponseHeaders -> Refusal -> response
+    , packumentNotFound :: ResponseHeaders -> Refusal -> response
+    , packumentInternal :: ResponseHeaders -> Refusal -> response
+    , packumentBadGateway :: ResponseHeaders -> Refusal -> response
+    , packumentUnavailable :: ResponseHeaders -> Refusal -> response
     }
 
 {- | Serve a @GET \/{pkg}@ packument: fetch both upstreams concurrently, gate the public
@@ -245,20 +246,20 @@ serveWithDeps ::
     PackumentServe ->
     PackumentReplies response ->
     PackumentDeps ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     PackageName ->
     Request ->
     (response -> IO ResponseReceived) ->
     Handler ResponseReceived
 serveWithDeps mode replies deps clientToken name request respond
     | not (edgeTokenMatches (pdInboundToken deps) clientToken) =
-        liftIO (respond (packumentUnauthorised replies [] unauthorisedMessage))
+        liftIO (respond (packumentUnauthorised replies [] (mkRefusal Nothing unauthorisedMessage)))
     | otherwise = do
         rt <- asks ctxRuntime
         withAdmissionOrShed
             (srMetrics rt)
             (srAdmission rt)
-            (liftIO (respond (packumentUnavailable replies [shedRetryAfter] shedMessage)))
+            (liftIO (respond (packumentUnavailable replies [shedRetryAfter] (mkRefusal Nothing shedMessage))))
             (serveAdmittedPackument mode replies deps clientToken name request respond rt)
             pure
 
@@ -269,7 +270,7 @@ serveAdmittedPackument ::
     PackumentServe ->
     PackumentReplies response ->
     PackumentDeps ->
-    Maybe Secret ->
+    Maybe ClientCredential ->
     PackageName ->
     Request ->
     (response -> IO ResponseReceived) ->
@@ -310,7 +311,7 @@ serveAdmittedPackument mode replies deps clientToken name request respond rt = d
 
 {- Resolve the origins this request may read: a first-party name reads the private origin alone
 and never the public leg. Every other name reads both concurrently. -}
-resolveOrigins :: PackumentDeps -> ServeRuntime -> Maybe Secret -> PackageName -> Handler (OriginResult, OriginResult)
+resolveOrigins :: PackumentDeps -> ServeRuntime -> Maybe ClientCredential -> PackageName -> Handler (OriginResult, OriginResult)
 resolveOrigins deps rt clientToken name
     | pdFirstParty deps name = do
         privResult <- fetchPrivateOrigin deps rt clientToken name
@@ -324,7 +325,7 @@ resolveOrigins deps rt clientToken name
 this deployment, so no public document may stand in for it. -}
 firstPartyAbsent :: PackumentReplies response -> PackumentDeps -> PackageName -> response
 firstPartyAbsent replies deps name =
-    packumentNotFound replies [] (appendHelp (pdHelp deps) message)
+    packumentNotFound replies [] (mkRefusal (pdHelp deps) message)
   where
     message :: Text
     message =
@@ -566,7 +567,7 @@ noSurvivors replies deps decisions = case status of
         [] -> "no versions are available for this package"
         reasons -> T.intercalate "; " reasons
 
-    body = appendHelp (pdHelp deps) message
+    body = mkRefusal (pdHelp deps) message
 
     rejectionText :: ServeDecision -> Maybe Text
     rejectionText = \case

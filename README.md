@@ -15,7 +15,8 @@ trusting it: the keyless provenance and SBOM attestations, and the bit-for-bit r
 rebuild.
 
 > **Status: generally available, pre-1.0.0.** The npm packument, tarball, and publish paths
-> run today and are ready for use. An AWS-backed deployment is wired end to end: an SQS
+> run today and are ready for use. A `pypi` mount serves reads, the PEP 691 Simple index and
+> the distribution files under it, and writes nothing. An AWS-backed deployment is wired end to end: an SQS
 > mirror queue, a demand-driven worker, and writes under a container-role credential. The
 > GCP backends and the deployment runbook are still to come. Configuration can still change
 > before `v1.0.0`, though repeated future-proofing passes aim to keep changes additive. The
@@ -27,9 +28,9 @@ rebuild.
 
 Écluse is a proxy you put in front of public package registries to protect the builds that install
 from them. Point your CI and developer tooling at Écluse instead of at a public registry. Écluse
-fetches from that registry on their behalf and decides which versions a build may install. The npm
-registry is the first one supported, and any client that speaks its protocol works, such as npm,
-pnpm, yarn, or bun.
+fetches from that registry on their behalf and decides which versions a build may install. npm was
+the first protocol supported, and any client that speaks it works, such as npm, pnpm, yarn, or bun.
+PyPI is served for reads, so pip, uv, and Poetry install through the same gate.
 
 A new public version waits in a quarantine, seven days by default, before a build can install it.
 Most malicious publishes are found and pulled within days, so the wait alone sidesteps them, with no

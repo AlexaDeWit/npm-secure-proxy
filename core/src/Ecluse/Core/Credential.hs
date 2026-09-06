@@ -39,6 +39,10 @@ module Ecluse.Core.Credential (
     mkSecret,
     unSecret,
 
+    -- * A client's presented credential
+    ClientCredential (..),
+    bareCredential,
+
     -- * In-memory double
     staticProvider,
 ) where
@@ -70,6 +74,21 @@ the class method.
 -}
 instance Show Secret where
     showsPrec _ _ = showString "Secret <REDACTED>"
+
+{- | A credential as a client presents it. The username is not part of the secret: a gate
+compares 'credSecret' alone, and a passthrough leg renders the pair verbatim.
+-}
+data ClientCredential = ClientCredential
+    { credUsername :: Maybe Text
+    -- ^ The username the client presented, when its scheme carries one.
+    , credSecret :: Secret
+    -- ^ The secret half, the only half any gate compares.
+    }
+    deriving stock (Eq, Show)
+
+-- | A credential carrying no username, the form a bearer scheme recovers and a configured token takes.
+bareCredential :: Secret -> ClientCredential
+bareCredential = ClientCredential Nothing
 
 -- | Wrap raw token text as a 'Secret'.
 mkSecret :: Text -> Secret

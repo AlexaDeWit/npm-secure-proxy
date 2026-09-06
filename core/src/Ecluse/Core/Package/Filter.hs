@@ -2,59 +2,15 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The ecosystem-agnostic filtering /decision/ for a single public-upstream
-packument. It says which versions survive a rule set, which version @dist-tags.latest@
-resolves to, and the per-version decisions a no-survivors outcome must report.
+{- | The ecosystem-agnostic decisions one public-upstream document needs before it is served.
 
-This mirrors "Ecluse.Core.Package.Merge": the pure fold above the registry handle that
-emits a __plan__ rather than a finished document. It reasons over the typed
-'Ecluse.Core.Package.PackageInfo' domain model only, and never touches a registry's wire
-format. The per-ecosystem adapter __replays__ this plan onto the raw upstream
-document, so unmodeled wire keys survive. The typed model is lossy, so re-encoding it
-would drop them. See @docs\/architecture\/registry-model.md@ → "Decision surface vs
-served surface".
-
-__Decision, not served surface.__ A 'FilterPlan' carries exactly the decisions the
-filter owns:
-
-* __Survivors.__ A version key survives iff the rules engine 'Admitted' it. Every
-  other verdict drops it: a denial, deny-by-default, or an undecidable outcome.
-  Presence in the served packument /is/ availability, so the filter removes a
-  non-approved version rather than flagging it.
-
-* __Resolved @latest@.__ The surviving @dist-tags.latest@ under the shared
-  __keep-unless-denied, stable-preferring__ rule ('Ecluse.Core.Version.selectLatest').
-  The upstream @latest@ stays untouched while it survives. The filter repoints it to
-  the highest /stable/ survivor only when the tagged version was itself denied. This is
-  the @latest@ /within the public set/, which the cross-upstream merge then re-resolves
-  over the union. It is not the final served @latest@.
-
-* __Decisions.__ Every version's 'Decision', in version-key order, so a
-  no-survivors outcome can render each denial and choose a status.
-
-The plan deliberately omits any "dropped tags" list. A stale tag is one whose target
-did not survive. The survivor set alone drops it __structurally__: a tag survives iff
-its target is in 'fpSurvivors'. The replay therefore needs no extra field to find
-one. The plan stays minimal: the decisions the filter owns, nothing the replay
-can recompute.
-
-This filters a __single public packument__ (the gated set). Combining it with the
-trusted /private/ set is the cross-upstream merge ("Ecluse.Core.Package.Merge").
-
-== Egress-scheme enforcement
-
-The module also owns the other ecosystem-agnostic reduction a fetched packument needs
-before serve. It normalises every served artifact URL against the https-only egress policy
-('Ecluse.Core.Security.Egress.resolveTarballUrl'). The upstream base URL that served the
-packument parameterises that normalisation. Like the filter above, it reasons over the
-domain model and the agnostic egress policy alone, with no wire format in sight. It is
-therefore the projection post-step every ecosystem shares rather than copies. A divergent
-copy of an egress-policy application is exactly the drift the policy's
-correct-by-construction design exists to prevent. PyPI and RubyGems put artifacts on
-foreign hosts, so that matters there even more than for npm. It keeps an https artifact
-URL and upgrades a same-host @http@ URL to https. It drops a version whose artifact is
-@http@ on a foreign host, or on any non-http(s) URL, from the served set. It records each
-drop as an 'Ecluse.Core.Package.InvalidVersionManifest'.
+A 'FilterPlan' says which versions survive the rule set (presence in the served document /is/
+availability), where @dist-tags.latest@ resolves within the public set, and every version's
+'Decision' for a no-survivors outcome to render. It carries no dropped-tag list, because a tag
+survives exactly when its target does. The adapter replays the plan onto the raw document, so
+unmodelled wire keys survive. 'enforceArtifactLocations' is the other agnostic reduction: per
+artifact, the scheme normalises against the https-only egress policy and the authority must be
+honoured for the origin that served the document, the same check the download gate applies.
 -}
 module Ecluse.Core.Package.Filter (
     -- * Rule-filter plan
@@ -62,9 +18,9 @@ module Ecluse.Core.Package.Filter (
     filterPlanFromDecisions,
     restrictToSurvivors,
 
-    -- * Egress-scheme enforcement
-    enforceArtifactScheme,
-    enforceArtifactSchemeDetails,
+    -- * Served-location enforcement
+    enforceArtifactLocations,
+    enforceArtifactLocationsOf,
 ) where
 
 import Data.Aeson (Value (String))
@@ -73,15 +29,16 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 
 import Ecluse.Core.Package (
-    Artifact (artUrl),
-    InvalidEntryKind (InvalidVersionManifest),
+    Artifact (artFilename, artUrl),
+    InvalidEntry,
+    InvalidEntryKind (InvalidIndexFile, InvalidVersionManifest),
     PackageDetails (pkgArtifacts),
     PackageInfo (infoDistTags, infoInvalidEntries, infoVersions),
     mkInvalidEntry,
     pkgVersion,
  )
 import Ecluse.Core.Rules.Types (Decision (Admitted))
-import Ecluse.Core.Security (authorityLabel, hostAddress)
+import Ecluse.Core.Security (AllowedHostPorts, artifactAuthorityHonoured, authorityLabel, hostAddress, hostPortAddress)
 import Ecluse.Core.Security.Egress (registryUrlText, resolveTarballUrl)
 import Ecluse.Core.Version (Version, renderVersion, selectLatest)
 
@@ -104,9 +61,8 @@ data FilterPlan = FilterPlan
     }
     deriving stock (Eq, Show)
 
-{- | Build a 'FilterPlan' from per-version 'Decision's already taken. The decision map __must__
-cover every version of the packument, because an undecided version does not survive.
-A version survives iff its decision is 'Admitted'. Every other verdict drops it, fail-closed.
+{- | Build a 'FilterPlan' from per-version 'Decision's already taken. A version survives iff its
+decision is 'Admitted', so an undecided one drops fail-closed.
 -}
 filterPlanFromDecisions :: Map Text Decision -> PackageInfo -> FilterPlan
 filterPlanFromDecisions decisions info =
@@ -150,52 +106,79 @@ restrictToSurvivors survivors info =
         , infoDistTags = Map.filter ((`Set.member` survivors) . renderVersion) (infoDistTags info)
         }
 
-{- | Normalise each served artifact URL against the https-only egress policy
-('Ecluse.Core.Security.Egress.resolveTarballUrl'): upgrade a same-host @http@ URL, drop and record
-every other non-https version. Only an https upstream triggers this, sparing a test\/dev loopback.
+{- | Reduce a document to the artifact locations a client may be sent to, dropping each artifact
+the scheme or the authority refuses and each version left with none.
 -}
-enforceArtifactScheme :: Text -> PackageInfo -> PackageInfo
-enforceArtifactScheme upstreamBaseUrl info =
-    case httpsUpstreamHost upstreamBaseUrl of
-        Nothing -> info
-        Just upstreamHost ->
-            let (kept, drops) = Map.foldrWithKey (step upstreamHost) (Map.empty, []) (infoVersions info)
-             in info{infoVersions = kept, infoInvalidEntries = infoInvalidEntries info <> drops}
+enforceArtifactLocations :: AllowedHostPorts -> Text -> PackageInfo -> PackageInfo
+enforceArtifactLocations ecosystemHosts upstreamBaseUrl info =
+    info{infoVersions = kept, infoInvalidEntries = infoInvalidEntries info <> drops}
   where
-    step upstreamHost rawVersion details (keptAcc, dropAcc) =
-        case resolveDetails upstreamHost details of
-            Right ok -> (Map.insert rawVersion ok keptAcc, dropAcc)
-            Left (reason, badUrl) ->
-                -- The URL is known to be one here, so it is reduced whatever its spelling:
-                -- 'mkInvalidEntry' recognises only a scheme-bearing string.
-                (keptAcc, mkInvalidEntry InvalidVersionManifest rawVersion (String (authorityLabel badUrl)) reason : dropAcc)
+    (kept, drops) = Map.foldrWithKey step (Map.empty, []) (infoVersions info)
 
-{- | The single-version form of 'enforceArtifactScheme', for the selective decode path.
-'Nothing' means the artifact URL is non-https and not upgradeable, so the version drops.
+    step rawVersion details (keptAcc, dropAcc) =
+        case partitionArtifacts ecosystemHosts upstreamBaseUrl rawVersion details of
+            (Just survivors, fileDrops) -> (Map.insert rawVersion survivors keptAcc, fileDrops <> dropAcc)
+            (Nothing, emptied) -> (keptAcc, emptied <> dropAcc)
+
+{- | The single-version form of 'enforceArtifactLocations', for the selective decode path.
+'Nothing' means no artifact of the version survived, so the version drops.
 -}
-enforceArtifactSchemeDetails :: Text -> PackageDetails -> Maybe PackageDetails
-enforceArtifactSchemeDetails upstreamBaseUrl details =
-    case httpsUpstreamHost upstreamBaseUrl of
-        Nothing -> Just details
-        Just upstreamHost -> rightToMaybe (resolveDetails upstreamHost details)
+enforceArtifactLocationsOf :: AllowedHostPorts -> Text -> PackageDetails -> Maybe PackageDetails
+enforceArtifactLocationsOf ecosystemHosts upstreamBaseUrl details =
+    fst (partitionArtifacts ecosystemHosts upstreamBaseUrl (renderVersion (pkgVersion details)) details)
+
+-- 'Nothing' survivors means the version itself drops, recorded once under its version key
+-- rather than once per file, so an emptied version reads as one loss.
+partitionArtifacts :: AllowedHostPorts -> Text -> Text -> PackageDetails -> (Maybe PackageDetails, [InvalidEntry])
+partitionArtifacts ecosystemHosts upstreamBaseUrl rawVersion details =
+    case nonEmpty (rights resolved) of
+        Just survivors -> (Just details{pkgArtifacts = survivors}, map fileDrop refusals)
+        Nothing -> (Nothing, map (versionDrop rawVersion) (take 1 refusals))
+  where
+    resolved = map (resolveArtifact ecosystemHosts upstreamBaseUrl) (toList (pkgArtifacts details))
+    refusals = lefts resolved
+
+{- The reason and the offending URL a refused artifact carries, named so a drop record can
+reduce the URL to its authority. -}
+data ArtifactRefusal = ArtifactRefusal
+    { refusedFile :: Text
+    , refusedReason :: Text
+    , refusedUrl :: Text
+    }
+
+{- Record one dropped file under its own name. 'mkInvalidEntry' recognises a scheme-bearing
+string, so the URL is reduced to its authority whatever its spelling. -}
+fileDrop :: ArtifactRefusal -> InvalidEntry
+fileDrop refusal =
+    mkInvalidEntry InvalidIndexFile (refusedFile refusal) (String (authorityLabel (refusedUrl refusal))) (refusedReason refusal)
+
+-- Record a version whose every artifact was refused, keyed by its raw version string.
+versionDrop :: Text -> ArtifactRefusal -> InvalidEntry
+versionDrop rawVersion refusal =
+    mkInvalidEntry InvalidVersionManifest rawVersion (String (authorityLabel (refusedUrl refusal))) (refusedReason refusal)
+
+-- A non-https upstream is a test or dev loopback, which the scheme step leaves alone. The
+-- authority check still applies, because the download gate applies it whatever the scheme.
+resolveArtifact :: AllowedHostPorts -> Text -> Artifact -> Either ArtifactRefusal Artifact
+resolveArtifact ecosystemHosts upstreamBaseUrl art = do
+    normalised <- normaliseScheme
+    if artifactAuthorityHonoured ecosystemHosts originAuthority (hostPortAddress (artUrl normalised))
+        then Right normalised
+        else Left (refusal "artifact authority is neither the serving upstream nor a declared artifact host" (artUrl normalised))
+  where
+    originAuthority = hostPortAddress upstreamBaseUrl
+
+    normaliseScheme = case httpsUpstreamHost upstreamBaseUrl of
+        Nothing -> Right art
+        Just upstreamHost -> case resolveTarballUrl upstreamHost (artUrl art) of
+            Right resolved -> Right art{artUrl = registryUrlText resolved}
+            Left reason -> Left (refusal reason (artUrl art))
+
+    refusal reason url = ArtifactRefusal{refusedFile = artFilename art, refusedReason = reason, refusedUrl = url}
 
 -- The bare host of an @https@ upstream base URL, or 'Nothing' for a non-https (test/dev
--- loopback) upstream whose artifact URLs the scheme enforcement leaves untouched.
+-- loopback) upstream whose artifact URLs the scheme normalisation leaves untouched.
 httpsUpstreamHost :: Text -> Maybe Text
 httpsUpstreamHost baseUrl
     | "https://" `T.isPrefixOf` T.toLower baseUrl = Just (hostAddress baseUrl)
     | otherwise = Nothing
-
--- Resolve every artifact of a version against the egress policy. 'Right' is the version
--- with each @artUrl@ normalised to https. 'Left' is the drop reason and the first
--- offending URL.
-resolveDetails :: Text -> PackageDetails -> Either (Text, Text) PackageDetails
-resolveDetails upstreamHost details =
-    (\arts -> details{pkgArtifacts = arts}) <$> traverse (resolveArtifact upstreamHost) (pkgArtifacts details)
-
--- Normalise one artifact's URL: keep https, upgrade a same-host http, drop otherwise.
-resolveArtifact :: Text -> Artifact -> Either (Text, Text) Artifact
-resolveArtifact upstreamHost art =
-    case resolveTarballUrl upstreamHost (artUrl art) of
-        Right resolved -> Right art{artUrl = registryUrlText resolved}
-        Left reason -> Left (reason, artUrl art)

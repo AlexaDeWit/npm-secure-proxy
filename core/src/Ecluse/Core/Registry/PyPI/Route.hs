@@ -1,0 +1,391 @@
+-- SPDX-FileCopyrightText: 2026 Alexandra de Wit
+--
+-- SPDX-License-Identifier: MIT
+-- TupleSections: local convenience for pairing a parsed capture with its trailing
+-- segments in 'takeProject' ((,rest)). See docs/style.md §2.
+{-# LANGUAGE TupleSections #-}
+
+{- | PyPI's route table: one 'Ecluse.Core.Server.Route.Route' record per served URL, folded
+into the mount's router by 'pypiRouter' and projected for the OpenAPI spec by 'pypiRouteSpecs'.
+
+The surface is three URLs: the PEP 691 JSON index, a distribution file (the spelling every
+rewritten file URL agrees with), and the upload endpoint. Four facts shape the matching. The
+index serves JSON alone, so a client admitting no JSON takes a @406@ decided before any
+upstream work. A template is written without its terminal slash, which the router strips. Only
+the canonical project name routes, because a canonicalisation redirect would resolve against a
+URL Écluse did not gate. And a file name is cross-checked against the project captured before it.
+-}
+module Ecluse.Core.Registry.PyPI.Route (
+    -- * The mount's router and fallback action
+    pypiRouter,
+    pypiNotFound,
+
+    -- * Route-scoped pipeline contracts (exported for direct pipeline specs)
+    pypiIndexContract,
+    pypiIndexReplies,
+    pypiArtifactContract,
+    pypiArtifactReplies,
+
+    -- * The table, as data
+    pypiRoutes,
+    pypiRouteSpecs,
+
+    -- * The served file URL (rendered from the route that claims it)
+    distributionPath,
+
+    -- * The capture values and leaf parsers (exported for their specs)
+    PyPICap (..),
+    takeProject,
+    artifactCoordinate,
+) where
+
+import Data.List.NonEmpty qualified as NE
+import Data.Text qualified as T
+import Network.HTTP.Types (
+    Method,
+    ResponseHeaders,
+    Status,
+    status200,
+    status304,
+    status401,
+    status403,
+    status404,
+    status405,
+    status406,
+    status500,
+    status502,
+    status503,
+ )
+
+import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
+import Ecluse.Core.Package (PackageName)
+import Ecluse.Core.Registry.PyPI.Project (FileCoordinate (fcVersionKey), canonicalName, fileCoordinate, isCanonicalName, projectName)
+import Ecluse.Core.Registry.PyPI.Wire (simpleIndexMediaType)
+import Ecluse.Core.Server.Context (
+    MountRouter,
+    ResponseAction (AnswerRefusal, RunPipeline),
+    RouteAction (RouteAction),
+ )
+import Ecluse.Core.Server.Contract (
+    BodySchema (SchemaDocumented, SchemaText),
+    PassthroughBody (PassthroughBytes, PassthroughEmpty, PassthroughStream),
+    PassthroughResponse,
+    ResponseChoice (FirstResponse, SecondResponse),
+    ResponseContract,
+    ResponseValue,
+    chooseContract,
+    emptyContract,
+    mediaContract,
+    optionalBodyContract,
+    passthroughContract,
+    passthroughResponse,
+    responseValue,
+ )
+import Ecluse.Core.Server.Path (Filename, mkFilename)
+import Ecluse.Core.Server.Pipeline.Packument (PackumentReplies (..), headPackument, servePackument)
+import Ecluse.Core.Server.Pipeline.Tarball (TarballReplies (..), headTarball, serveTarball)
+import Ecluse.Core.Server.Response (HelpMessage, Refusal, mkRefusal, refusalHelp)
+import Ecluse.Core.Server.Route (
+    Capture (Capture),
+    MediaNegotiation (AcceptsAnything, AcceptsOnly),
+    MethodMatch (MethodPost, MethodRead),
+    PatternSeg (SegCap, SegLit),
+    Route (Route),
+    RouteName (RouteName),
+    isHead,
+    refusing,
+    renderRoute,
+    routerOf,
+    safeSegment,
+ )
+import Ecluse.Core.Server.RouteSpec (ParamSpec (ParamSpec), RouteSpec, catchAllSpecs, specsOf)
+import Ecluse.Core.Version (Version, mkVersion)
+
+{- | PyPI's mount router. The first route that claims the request decides it, and a request no route
+claims takes the deny-by-default @404@ ('pypiNotFound').
+-}
+pypiRouter :: MountRouter
+pypiRouter = routerOf pypiNotFound pypiRoutes
+
+{- | The deny-by-default @404@ action for a path no route claims: a bare status, matching what an
+unknown project gets from the index itself.
+-}
+pypiNotFound :: RouteAction
+pypiNotFound = RouteAction unsupportedContract (AnswerRefusal (declaredRefusal "no route claims this path" []))
+
+-- | PyPI's routes, in matching order.
+pypiRoutes :: [Route PyPICap]
+pypiRoutes =
+    [ artifactRoute
+    , simpleIndexRoute
+    , uploadRoute
+    ]
+
+-- @GET \/simple\/{project}\/{file}@: a distribution file, streamed.
+artifactRoute :: Route PyPICap
+artifactRoute =
+    Route
+        (RouteName "distribution")
+        MethodRead
+        AcceptsAnything
+        [SegLit "simple", SegCap capProject, SegCap capFile]
+        buildArtifact
+        "Stream a distribution file (wheel or sdist)"
+        "The file's bytes are streamed verbatim with bounded memory, so the client verifies them \
+        \against the `sha256` the served index advertised. `/simple/{project}/{file}` is the one \
+        \spelling every rewritten file URL agrees with. Upstream statuses, headers, and media \
+        \types are relayed transparently; a locally generated refusal is a bare status."
+        Nothing
+        pypiArtifactContract
+
+-- @GET \/simple\/{project}@: the filtered PEP 691 JSON index.
+simpleIndexRoute :: Route PyPICap
+simpleIndexRoute =
+    Route
+        (RouteName "simpleIndex")
+        MethodRead
+        (AcceptsOnly (simpleIndexMediaType :| []) (notAcceptable []))
+        [SegLit "simple", SegCap capProject]
+        buildIndex
+        "Fetch a project's Simple index"
+        "Returns Écluse's merged-and-filtered PEP 691 JSON index: files merged across upstreams \
+        \and gated, each file URL rewritten to resolve back through this proxy. \
+        \`/simple/{project}/` and `/simple/{project}` both match, because the router strips a \
+        \trailing empty segment. A non-canonical (non-PEP-503) project name matches no route and \
+        \takes the `404`, with no redirect. A client that requires HTML and admits no JSON gets \
+        \`406`: Écluse serves the JSON form alone."
+        Nothing
+        pypiIndexContract
+
+-- @POST \/legacy@: the documented upload refusal.
+uploadRoute :: Route PyPICap
+uploadRoute =
+    Route
+        (RouteName "upload")
+        MethodPost
+        AcceptsAnything
+        [SegLit "legacy"]
+        (refusing (declaredRefusal "publishing is not enabled on this mount" []))
+        "Upload a first-party distribution (not supported)"
+        "A PyPI mount registers no publish capability, so an upload is answered `405` rather \
+        \than relayed. The route is declared so the refusal is the documented one rather than \
+        \the deny-by-default `404` an unrouted path takes."
+        Nothing
+        pypiUploadContract
+
+-- The named hand-authored schema the manifest holds for the index Écluse assembles.
+simpleIndexSchema :: Text
+simpleIndexSchema = "PyPISimpleIndex"
+
+{- | The closed Simple-index response sum. 'pypiIndexReplies' is the only interface the pipeline
+receives for selecting one of its constructors.
+-}
+type PyPIIndexResponse =
+    ResponseChoice
+        (ResponseValue LByteString)
+        ( ResponseChoice
+            (ResponseValue ())
+            ( ResponseChoice
+                (ResponseValue (Maybe LByteString))
+                ( ResponseChoice
+                    (ResponseValue (Maybe LByteString))
+                    ( ResponseChoice
+                        (ResponseValue (Maybe LByteString))
+                        ( ResponseChoice
+                            (ResponseValue (Maybe LByteString))
+                            ( ResponseChoice
+                                (ResponseValue (Maybe LByteString))
+                                (ResponseChoice (ResponseValue (Maybe LByteString)) (ResponseValue (Maybe LByteString)))
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+pypiIndexContract :: ResponseContract PyPIIndexResponse
+pypiIndexContract =
+    chooseContract
+        (mediaContract status200 "The filtered Simple index." (SchemaDocumented simpleIndexMediaType simpleIndexSchema))
+        ( chooseContract
+            (emptyContract status304 "The client's validator matched the assembled index.")
+            ( chooseContract
+                (refusalContract status401 "Edge authentication failed.")
+                ( chooseContract
+                    (refusalContract status403 "Every release was withheld by policy or admission, and none survived the merge.")
+                    ( chooseContract
+                        (refusalContract status404 "A first-party project the private upstream does not have. It is never fetched from the public upstream.")
+                        ( chooseContract
+                            (refusalContract status406 "The request requires a representation this index does not serve; only the PEP 691 JSON form exists.")
+                            ( chooseContract
+                                (refusalContract status500 "A permanent or internal inability to decide.")
+                                ( chooseContract
+                                    (refusalContract status502 "A responding upstream returned an index for a different project.")
+                                    (refusalContract status503 "A transient upstream or advisory condition; retry (see `Retry-After`).")
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+{- | Every refusal shares one shape: a bare status, or that status carrying the operator help
+message as @text\/plain@ when one is configured.
+-}
+refusalContract :: Status -> Text -> ResponseContract (ResponseValue (Maybe LByteString))
+refusalContract status description =
+    optionalBodyContract status (description <> " The body is empty unless `server.helpMessage` is configured.") (SchemaText "text/plain")
+
+pypiIndexReplies :: PackumentReplies PyPIIndexResponse
+pypiIndexReplies =
+    PackumentReplies
+        { packumentOk = \headers body -> FirstResponse (responseValue headers body)
+        , packumentNotModified = \headers -> SecondResponse (FirstResponse (responseValue headers ()))
+        , packumentUnauthorised = \headers refusal -> SecondResponse (SecondResponse (FirstResponse (helpBody headers refusal)))
+        , packumentForbidden = \headers refusal -> SecondResponse (SecondResponse (SecondResponse (FirstResponse (helpBody headers refusal))))
+        , packumentNotFound = \headers refusal -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (helpBody headers refusal)))))
+        , packumentInternal = \headers refusal -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (helpBody headers refusal)))))))
+        , packumentBadGateway = \headers refusal -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (helpBody headers refusal))))))))
+        , packumentUnavailable = \headers refusal -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (helpBody headers refusal))))))))
+        }
+
+-- The @406@ arm, which the router selects before any handler runs.
+notAcceptable :: ResponseHeaders -> Maybe HelpMessage -> PyPIIndexResponse
+notAcceptable headers help =
+    SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (declaredRefusal "no representation this index serves is acceptable" headers help))))))
+
+{- | The artifact route is an open relay of any upstream status, headers, media type, and bytes,
+so one @default@ document is more accurate than a closed list.
+-}
+pypiArtifactContract :: ResponseContract PassthroughResponse
+pypiArtifactContract =
+    passthroughContract
+        "An upstream-controlled distribution response is relayed transparently. Local authentication, policy, availability, and internal failures answer a bare status under their own code."
+
+pypiArtifactReplies :: TarballReplies PassthroughResponse
+pypiArtifactReplies =
+    TarballReplies
+        { tarballError = \status headers refusal -> passthroughResponse status headers (artifactRefusalBody refusal)
+        , tarballStream = \status headers body -> passthroughResponse status headers (PassthroughStream body)
+        , tarballEmpty = \status headers -> passthroughResponse status headers PassthroughEmpty
+        }
+
+pypiUploadContract :: ResponseContract (ResponseValue (Maybe LByteString))
+pypiUploadContract = refusalContract status405 "Publishing is not enabled on this mount."
+
+unsupportedContract :: ResponseContract (ResponseValue (Maybe LByteString))
+unsupportedContract = refusalContract status404 "Unrecognised path; deny by default."
+
+-- Écluse's own wording stays off the wire: PyPI's refusal is a bare status, so the body is the
+-- operator help message alone and nothing at all when none is configured.
+helpBody :: ResponseHeaders -> Refusal -> ResponseValue (Maybe LByteString)
+helpBody headers refusal = responseValue headers (helpBytes refusal)
+
+{- The body of a refusal the route table decides rather than the pipeline, rendered through
+'helpBody' too so a configured help message reaches every arm alike. -}
+declaredRefusal :: Text -> ResponseHeaders -> Maybe HelpMessage -> ResponseValue (Maybe LByteString)
+declaredRefusal reason headers help = helpBody headers (mkRefusal help reason)
+
+-- The artifact relay's refusal, which is the same body under the transparent-relay contract.
+artifactRefusalBody :: Refusal -> PassthroughBody
+artifactRefusalBody refusal = maybe PassthroughEmpty PassthroughBytes (helpBytes refusal)
+
+-- The operator help message as body bytes, absent when none is configured.
+helpBytes :: Refusal -> Maybe LByteString
+helpBytes = fmap (fromStrict . encodeUtf8) . refusalHelp
+
+{- @GET \/simple\/{project}@: a project unit is an index read. A @HEAD@ takes the head-mode
+handler, which runs the identical gating and merge but withholds the body. -}
+buildIndex :: Method -> [PyPICap] -> Maybe (ResponseAction PyPIIndexResponse)
+buildIndex method = \case
+    [PyPIProject name]
+        | isHead method -> Just (RunPipeline perimeterFallback (headPackument pypiIndexReplies name))
+        | otherwise -> Just (RunPipeline perimeterFallback (servePackument pypiIndexReplies name))
+    _ -> Nothing
+  where
+    perimeterFallback = packumentInternal pypiIndexReplies [] (mkRefusal Nothing "internal server error")
+
+-- 'artifactCoordinate' applies the cross-capture path-confusion check, so a file naming another
+-- project falls through to the @404@ rather than having a coordinate fabricated for it.
+buildArtifact :: Method -> [PyPICap] -> Maybe (ResponseAction PassthroughResponse)
+buildArtifact method = \case
+    [PyPIProject name, PyPIFile file] -> do
+        (version, filename) <- artifactCoordinate name file
+        pure $
+            if isHead method
+                then RunPipeline perimeterFallback (headTarball pypiArtifactReplies name version filename)
+                else RunPipeline perimeterFallback (serveTarball pypiArtifactReplies name version filename)
+    _ -> Nothing
+  where
+    perimeterFallback = tarballError pypiArtifactReplies status500 [] (mkRefusal Nothing "internal server error")
+
+{- | The captured values PyPI's routes produce: a parsed project unit, or a raw safety-checked
+distribution file name. Builders consume them positionally.
+-}
+data PyPICap
+    = PyPIProject PackageName
+    | PyPIFile Text
+
+{- | The one segment a capture claims, written back out. A project renders as its canonical
+spelling, the only one 'takeProject' reads back.
+-}
+renderCapture :: PyPICap -> [Text]
+renderCapture = \case
+    PyPIProject name -> [canonicalName name]
+    PyPIFile file -> [file]
+
+{- | The project capture: one PEP 503 canonical project name. A non-canonical spelling matches no
+route, so it takes the structural @404@ rather than a redirect.
+-}
+capProject :: Capture PyPICap
+capProject =
+    Capture
+        "project"
+        "The project name in PEP 503 canonical form, e.g. `zope-interface`."
+        (fmap (first PyPIProject) . takeProject)
+        renderCapture
+
+{- | The distribution-file capture. The coordinate parse (the release and the archive form) is
+'artifactCoordinate''s, applied in 'buildArtifact'.
+-}
+capFile :: Capture PyPICap
+capFile =
+    Capture
+        "file"
+        "The distribution file's on-the-wire name, e.g. `requests-2.34.2-py3-none-any.whl`."
+        (safeSegment PyPIFile)
+        renderCapture
+
+{- | Peel the leading project unit off a path. 'projectName' owns the grammar and 'isCanonicalName'
+keeps a spelling the index would redirect off this mount.
+-}
+takeProject :: [Text] -> Maybe (PackageName, [Text])
+takeProject = \case
+    seg : rest | isCanonicalName seg -> (,rest) <$> rightToMaybe (projectName seg)
+    _ -> Nothing
+
+{- | Parse a distribution-file slot into the 'Version' and verbatim 'Filename' it names for @name@.
+A file naming another project is a path-confusion attempt and yields 'Nothing'.
+-}
+artifactCoordinate :: PackageName -> Text -> Maybe (Version, Filename)
+artifactCoordinate name file = do
+    coordinate <- fileCoordinate name file
+    (mkVersion PyPI (fcVersionKey coordinate),) <$> mkFilename file
+
+{- | The mount-relative path the distribution route serves one project's file under, rendered from
+that same record so a served URL and the route that must claim it cannot drift.
+-}
+distributionPath :: PackageName -> Text -> Maybe Text
+distributionPath name file = T.intercalate "/" <$> renderRoute artifactRoute [PyPIProject name, PyPIFile file]
+
+{- | PyPI's routes as data for the __OpenAPI spec__: the 'specsOf' projection of the same
+'pypiRoutes' the router runs, plus the synthetic deny-by-default catch-all.
+-}
+pypiRouteSpecs :: NonEmpty RouteSpec
+pypiRouteSpecs =
+    catchAllSpecs unsupportedContract unsupportedParam
+        `NE.appendList` concatMap specsOf pypiRoutes
+
+unsupportedParam :: ParamSpec
+unsupportedParam = ParamSpec "unsupportedPath" "Any path under this mount matched by none of the routes above."

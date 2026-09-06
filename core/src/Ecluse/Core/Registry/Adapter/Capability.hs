@@ -32,7 +32,7 @@ module Ecluse.Core.Registry.Adapter.Capability (
 
 import Network.HTTP.Client (Request)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Package (InvalidEntry, PackageName)
 import Ecluse.Core.Package.Merge (MergePlan, SourceId)
 import Ecluse.Core.Registry (
@@ -99,7 +99,7 @@ data AdapterArtifact = AdapterArtifact
     {- ^ Build an artifact request by conventional filename path under the origin's base URL:
     how the proxy addresses a trusted origin.
     -}
-    , artifactByUrl :: Maybe Secret -> Text -> Either UrlFormationError Request
+    , artifactByUrl :: Maybe ClientCredential -> Text -> Either UrlFormationError Request
     {- ^ Build an artifact request at its authoritative upstream URL. It names no origin: the
     URL is complete on its own, and the mirror worker's fetch has none to give.
     -}

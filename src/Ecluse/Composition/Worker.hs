@@ -76,7 +76,8 @@ mirrorPublishFor :: Env -> PackumentDeps -> Map.Map Ecosystem PublishTarget -> E
 mirrorPublishFor env deps targets eco = do
     target <- Map.lookup eco targets
     adapter <- adapterFor eco
-    pure (newMirrorPublish (mirrorTransportFor env deps target) (ptMirrorUrl target) (publishCodec (adapterPublish adapter)))
+    publish <- adapterPublish adapter
+    pure (newMirrorPublish (mirrorTransportFor env deps target) (ptMirrorUrl target) (publishCodec publish))
 
 {- | The shared mirror-write transport for one mount. The presence probe reads under the
 mount's own 'pdLimits', because the shipped metadata-path default would let a larger

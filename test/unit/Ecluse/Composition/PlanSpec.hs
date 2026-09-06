@@ -52,7 +52,7 @@ import Ecluse.Composition.Types (
  )
 import Ecluse.Config (mountPostureLines, resolvedKeyProvenance)
 import Ecluse.Core.Credential (mkSecret)
-import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI))
+import Ecluse.Core.Ecosystem (Ecosystem (Npm, RubyGems))
 import Ecluse.Rts (
     CgroupLimits (..),
     EffectiveAxis (..),
@@ -155,10 +155,10 @@ spec = describe "resolveBootPlan" $ do
 
     describe "refusals" $ do
         it "refuses a structural composition error" $ do
-            let envVars = overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" staticEnvVars
+            let envVars = overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" staticEnvVars
             config <- expectConfig envVars Nothing
             refusalsOf (resolveBootPlan BootWithoutPipeline (bootInputsFor envVars Nothing config noCeiling))
-                `shouldBe` Left [MissingAdapter PyPI]
+                `shouldBe` Left [MissingAdapter RubyGems]
 
         it "refuses a queue URL whose shape names no backend" $ do
             let envVars = overrideEnv "ECLUSE_QUEUE__URL" "https://queue.example.test/q" staticEnvVars
@@ -181,26 +181,26 @@ spec = describe "resolveBootPlan" $ do
             -- groups. One run reports both, so an operator fixes both before the next boot.
             let envVars =
                     overrideEnv "ECLUSE_QUEUE__URL" "https://queue.example.test/q" $
-                        overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" staticEnvVars
+                        overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" staticEnvVars
             config <- expectConfig envVars Nothing
             refusalsOf (resolveBootPlan BootWithoutPipeline (bootInputsFor envVars Nothing config noCeiling))
-                `shouldBe` Left [MissingAdapter PyPI, QueueUrlUnrecognised "https://queue.example.test/q"]
+                `shouldBe` Left [MissingAdapter RubyGems, QueueUrlUnrecognised "https://queue.example.test/q"]
 
         it "reports the plan's own refusals and the ambient endpoint's in one aggregated list" $ do
             -- The ambient AWS_ENDPOINT_URL is settled over the environment the rest of the pass
             -- reads, so one launch names it beside whatever else the configuration got wrong.
             let envVars =
                     overrideEnv "AWS_ENDPOINT_URL" malformedAwsEndpoint $
-                        overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" staticEnvVars
+                        overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" staticEnvVars
             config <- expectConfig envVars Nothing
             refusalsOf (resolveBootPlan BootWithoutPipeline (bootInputsFor envVars Nothing config noCeiling))
-                `shouldBe` Left [MissingAdapter PyPI, AwsEndpointMalformed (mkSecret (toText malformedAwsEndpoint))]
+                `shouldBe` Left [MissingAdapter RubyGems, AwsEndpointMalformed (mkSecret (toText malformedAwsEndpoint))]
 
         it "adds no refusal when AWS_ENDPOINT_URL is unset" $ do
-            let envVars = overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" staticEnvVars
+            let envVars = overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" staticEnvVars
             config <- expectConfig envVars Nothing
             refusalsOf (resolveBootPlan BootWithoutPipeline (bootInputsFor envVars Nothing config noCeiling))
-                `shouldBe` Left [MissingAdapter PyPI]
+                `shouldBe` Left [MissingAdapter RubyGems]
 
         it "reports a refused queue URL alone, because the memory plan is sized against the runtime" $ do
             -- The memory plan reads the resolved backend, so a backend that refuses leaves no
@@ -232,10 +232,10 @@ spec = describe "resolveBootPlan" $ do
 
         it "keeps the advisories a refused configuration earned, so one run reports both" $ do
             -- An advisory an operator must act on survives the refusal, so one run reports both.
-            let envVars = overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" collapsedMirrorEnv
+            let envVars = overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" collapsedMirrorEnv
             config <- expectConfig envVars Nothing
             let report = resolveBootPlan BootWithoutPipeline (bootInputsFor envVars Nothing config noCeiling)
-            refusalsOf report `shouldBe` Left [MissingAdapter PyPI]
+            refusalsOf report `shouldBe` Left [MissingAdapter RubyGems]
             brAdvisories report `shouldBe` [mirrorCollapseAdvisory]
 
         it "gives the deleting role the refusal alone, never the writing roles' advisory too" $ do

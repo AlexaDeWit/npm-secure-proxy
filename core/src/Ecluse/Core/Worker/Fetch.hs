@@ -14,7 +14,7 @@ module Ecluse.Core.Worker.Fetch (
 
 import Network.HTTP.Client (Request)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Registry (FetchFault (FetchUrlUnformable), RegistryResponse (responseBody), UrlFormationError)
 import Ecluse.Core.Registry.Exchange (boundedFetch, formThen)
 import Ecluse.Core.Security (Limits)
@@ -26,7 +26,7 @@ than streamed, because the whole tarball must be in hand to verify it before the
 -}
 fetchArtifactBytes ::
     Limits ->
-    (Maybe Secret -> Text -> Either UrlFormationError Request) ->
+    (Maybe ClientCredential -> Text -> Either UrlFormationError Request) ->
     RegistryUrl ->
     WorkerM (Either FetchFault ByteString)
 fetchArtifactBytes limits buildRequest url = do

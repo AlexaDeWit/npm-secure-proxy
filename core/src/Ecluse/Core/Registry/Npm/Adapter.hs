@@ -9,6 +9,7 @@ Pure assembly, with no protocol logic of its own: every field names a function o
 -}
 module Ecluse.Core.Registry.Npm.Adapter (
     npmAdapter,
+    npmPublish,
 ) where
 
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
@@ -53,16 +54,18 @@ npmAdapter =
             AdapterArtifact
                 { artifactByFile = \origin -> NpmRequest.artifactRequestByFile (registryUrlText (ocBaseUrl origin)) (ocToken origin)
                 , artifactByUrl = NpmRequest.artifactRequestByUrl
-                , -- npm serves tarball bytes from the registry host itself, so there
-                  -- is no separate canonical files host to admit.
-                  artifactHosts = []
+                , artifactHosts = NpmRequest.npmArtifactHosts
                 }
         , adapterProjectName = rightToMaybe . projectName
-        , adapterPublish =
-            AdapterPublish
-                { publishRelay = relayPublishDocument
-                , publishDeclaredNames = declaredNames
-                , publishCodec = npmPublishCodec
-                }
+        , adapterPublish = Just npmPublish
         , adapterMaintenance = npmMaintenance
+        }
+
+-- | npm's publish capability, named so a consumer of it alone need not unwrap the optional field.
+npmPublish :: AdapterPublish
+npmPublish =
+    AdapterPublish
+        { publishRelay = relayPublishDocument
+        , publishDeclaredNames = declaredNames
+        , publishCodec = npmPublishCodec
         }

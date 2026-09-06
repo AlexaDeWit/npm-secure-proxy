@@ -24,6 +24,7 @@ a dev release. Post-releases stay stable.
 module Ecluse.Core.Version.Pep440 (
     Pep440Key (..),
     parsePep440,
+    renderPep440,
     isPep440Stable,
 ) where
 
@@ -31,7 +32,7 @@ import Data.Char (isDigit)
 import Data.List (dropWhileEnd, unsnoc)
 import Data.Text qualified as T
 
-import Ecluse.Core.Version.Token (VToken, classifyRun, isAsciiAlphaNum, numOr0, parseNumSeg, withinVersionLength)
+import Ecluse.Core.Version.Token (VToken (VNum, VStr), classifyRun, isAsciiAlphaNum, numOr0, parseNumSeg, withinVersionLength)
 
 {- | A parsed PEP 440 version as its canonical ordering key. The release has trailing
 zeros stripped (@1.0 == 1.0.0@), and the rank tuples encode PEP 440's None-handling for
@@ -204,6 +205,56 @@ consumeDev s =
             let (digits, rest) = T.span isDigit (dropSep afterLabel)
              in (Just (numOr0 digits), rest)
         Nothing -> (Nothing, s)
+
+{- | Render a parsed version as the one spelling Python's @packaging.utils.canonicalize_version@
+produces, keeping no trailing release zeros so @1.0@ and @1.0.0@ render alike.
+
+>>> renderPep440 <$> parsePep440 "1.0.0"
+Just "1"
+>>> renderPep440 <$> parsePep440 "1!2.0ALPHA1-1.dev2+Ubuntu.7"
+Just "1!2a1.post1.dev2+ubuntu.7"
+-}
+renderPep440 :: Pep440Key -> Text
+renderPep440 k =
+    epoch <> release <> pre <> post <> dev <> localSegment
+  where
+    epoch = case p440Epoch k of
+        0 -> ""
+        n -> show n <> "!"
+
+    -- Stripping the trailing zeros can empty the release ("0.0"), and a version needs one segment.
+    release = case p440Release k of
+        [] -> "0"
+        segs -> T.intercalate "." (map show segs)
+
+    pre = case p440Pre k of
+        (1, stage, n) -> stageLabel stage <> show n
+        _ -> ""
+
+    post = case p440Post k of
+        (1, n) -> ".post" <> show n
+        _ -> ""
+
+    dev = case p440Dev k of
+        (0, n) -> ".dev" <> show n
+        _ -> ""
+
+    localSegment = case p440Local k of
+        [] -> ""
+        toks -> "+" <> T.intercalate "." (map renderToken toks)
+
+-- The canonical spelling of a prerelease stage, inverting 'consumePre''s rank.
+stageLabel :: Int -> Text
+stageLabel = \case
+    0 -> "a"
+    1 -> "b"
+    _ -> "rc"
+
+-- A local-segment token in canonical form. 'parseLocal' lowercased it on the way in.
+renderToken :: VToken -> Text
+renderToken = \case
+    VNum n -> show n
+    VStr s -> s
 
 {- | Whether a PEP 440 version is stable: neither a pre-release (@a@\/@b@\/@rc@) nor a dev
 release. A post-release /is/ stable, so @1.0.post1@ is stable and @1.0a1.dev2@ is not.

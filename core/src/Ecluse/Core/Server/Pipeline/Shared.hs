@@ -33,7 +33,7 @@ import Network.HTTP.Types (Header, HeaderName, ResponseHeaders, Status, status50
 import Network.Wai (Request, requestHeaders)
 import UnliftIO (MonadUnliftIO)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential (credSecret), Secret)
 import Ecluse.Core.Registry.Request (credentialRecover)
 import Ecluse.Core.Server.Admission (ServeAdmission, withServeAdmission)
 import Ecluse.Core.Server.Admission.Weighted (admissionWaitMicros)
@@ -99,10 +99,10 @@ edge is open, and with one configured the presented credential must match it exa
 'Secret' equality compares the full bytes with no content-dependent early out, so this gate
 leaks no prefix of the configured token through timing.
 -}
-edgeTokenMatches :: Maybe Secret -> Maybe Secret -> Bool
+edgeTokenMatches :: Maybe Secret -> Maybe ClientCredential -> Bool
 edgeTokenMatches expected forwarded = case expected of
     Nothing -> True
-    Just want -> forwarded == Just want
+    Just want -> fmap credSecret forwarded == Just want
 
 {- | The body every handler answers a failed edge gate with. It names no configured token
 and no presented one, so a probe learns only that the edge is closed.
@@ -113,7 +113,7 @@ unauthorisedMessage = "authentication required"
 {- The credential a client of this mount presented, recovered through the mount's own
 ecosystem presentation ('bindingCredential'). A mount therefore accepts exactly its
 ecosystem's presentation, and this pipeline names no scheme of its own. -}
-forwardedCredential :: MountBinding -> Request -> Maybe Secret
+forwardedCredential :: MountBinding -> Request -> Maybe ClientCredential
 forwardedCredential mount = credentialRecover (bindingCredential mount) . requestHeaders
 
 {- A __public__ version whose selected artifact carries no integrity digest at all. A

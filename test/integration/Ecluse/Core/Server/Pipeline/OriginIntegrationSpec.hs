@@ -7,8 +7,7 @@ module Ecluse.Core.Server.Pipeline.OriginIntegrationSpec (spec) where
 import Data.Aeson (Value (String))
 import Ecluse.Server.Pipeline.TestSupport
 import Ecluse.Test.Wai
-import Network.HTTP.Types (status200)
-import Network.Wai (requestHeaders, responseLBS)
+import Network.Wai (requestHeaders)
 import Network.Wai.Test (simpleBody)
 import Test.Hspec
 
@@ -61,10 +60,10 @@ privateAuthoritySpec = describe "private origin is the per-client authority (not
     it "never serves one client's assembled document to another with a different private view" $ do
         -- The private upstream answers per credential. The assembled store is keyed by content, so
         -- client B's entry can never answer client A.
-        let perToken req = responseLBS status200 [] $ case lookupAuth (requestHeaders req) of
+        let perToken req = case lookupAuth (requestHeaders req) of
                 Just "Bearer token-a" -> encodePackument (privatePackument [("9.0.0", plainVersion "9.0.0")] "9.0.0")
                 _ -> encodePackument (privatePackument [("9.0.1", plainVersion "9.0.1")] "9.0.1")
-        privateUp <- recordingUpstream perToken
+        privateUp <- servingUpstreamPer perToken
         publicUp <-
             servingUpstream
                 (encodePackument (packument [("2.0.0", plainVersion "2.0.0")] "2.0.0" [("2.0.0", publishedDaysAgo 30)]))

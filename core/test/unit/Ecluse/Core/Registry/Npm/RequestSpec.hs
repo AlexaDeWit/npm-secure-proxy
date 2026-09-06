@@ -18,7 +18,7 @@ import Test.Hspec (
     shouldSatisfy,
  )
 
-import Ecluse.Core.Credential (mkSecret)
+import Ecluse.Core.Credential (bareCredential, mkSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (PackageName, mkPackageName, mkScope)
 import Ecluse.Core.Registry (UrlFormationError (EmptyBaseUrl, UnparseableUrl))
@@ -122,7 +122,7 @@ authSpec :: Spec
 authSpec =
     describe "bearer-token attachment" $ do
         it "attaches an injected token as a Bearer Authorization header" $ do
-            let token = Just (mkSecret "tok-abc")
+            let token = Just (bareCredential (mkSecret "tok-abc"))
             case metadataRequest "https://reg.test" token Abbreviated noValidators isOdd of
                 Right r -> lookup "Authorization" (Client.requestHeaders r) `shouldBe` Just "Bearer tok-abc"
                 Left e -> fail (show e)
@@ -135,16 +135,16 @@ authSpec =
 redirectSpec :: Spec
 redirectSpec = describe "no data-plane request follows an upstream redirect" $ do
     it "a token-bearing metadata request has redirectCount 0" $ do
-        expectRedirectCount 0 (metadataRequest "https://reg.test" (Just (mkSecret "tok")) Abbreviated noValidators isOdd)
+        expectRedirectCount 0 (metadataRequest "https://reg.test" (Just (bareCredential (mkSecret "tok"))) Abbreviated noValidators isOdd)
 
     it "a credential-less metadata request also disables redirect following (0)" $ do
         expectRedirectCount 0 (metadataRequest "https://reg.test" Nothing Abbreviated noValidators isOdd)
 
     it "a token-bearing by-filename artifact request has redirectCount 0 (the private tarball leg)" $ do
-        expectRedirectCount 0 (artifactRequestByFile "https://reg.test" (Just (mkSecret "tok")) isOdd "is-odd-1.0.0.tgz")
+        expectRedirectCount 0 (artifactRequestByFile "https://reg.test" (Just (bareCredential (mkSecret "tok"))) isOdd "is-odd-1.0.0.tgz")
 
     it "a token-bearing publish relay request has redirectCount 0" $ do
-        expectRedirectCount 0 (publishRequest "https://reg.test" (Just (mkSecret "tok")) isOdd "{}")
+        expectRedirectCount 0 (publishRequest "https://reg.test" (Just (bareCredential (mkSecret "tok"))) isOdd "{}")
   where
     expectRedirectCount :: Int -> Either UrlFormationError Client.Request -> IO ()
     expectRedirectCount want = \case
@@ -166,7 +166,7 @@ artifactSpec = describe "artifact request building" $ do
             `shouldBe` Right "https://reg.test/@babel%2Fcode-frame/-/code-frame-7.0.0.tgz"
 
     it "artifactRequestByUrl composes npm's bearer attach through the shared builder" $ do
-        case artifactRequestByUrl (Just (mkSecret "tok-xyz")) "https://private.reg/files/thing.tgz" of
+        case artifactRequestByUrl (Just (bareCredential (mkSecret "tok-xyz"))) "https://private.reg/files/thing.tgz" of
             Left err -> fail ("artifactRequestByUrl failed: " <> show err)
             Right req ->
                 lookup "Authorization" (Client.requestHeaders req)

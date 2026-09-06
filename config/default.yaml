@@ -293,12 +293,15 @@ mounts:
     # Per-mount rule refinement, merged over the shared policy with the same schema
     # as the top-level rules.
     # rules: {}
-  # No adapter ships for these two yet, so activating either refuses the boot. The
-  # public upstream is here so the key is settled before the ecosystem lands.
+  # A pypi mount serves reads: the PEP 691 Simple index and the distribution files
+  # under it. It publishes nothing, so a publicationTarget or a mirrorTarget on it
+  # refuses the boot naming the ecosystem and the key.
   pypi:
     publicUpstream:
       registry:
         url: https://pypi.org
+  # No adapter ships for rubygems yet, so activating it refuses the boot. The public
+  # upstream is here so the key is settled before the ecosystem lands.
   rubygems:
     publicUpstream:
       registry:

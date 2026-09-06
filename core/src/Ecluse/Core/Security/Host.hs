@@ -30,9 +30,11 @@ module Ecluse.Core.Security.Host (
     isBlockedIP,
     parseBlockedRange,
 
-    -- * Tarball-host gate
+    -- * Artifact-host gate
     Origin (..),
     tarballHostAllowed,
+    artifactAuthorityHonoured,
+    ecosystemArtifactAuthorities,
     TarballHostGate (..),
     tarballHostGate,
 ) where
@@ -225,13 +227,9 @@ tarballHostAllowed ::
     Maybe HostPort ->
     Bool
 tarballHostAllowed ecosystemHosts origin allowed additionalBlockedRanges packumentOrigin tarballTarget =
-    case (packumentOrigin, tarballTarget) of
-        (Just packument, Just target) ->
-            isAllowedUpstreamHost allowed target
-                && internalRangeOk target
-                && (sameAuthority target packument || isAllowedUpstreamHost ecosystemHosts target)
-        -- A missing comparable authority on either side authorises nothing (fail closed).
-        _ -> False
+    artifactAuthorityHonoured ecosystemHosts packumentOrigin tarballTarget
+        -- A target no authority extracts from is unfetchable, so it authorises nothing.
+        && maybe False (\target -> isAllowedUpstreamHost allowed target && internalRangeOk target) tarballTarget
   where
     -- The internal-range block classifies the bare host: an address is internal whatever
     -- port it is dialled on. The trusted private origin is exempt (see 'Origin').
@@ -239,6 +237,22 @@ tarballHostAllowed ecosystemHosts origin allowed additionalBlockedRanges packume
     internalRangeOk target = case origin of
         TrustedOrigin -> True
         UntrustedOrigin -> not (isBlockedTarget additionalBlockedRanges (hpHost target))
+
+{- | Whether an artifact's authority is honoured for a document the given authority served: the
+same dial target, or one the ecosystem serves artifact bytes from by design.
+-}
+artifactAuthorityHonoured :: AllowedHostPorts -> Maybe HostPort -> Maybe HostPort -> Bool
+artifactAuthorityHonoured ecosystemHosts packumentOrigin artifactTarget =
+    case (packumentOrigin, artifactTarget) of
+        (Just packument, Just target) ->
+            sameAuthority target packument || isAllowedUpstreamHost ecosystemHosts target
+        _ -> False
+
+{- | The authority set of an ecosystem's declared artifact hosts, which the gate and each
+adapter's projection both derive 'artifactAuthorityHonoured''s first argument through.
+-}
+ecosystemArtifactAuthorities :: [Text] -> AllowedHostPorts
+ecosystemArtifactAuthorities = allowedHostPorts . Set.fromList . mapMaybe hostPortAddress
 
 -- Whether two authorities are one dial target: equal canonical host keys and equal
 -- effective ports.
@@ -292,7 +306,7 @@ tarballHostGate ecosystemHostUrls privateUrl publicUrl mirrorUrl =
                 ( Set.fromList
                     (catMaybes ([privateHostPort, publicHostPort, hostPortAddress =<< mirrorUrl] <> map hostPortAddress ecosystemHostUrls))
                 )
-        , thgEcosystemHosts = allowedHostPorts (Set.fromList (mapMaybe hostPortAddress ecosystemHostUrls))
+        , thgEcosystemHosts = ecosystemArtifactAuthorities ecosystemHostUrls
         , thgPrivateHostPort = privateHostPort
         , thgPublicHostPort = publicHostPort
         }

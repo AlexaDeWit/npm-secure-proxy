@@ -22,7 +22,13 @@ module Ecluse.Composition.Validate (
 import Data.Map.Strict qualified as Map
 
 import Ecluse.Composition.BootError (
-    BootError (FirstPartyMissing, MissingAdapter, PublishStaticCredentialNeedsEdge),
+    BootError (
+        FirstPartyMissing,
+        MirrorTargetWithoutPublish,
+        MissingAdapter,
+        PublicationTargetWithoutPublish,
+        PublishStaticCredentialNeedsEdge
+    ),
  )
 import Ecluse.Composition.Endpoints (
     PublicationTarget,
@@ -41,10 +47,12 @@ import Ecluse.Config (
     ServerSettings (srvAuthToken),
     StoreTag,
     Target (tgtTag),
+    mountRegistries,
+    regMirrorTarget,
  )
 import Ecluse.Core.Credential (Secret)
 import Ecluse.Core.Ecosystem (Ecosystem)
-import Ecluse.Core.Registry.Adapter (RegistryAdapter, adapterFor)
+import Ecluse.Core.Registry.Adapter (RegistryAdapter, adapterFor, adapterPublish)
 
 {- | What the pure boot pass cleared: the mounts a role may serve, the endpoints it may use, and
 the settings no rule vets.
@@ -118,13 +126,27 @@ activeMounts config =
 -- 'Nothing' only where the rule refused, and a refused pass yields no plan to carry it into.
 vetMount :: (Ecosystem, (Mount, MountConfig)) -> Vet (Maybe VettedMount)
 vetMount (eco, (mount, mcfg)) =
-    vetted <$ rule (const (Refuse MissingAdapter)) unservedEcosystem eco
+    vetted
+        <$ rule (const (Refuse MissingAdapter)) unservedEcosystem eco
+        <* rule (const (Refuse MirrorTargetWithoutPublish)) (declaredWithoutPublish mirrors) eco
+        <* rule (const (Refuse PublicationTargetWithoutPublish)) (declaredWithoutPublish publishes) eco
   where
     vetted = adapterFor eco <&> \adapter -> VettedMount eco adapter mount mcfg
 
     unservedEcosystem e
         | isNothing (adapterFor e) = Just e
         | otherwise = Nothing
+
+    mirrors = isJust (regMirrorTarget (mountRegistries mount))
+    publishes = isJust (mntPublicationTarget mcfg)
+
+    -- A mirror would drain a queue it could never publish from, and a publish relay would have
+    -- no adapter to reach its target, so such a mount is refused rather than served half-wired.
+    declaredWithoutPublish declared e = do
+        guard declared
+        adapter <- adapterFor e
+        guard (isNothing (adapterPublish adapter))
+        pure e
 
 {- The two couplings a declared publication target carries: the first-party namespaces the
 guard enforces, and the inbound edge a static publish credential needs. -}

@@ -254,6 +254,30 @@ spec = do
             it "a .rc1 letter segment is not stable" $
                 stableOf RubyGems "1.2.0.rc1" `shouldBe` Just False
 
+    describe "canonicalPep440" $ do
+        it "spells a release without its trailing zeros" $
+            canonicalPep440 "1.0.0" `shouldBe` Just "1"
+
+        it "gives two spellings of one release the same key" $
+            canonicalPep440 "1.0" `shouldBe` canonicalPep440 "1.0.0"
+
+        it "normalises an unnormalised prerelease, post-release, dev-release and local segment" $
+            canonicalPep440 "1!2.0ALPHA1-1.dev2+Ubuntu.7" `shouldBe` Just "1!2a1.post1.dev2+ubuntu.7"
+
+        it "still spells a release whose every segment is zero" $
+            canonicalPep440 "0.0" `shouldBe` Just "0"
+
+        it "has no spelling for text that is not PEP 440" $
+            canonicalPep440 "totally bogus" `shouldBe` Nothing
+
+        it "preserves the ordering key, so keying by the spelling keys by the release" $
+            -- The PyPI projection keys a release by this spelling. That is only sound while the
+            -- spelling and the version it came from carry one ordering key.
+            hedgehog $ do
+                v <- forAll genPyPI
+                (canonicalPep440 v >>= rightToMaybe . parseVersionKey PyPI)
+                    === rightToMaybe (parseVersionKey PyPI v)
+
     describe "selectLatest" $ do
         -- All survivors here are npm versions. selectLatest is ecosystem-agnostic: it calls
         -- compareVersions and isStable on the keys.

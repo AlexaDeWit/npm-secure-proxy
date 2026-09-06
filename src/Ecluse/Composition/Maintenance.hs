@@ -52,7 +52,7 @@ import Ecluse.Config (
     storeTagName,
  )
 import Ecluse.Config.Resolve (mountKeyRef)
-import Ecluse.Core.Credential (CredentialProvider, Secret, mintSecret)
+import Ecluse.Core.Credential (ClientCredential, CredentialProvider, Secret, bareCredential, mintSecret)
 import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Fault (TransportCause (TransportProtocol), transportFault)
 import Ecluse.Core.Registry (FetchFault (FetchTransport))
@@ -188,6 +188,9 @@ sweepableStore mAdapter eco target = cleared <$> control
         adapter <- maybeToRight NoProtocolMaintenance mAdapter
         listing <- maybeToRight NoProtocolMaintenance (maintenanceListing (adapterMaintenance adapter))
         delete <- maybeToRight NoProtocolMaintenance (maintenanceVersionDelete (adapterMaintenance adapter))
+        -- A protocol-only store is swept through the same write the mirror publishes with, so
+        -- an ecosystem that publishes nothing spells no sweep either.
+        publish <- maybeToRight NoProtocolMaintenance (adapterPublish adapter)
         Right
             ( ClearedProtocol
                 ClearedProtocolStore
@@ -197,7 +200,7 @@ sweepableStore mAdapter eco target = cleared <$> control
                     , cpsEcosystem = eco
                     , cpsListing = listing
                     , cpsDelete = delete
-                    , cpsCodec = publishCodec (adapterPublish adapter)
+                    , cpsCodec = publishCodec publish
                     }
             )
 
@@ -243,10 +246,11 @@ minted per read, because a store that mints its own hands out a short-lived one.
 storeManifestRead :: StorePorts -> Limits -> ClearedBackend -> Manager -> StoreManifestRead
 storeManifestRead ports limits cleared manager name = do
     token <- traverse mintSecret (spCredential ports)
+    -- A minted store token carries no username: the store's own control plane, not a caller's.
     first storeFaultOfMetadata
-        <$> cbFetchManifest cleared (spTracing ports) (storeOrigin limits cleared manager token) name
+        <$> cbFetchManifest cleared (spTracing ports) (storeOrigin limits cleared manager (bareCredential <$> token)) name
 
-storeOrigin :: Limits -> ClearedBackend -> Manager -> Maybe Secret -> OriginClient
+storeOrigin :: Limits -> ClearedBackend -> Manager -> Maybe ClientCredential -> OriginClient
 storeOrigin limits cleared manager = originClient limits manager (cbUrl cleared)
 
 {- The maintenance calls are not the proxy's data plane, so this manager carries none of its
@@ -261,7 +265,7 @@ storeConnections = 4
 protocolStore :: Limits -> ClearedBackend -> ClearedProtocolStore -> StoreManifestRead -> Manager -> ProtocolStore
 protocolStore limits cleared store readManifest manager =
     ProtocolStore
-        { psOrigin = storeOrigin limits cleared manager (Just (cpsToken store))
+        { psOrigin = storeOrigin limits cleared manager (Just (bareCredential (cpsToken store)))
         , psReadManifest = readManifest
         , psListing = cpsListing store
         , psDelete = cpsDelete store

@@ -163,14 +163,24 @@ Edge authentication to the proxy ships in two modes:
 
 1. **Open**: `ECLUSE_SERVER__AUTH_TOKEN` unset. The network layer (VPC, service mesh) owns access
    control, so this is appropriate only on a closed network.
-2. **Static token**: `ECLUSE_SERVER__AUTH_TOKEN` set. Clients send it as
-   `Authorization: Bearer <token>`. For an npm-protocol client that is the `_authToken` line, keyed
-   by the mount's host and path:
+2. **Static token**: `ECLUSE_SERVER__AUTH_TOKEN` set. Clients send it in whichever form their
+   own ecosystem speaks, and Écluse compares the secret half. An npm-protocol client sends
+   `Authorization: Bearer <token>`, which is the `_authToken` line keyed by the mount's host and
+   path:
 
    ```ini
    # .npmrc
    registry=https://ecluse.example.internal/npm/
    //ecluse.example.internal/npm/:_authToken=${NPM_EDGE_TOKEN}
+   ```
+
+   A Python client sends the same token as an HTTP Basic **password**, under any username it
+   likes, which is how `pip`, `uv`, and `twine` present a credential:
+
+   ```ini
+   # pip.conf
+   [global]
+   index-url = https://__token__:${PYPI_EDGE_TOKEN}@ecluse.example.internal/pypi/simple/
    ```
 
 Écluse holds no read credential of its own. Reads run **passthrough**: Écluse forwards the
@@ -288,11 +298,12 @@ whose host is an internal-address literal, and `ECLUSE_EGRESS__ADDITIONAL_BLOCKE
 the block. The trusted private origin (`mounts.npm.privateUpstream`) is deliberately
 **not** subject to it, because a private registry legitimately lives on your internal network.
 
-**The `dist.tarball` host gate.** Upstream chooses `dist.tarball`, so Écluse fetches a tarball only
-from the same allowlisted host that served the listing, comparing host **and port** as a pair. It
-upgrades a plaintext `dist.tarball` to https on its own host. A plaintext URL on any other host
-drops the version from the listing. An https URL on a host the gate does not permit stays listed
-and is refused with a `403` when a client asks for the artifact. No configuration widens that.
+**The artifact host gate.** Upstream chooses where an artifact lives, so Écluse fetches one only
+from the same allowlisted host that served the listing, comparing host **and port** as a pair, or
+from a host the ecosystem serves artifact bytes from by design. It upgrades a plaintext artifact URL
+to https on its own host. A file the gate refuses, for its scheme or for its host, is **dropped from
+the listing** rather than listed and refused at download, so the listing and the download gate agree
+file by file. A release disappears when no file of it survives. No configuration widens that.
 
 **Écluse identifies itself on every registry and mirror-target request.** The `User-Agent` is `ecluse/<version>`,
 naming the running build. An upstream, a WAF, or a forward proxy that filters on the agent has to

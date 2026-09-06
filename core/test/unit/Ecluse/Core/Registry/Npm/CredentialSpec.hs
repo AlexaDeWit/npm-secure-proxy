@@ -9,7 +9,7 @@ import Network.HTTP.Client qualified as Client
 import Network.HTTP.Types.Header (RequestHeaders)
 import Test.Hspec (Spec, describe, it, shouldBe)
 
-import Ecluse.Core.Credential (Secret, mkSecret)
+import Ecluse.Core.Credential (ClientCredential (credSecret, credUsername), Secret, bareCredential, mkSecret)
 import Ecluse.Core.Registry.Npm.Credential (npmCredential)
 import Ecluse.Core.Registry.Request (attachCredential, credentialRecover)
 import Ecluse.Test.Support (parseRequestOrFail)
@@ -39,6 +39,9 @@ recoverySpec = describe "npm recovers the bearer token an npm client presents" $
         recover [("Authorization", "Bearer ")] `shouldBe` Nothing
         recover [("Authorization", "Bearer    ")] `shouldBe` Nothing
 
+    it "recovers a pair carrying no username, because the Bearer grammar has no slot for one" $
+        credUsername <$> recoverPair [("Authorization", "Bearer npm_tok-abc")] `shouldBe` Just Nothing
+
     it "recovers nothing when the request presents no Authorization header" $ do
         recover [] `shouldBe` Nothing
         recover [("X-Api-Key", "npm_tok-abc")] `shouldBe` Nothing
@@ -61,7 +64,7 @@ encodingSpec :: Spec
 encodingSpec = describe "npm carries an outbound credential as Bearer on Authorization" $ do
     it "writes the Bearer header and no other credential header" $ do
         req <- parseRequestOrFail "https://registry.test/is-odd"
-        let headers = Client.requestHeaders (attachCredential npmCredential (Just (mkSecret "npm_tok-abc")) req)
+        let headers = Client.requestHeaders (attachCredential npmCredential (Just (bareCredential (mkSecret "npm_tok-abc"))) req)
         lookup "Authorization" headers `shouldBe` Just "Bearer npm_tok-abc"
         lookup "X-Api-Key" headers `shouldBe` Nothing
 
@@ -72,13 +75,18 @@ encodingSpec = describe "npm carries an outbound credential as Bearer on Authori
 
     it "refuses to follow a redirect with the credential attached" $ do
         req <- parseRequestOrFail "https://registry.test/is-odd"
-        Client.redirectCount (attachCredential npmCredential (Just (mkSecret "npm_tok-abc")) req) `shouldBe` 0
+        Client.redirectCount (attachCredential npmCredential (Just (bareCredential (mkSecret "npm_tok-abc"))) req) `shouldBe` 0
 
     it "round-trips a recovered token back onto the wire under the same scheme" $ do
         req <- parseRequestOrFail "https://registry.test/is-odd"
-        let recovered = recover [("Authorization", "Bearer npm_tok-abc")]
+        let recovered = recoverPair [("Authorization", "Bearer npm_tok-abc")]
         lookup "Authorization" (Client.requestHeaders (attachCredential npmCredential recovered req))
             `shouldBe` Just "Bearer npm_tok-abc"
 
+-- | The secret half npm recovers, which every expectation above is written against.
 recover :: RequestHeaders -> Maybe Secret
-recover = credentialRecover npmCredential
+recover = fmap credSecret . recoverPair
+
+-- | The whole credential npm recovers, for the cases about the pair itself.
+recoverPair :: RequestHeaders -> Maybe ClientCredential
+recoverPair = credentialRecover npmCredential

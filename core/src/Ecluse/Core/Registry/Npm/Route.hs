@@ -58,7 +58,11 @@ module Ecluse.Core.Registry.Npm.Route (
     npmRoutes,
     npmRouteSpecs,
 
-    -- * The leaf parsers (exported for their specs)
+    -- * The served artifact URL (rendered from the route that claims it)
+    tarballPath,
+
+    -- * The capture values and leaf parsers (exported for their specs)
+    NpmCap (..),
     takePackage,
     tarballCoordinate,
 ) where
@@ -81,7 +85,7 @@ import Network.HTTP.Types (
  )
 
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
-import Ecluse.Core.Package (PackageName, unscopedName)
+import Ecluse.Core.Package (PackageName, pkgNamespace, renderPackageName, renderScope, unscopedName)
 import Ecluse.Core.Registry.Npm.Project (projectName)
 import Ecluse.Core.Registry.Npm.Serve (NpmError (NpmError), npmError, npmErrorCodec)
 import Ecluse.Core.Server.Context (
@@ -113,14 +117,17 @@ import Ecluse.Core.Server.Path (Filename, mkFilename)
 import Ecluse.Core.Server.Pipeline.Packument (PackumentReplies (..), headPackument, servePackument)
 import Ecluse.Core.Server.Pipeline.Publish (PublishReplies (..), servePublish)
 import Ecluse.Core.Server.Pipeline.Tarball (TarballReplies (..), headTarball, serveTarball)
+import Ecluse.Core.Server.Response (mkRefusal, renderRefusal)
 import Ecluse.Core.Server.Route (
     Capture (Capture),
+    MediaNegotiation (AcceptsAnything),
     MethodMatch (MethodDelete, MethodPut, MethodRead),
     PatternSeg (SegCap, SegLit),
     Route (Route),
     RouteName (RouteName),
     answering,
     isHead,
+    renderRoute,
     routerOf,
     safeSegment,
  )
@@ -161,6 +168,7 @@ pingRoute =
     Route
         (RouteName "ping")
         MethodRead
+        AcceptsAnything
         [SegLit "-", SegLit "ping"]
         (answering pingAnswer)
         "Liveness probe"
@@ -175,6 +183,7 @@ searchRoute =
     Route
         (RouteName "search")
         MethodRead
+        AcceptsAnything
         [SegLit "-", SegLit "v1", SegLit "search"]
         (answering searchAnswer)
         "Package search (not supported)"
@@ -189,6 +198,7 @@ distTagListRoute =
     Route
         (RouteName "distTagList")
         MethodRead
+        AcceptsAnything
         [SegLit "-", SegLit "package", SegCap capPackage, SegLit "dist-tags"]
         (answering distTagAnswer)
         "List a package's dist-tags (not supported)"
@@ -208,6 +218,7 @@ distTagSetRoute =
     Route
         (RouteName "distTagSet")
         MethodPut
+        AcceptsAnything
         distTagTagSegs
         (answering distTagAnswer)
         "Set a package's dist-tag (not supported)"
@@ -223,6 +234,7 @@ distTagRemoveRoute =
     Route
         (RouteName "distTagRemove")
         MethodDelete
+        AcceptsAnything
         distTagTagSegs
         (answering distTagAnswer)
         "Remove a package's dist-tag (not supported)"
@@ -238,6 +250,7 @@ tarballRoute =
     Route
         (RouteName "tarball")
         MethodRead
+        AcceptsAnything
         [SegCap capPackage, SegLit "-", SegCap capFilename]
         buildTarball
         "Stream a package artifact (tarball)"
@@ -253,6 +266,7 @@ packumentRoute =
     Route
         (RouteName "packument")
         MethodRead
+        AcceptsAnything
         [SegCap capPackage]
         buildPackument
         "Fetch a package's metadata (packument)"
@@ -268,6 +282,7 @@ publishRoute =
     Route
         (RouteName "publish")
         MethodPut
+        AcceptsAnything
         [SegCap capPackage]
         buildPublish
         "Publish a first-party package"
@@ -362,12 +377,12 @@ npmPackumentReplies =
     PackumentReplies
         { packumentOk = \headers body -> FirstResponse (responseValue headers body)
         , packumentNotModified = \headers -> SecondResponse (FirstResponse (responseValue headers ()))
-        , packumentUnauthorised = \headers message -> SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError message))))
-        , packumentForbidden = \headers message -> SecondResponse (SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError message)))))
-        , packumentNotFound = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError message))))))
-        , packumentInternal = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError message)))))))
-        , packumentBadGateway = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError message))))))))
-        , packumentUnavailable = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (responseValue headers (NpmError message))))))))
+        , packumentUnauthorised = \headers message -> SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError (renderRefusal message)))))
+        , packumentForbidden = \headers message -> SecondResponse (SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError (renderRefusal message))))))
+        , packumentNotFound = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError (renderRefusal message)))))))
+        , packumentInternal = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError (renderRefusal message))))))))
+        , packumentBadGateway = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (responseValue headers (NpmError (renderRefusal message)))))))))
+        , packumentUnavailable = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (responseValue headers (NpmError (renderRefusal message)))))))))
         }
 
 {- | The tarball is deliberately an open relay: the route can forward any upstream
@@ -386,7 +401,7 @@ npmTarballReplies =
             passthroughResponse
                 status
                 ((hContentType, "application/json") : headers)
-                (PassthroughBytes (encodeBody npmErrorCodec (NpmError message)))
+                (PassthroughBytes (encodeBody npmErrorCodec (NpmError (renderRefusal message))))
         , tarballStream = \status headers body -> passthroughResponse status headers (PassthroughStream body)
         , tarballEmpty = \status headers -> passthroughResponse status headers PassthroughEmpty
         }
@@ -430,7 +445,7 @@ buildPackument method = \case
         | otherwise -> Just (RunPipeline perimeterFallback (servePackument npmPackumentReplies name))
     _ -> Nothing
   where
-    perimeterFallback = packumentInternal npmPackumentReplies [] "internal server error"
+    perimeterFallback = packumentInternal npmPackumentReplies [] (mkRefusal Nothing "internal server error")
 
 {- @PUT \/{package}@: a bare package unit under the write method is a publish. -}
 buildPublish :: Method -> [NpmCap] -> Maybe (ResponseAction NpmPublishResponse)
@@ -457,7 +472,7 @@ buildTarball method = \case
                 else RunPipeline perimeterFallback (serveTarball npmTarballReplies name version filename)
     _ -> Nothing
   where
-    perimeterFallback = tarballError npmTarballReplies status500 [] "internal server error"
+    perimeterFallback = tarballError npmTarballReplies status500 [] (mkRefusal Nothing "internal server error")
 
 {- | The captured values npm's routes produce: a parsed package unit, or a raw
 safety-checked segment (an artifact file name, a dist-tag). Builders consume them positionally.
@@ -480,6 +495,7 @@ capPackage =
             "-" : _ -> Nothing
             segs -> fmap (first NpmPackage) (takePackage segs)
         )
+        renderPackage
 
 {- | The artifact-file capture. The coordinate parse (the @.tgz@ basename and the version) is
 'tarballCoordinate''s, applied in 'buildTarball'.
@@ -490,6 +506,7 @@ capFilename =
         "filename"
         "The artifact's on-the-wire file name, e.g. `lodash-4.17.21.tgz`."
         (safeSegment NpmFilename)
+        renderSegment
 
 {- | The dist-tag capture: one segment, accepted only when 'safeSegment' admits it. Both tagged
 routes answer @501@, so nothing downstream reads the tag.
@@ -500,6 +517,23 @@ capTag =
         "tag"
         "The dist-tag name, e.g. `latest`."
         (safeSegment NpmTag)
+        renderSegment
+
+{- The segments a package capture claims, written back out. A scoped name takes the two-segment
+encoding, which 'takeScoped' reads back into the one wire name 'projectName' owns. -}
+renderPackage :: NpmCap -> [Text]
+renderPackage = \case
+    NpmPackage name -> case pkgNamespace name of
+        Just scope -> [renderScope scope, unscopedName name]
+        Nothing -> [renderPackageName name]
+    other -> renderSegment other
+
+-- The one segment a raw safety-checked capture claims, written back out.
+renderSegment :: NpmCap -> [Text]
+renderSegment = \case
+    NpmPackage name -> [renderPackageName name]
+    NpmFilename file -> [file]
+    NpmTag tag -> [tag]
 
 {- Peel the leading package unit off a path, returning its 'PackageName' and the remaining
 segments. The route parses no name of its own: 'projectName' owns the npm name grammar. -}
@@ -529,6 +563,12 @@ tarballCoordinate name file =
         Just version
             | not (T.null version) -> (mkVersion Npm version,) <$> mkFilename file
         _ -> Nothing
+
+{- | The mount-relative path the artifact route serves one package's file under, rendered from
+that same record so a served URL and the route that must claim it cannot drift.
+-}
+tarballPath :: PackageName -> Text -> Maybe Text
+tarballPath name file = T.intercalate "/" <$> renderRoute tarballRoute [NpmPackage name, NpmFilename file]
 
 {- | npm's routes as data for the __OpenAPI spec__: the 'specsOf' projection of the
 same 'npmRoutes' the router runs, plus the synthetic deny-by-default catch-all.

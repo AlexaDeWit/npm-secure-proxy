@@ -54,6 +54,7 @@ module Ecluse.Core.Package.Integrity (
     -- * Integrity floors
     IntegrityFloor (..),
     meetsFloor,
+    partitionByFloor,
 
     -- ** The public-integrity floor (hard-floored at SHA-256)
     MinIntegrity,
@@ -73,6 +74,7 @@ module Ecluse.Core.Package.Integrity (
 ) where
 
 import Data.Foldable (maximumBy)
+import Data.List.NonEmpty qualified as NE
 
 import Ecluse.Core.Package (Artifact (artHashes))
 import Ecluse.Core.Package.Hash (
@@ -211,15 +213,24 @@ data VersionIntegrity
       NoIntegrity
     deriving stock (Eq, Show)
 
+{- | Partition a version's artifacts against a floor, so a release loses the files that clear no
+tamper-evident fingerprint rather than disappearing whole.
+-}
+partitionByFloor :: (IntegrityFloor floor) => floor -> NonEmpty Artifact -> Either VersionIntegrity (NonEmpty Artifact)
+partitionByFloor flr arts = case nonEmpty (NE.filter (artifactMeetsFloor flr) arts) of
+    Just survivors -> Right survivors
+    Nothing -> Left (classifyArtifacts flr arts)
+
+-- Whether any digest on one artifact asserts an algorithm at or above the floor.
+artifactMeetsFloor :: (IntegrityFloor floor) => floor -> Artifact -> Bool
+artifactMeetsFloor flr art = any (maybe False (meetsFloor flr) . assertedAlg) (artHashes art)
+
 {- | Classify a version's artifacts against a floor. A version 'MeetsFloor' if any digest on
 any artifact clears the floor, is 'NoIntegrity' when no artifact carries a digest at all,
 and is 'BelowFloor' otherwise.
 -}
 classifyArtifacts :: (IntegrityFloor floor) => floor -> NonEmpty Artifact -> VersionIntegrity
 classifyArtifacts flr arts
-    | any meetsFloorArtifact arts = MeetsFloor
+    | any (artifactMeetsFloor flr) arts = MeetsFloor
     | all (null . artHashes) arts = NoIntegrity
     | otherwise = BelowFloor
-  where
-    meetsFloorArtifact art = any hashMeetsFloor (artHashes art)
-    hashMeetsFloor h = maybe False (meetsFloor flr) (assertedAlg h)

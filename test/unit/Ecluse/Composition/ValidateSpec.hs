@@ -11,8 +11,10 @@ import Ecluse.Composition.BootError (
     BootError (
         FirstPartyMissing,
         MirrorTargetOnMountEndpoint,
+        MirrorTargetWithoutPublish,
         MissingAdapter,
         PublicationTargetOnPublicUpstream,
+        PublicationTargetWithoutPublish,
         PublishStaticCredentialNeedsEdge
     ),
  )
@@ -43,7 +45,7 @@ import Ecluse.Config (
     StoreTag (TagRegistry),
  )
 import Ecluse.Core.Credential (unSecret)
-import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI))
+import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI, RubyGems))
 import Ecluse.Core.Package (mkScope)
 import Ecluse.Core.Security.Egress (registryUrlText)
 
@@ -106,8 +108,31 @@ clearedSpec = describe "vetBoot -- what a cleared configuration reifies" $ do
 refusalSpec :: Spec
 refusalSpec = describe "vetBoot -- the refusals its four groups earn" $ do
     it "refuses a mount whose ecosystem this build ships no adapter for" $
-        refusalsFor MirrorWriter (overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" staticEnvVars)
-            `shouldReturn` [MissingAdapter PyPI]
+        refusalsFor MirrorWriter (overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" staticEnvVars)
+            `shouldReturn` [MissingAdapter RubyGems]
+
+    it "refuses a mirror target on a mount whose ecosystem this build writes nothing for" $
+        -- The mirror would drain a queue it could never publish from, so the boot stops rather
+        -- than serving with a mirror that fails every job.
+        refusalsFor
+            MirrorWriter
+            ( overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" $
+                overrideEnv "ECLUSE_MOUNTS__PYPI__PRIVATE_UPSTREAM__REGISTRY__URL" "https://private.example.test/pypi/" $
+                    overrideEnv "ECLUSE_MOUNTS__PYPI__MIRROR_TARGET__REGISTRY__URL" "https://mirror.example.test/pypi/" $
+                        overrideEnv "ECLUSE_MOUNTS__PYPI__MIRROR_TARGET__REGISTRY__TOKEN" "t" staticEnvVars
+            )
+            `shouldReturn` [MirrorTargetWithoutPublish PyPI]
+
+    it "refuses a publication target on a mount whose ecosystem this build writes nothing for" $
+        -- The relay would have no adapter to reach the target with, so the boot stops rather
+        -- than serving a publish route that refuses every attempt an operator configured for.
+        refusalsFor
+            MirrorWriter
+            ( overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" $
+                overrideEnv "ECLUSE_MOUNTS__PYPI__FIRST_PARTY" "acme-*" $
+                    overrideEnv "ECLUSE_MOUNTS__PYPI__PUBLICATION_TARGET__REGISTRY__URL" "https://publish.example.test/pypi/" staticEnvVars
+            )
+            `shouldReturn` [PublicationTargetWithoutPublish PyPI]
 
     it "refuses a publication target that leaves the anti-shadowing guard nothing to enforce" $
         refusalsFor MirrorWriter (withoutFirstParty publishingEnv)
@@ -127,17 +152,17 @@ refusalSpec = describe "vetBoot -- the refusals its four groups earn" $ do
             `shouldReturn` [MirrorTargetOnMountEndpoint Npm Npm "privateUpstream" codeArtifactMirrorUrl]
 
     it "reports the mount refusal beside the maintenance refusal from one deleting-role run" $
-        refusalsFor MirrorPruner (overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" staticEnvVars)
-            `shouldReturn` [MissingAdapter PyPI, noMaintenanceBackend]
+        refusalsFor MirrorPruner (overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" staticEnvVars)
+            `shouldReturn` [MissingAdapter RubyGems, noMaintenanceBackend]
 
     it "reports a refusal from each of the writing groups in one run" $ do
         -- The point of the applicative: the mount group refusing does not hide what the publish
         -- policy and the endpoint rules would have said about the same configuration.
         let envVars =
-                overrideEnv "ECLUSE_MOUNTS__PYPI__ENABLED" "true" $
+                overrideEnv "ECLUSE_MOUNTS__RUBYGEMS__ENABLED" "true" $
                     withoutFirstParty (overrideEnv "ECLUSE_MOUNTS__NPM__PUBLICATION_TARGET__REGISTRY__URL" "https://public.example.test/npm/" staticEnvVars)
         refusalsFor MirrorWriter envVars
-            `shouldReturn` [ MissingAdapter PyPI
+            `shouldReturn` [ MissingAdapter RubyGems
                            , FirstPartyMissing Npm
                            , PublicationTargetOnPublicUpstream Npm Npm "https://public.example.test/npm/"
                            ]

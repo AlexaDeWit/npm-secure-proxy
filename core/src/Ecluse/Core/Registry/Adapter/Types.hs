@@ -56,9 +56,9 @@ data RegistryAdapter = RegistryAdapter
     {- ^ The ecosystem's own name parser. The publish guard, the sweep's candidate set, and
     anything else that turns a raw string into a 'PackageName' reads this one definition.
     -}
-    , adapterPublish :: AdapterPublish
-    {- ^ The publish capability: the first-party relay, the name canonicaliser, the declared-name
-    extractor, and the mirror write's protocol codec.
+    , adapterPublish :: Maybe AdapterPublish
+    {- ^ The publish capability. 'Nothing' for an ecosystem this build writes nothing for, whose
+    publish route then answers the opt-in @405@ and whose declared write destination refuses the boot.
     -}
     , adapterMaintenance :: AdapterMaintenance
     {- ^ The store maintenance verbs, for a store whose only control plane is this protocol.

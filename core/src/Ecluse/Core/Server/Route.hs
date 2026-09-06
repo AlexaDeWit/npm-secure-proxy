@@ -35,26 +35,34 @@ module Ecluse.Core.Server.Route (
     PatternSeg (..),
     Capture (..),
     MethodMatch (..),
+    MediaNegotiation (..),
 
     -- * Routing a request
     routerOf,
     matchRoute,
 
+    -- * Rendering a route
+    renderRoute,
+
     -- * Building a route table
     answering,
+    refusing,
     safeSegment,
     isHead,
 ) where
 
+import Network.HTTP.Types.Header (RequestHeaders)
 import Network.HTTP.Types.Method (Method, methodDelete, methodGet, methodHead, methodPost, methodPut)
 
+import Ecluse.Core.Server.Accept (acceptsAny)
 import Ecluse.Core.Server.Context (
     MountRouter,
-    ResponseAction (AnswerLocally),
+    ResponseAction (AnswerLocally, AnswerRefusal),
     RouteAction (RouteAction),
  )
 import Ecluse.Core.Server.Contract (RequestSpec, ResponseContract, bodilessContract)
 import Ecluse.Core.Server.Path (isSafeComponent)
+import Ecluse.Core.Server.Response (HelpMessage)
 
 {- | One route: how it matches, what it does, and what it documents.
 
@@ -68,6 +76,10 @@ data Route v = forall response. Route
     -}
     , routeMethod :: MethodMatch
     -- ^ The method condition a request must satisfy to match.
+    , routeAccepts :: MediaNegotiation response
+    {- ^ The media types this route serves, and what it answers a request that admits none of
+    them. A route that serves whatever its upstream sends negotiates nothing.
+    -}
     , routeSegs :: [PatternSeg v]
     -- ^ The mount-relative path template: literal segments and named captures, in order.
     , routeBuild :: Method -> [v] -> Maybe (ResponseAction response)
@@ -118,7 +130,20 @@ data Capture v = Capture
     -- ^ A one-line, human-facing description for the documentation.
     , capConsume :: [Text] -> Maybe (v, [Text])
     -- ^ Consume the leading segments this capture claims, yielding its value and the tail.
+    , capRender :: v -> [Text]
+    -- ^ 'capConsume' inverted, so a served URL is built from the record that must claim it.
     }
+
+{- | What a route serves, and what it refuses a client that will not take it. The refusal renders
+into the route's own contract, so the @406@ is documented from the record that serves it.
+-}
+data MediaNegotiation response
+    = -- | The route negotiates nothing: every request is admitted whatever it says it accepts.
+      AcceptsAnything
+    | {- | The route serves these media types alone, and refuses a request whose @Accept@ admits
+      none of them, under the mount's configured help message.
+      -}
+      AcceptsOnly (NonEmpty ByteString) (Maybe HelpMessage -> response)
 
 {- | The method condition on a route: a closed vocabulary rather than a predicate, so the
 manifest can name the documented method. A method outside it matches no route and denies.
@@ -141,16 +166,15 @@ methodMatches MethodPost m = m == methodPost
 methodMatches MethodDelete m = m == methodDelete
 methodMatches MethodRead m = m == methodGet || m == methodHead
 
-{- | Fold an ecosystem's route table into its mount's router. The first route that claims the
-request decides what happens to it.
+{- | Fold an ecosystem's route table into its mount's router: the first route that claims the
+request decides it, and deny-by-default is structural because there is no other way to answer.
 
-A request no route claims gets the mount's @404@ 'Answer' (npm's @{"error": "not found"}@), so
-deny-by-default is structural. 'routerOf' has no other way to answer, and there is no catch-all
-branch to forget.
+The headers reach the router because a route may declare the media types it serves, and a
+request admitting none of them takes that route's refusal before any handler runs.
 -}
 routerOf :: RouteAction -> [Route v] -> MountRouter
-routerOf notFound routes method segments =
-    maybe (fallbackFor method notFound) snd (matchRoute routes method segments)
+routerOf notFound routes method headers segments =
+    maybe (fallbackFor method notFound) snd (matchRoute routes method headers segments)
   where
     fallbackFor requested (RouteAction contract action)
         | isHead requested = RouteAction (bodilessContract contract) action
@@ -161,16 +185,25 @@ condition holds, whose segments are consumed exactly, and whose builder accepts 
 'Nothing' when none does. Exported beside 'routerOf' so a route table is testable with no
 server.
 -}
-matchRoute :: [Route v] -> Method -> [Text] -> Maybe (Route v, RouteAction)
-matchRoute routes method segments =
+matchRoute :: [Route v] -> Method -> RequestHeaders -> [Text] -> Maybe (Route v, RouteAction)
+matchRoute routes method headers segments =
     listToMaybe (mapMaybe claim routes)
   where
-    claim route@Route{routeMethod = matchedMethod, routeSegs = patternSegs, routeBuild = build, routeContract = contract}
+    claim route@Route{routeMethod = matchedMethod, routeAccepts = negotiation, routeSegs = patternSegs, routeBuild = build, routeContract = contract}
         | methodMatches matchedMethod method = do
             captures <- consumeSegs patternSegs segments
-            action <- build method captures
+            action <- negotiated negotiation (build method captures)
             pure (route, RouteAction (contractFor method contract) action)
         | otherwise = Nothing
+
+    {- A route the request will not take answers its own refusal, decided before the builder's
+    action is ever run and so before any upstream work. A route that negotiates nothing keeps
+    whatever its builder decided, 'Nothing' included, so matching still falls through. -}
+    negotiated negotiation built = case negotiation of
+        AcceptsAnything -> built
+        AcceptsOnly served refusal
+            | acceptsAny headers served -> built
+            | otherwise -> AnswerRefusal refusal <$ built
 
     contractFor requested
         | isHead requested = bodilessContract
@@ -194,6 +227,12 @@ literal routes an ecosystem answers itself, rather than through the data plane, 
 answering :: response -> Method -> [v] -> Maybe (ResponseAction response)
 answering answer _method _captures = Just (AnswerLocally answer)
 
+{- | 'answering' for a refusal: the route decides it, and the site holding the mount's
+dependencies renders it under the configured help message.
+-}
+refusing :: (Maybe HelpMessage -> response) -> Method -> [v] -> Maybe (ResponseAction response)
+refusing render _method _captures = Just (AnswerRefusal render)
+
 {- | A 'capConsume' that claims one leading segment, and only when it is a safe path component.
 A traversal, separator, or control character therefore fails the match before the value exists.
 -}
@@ -201,6 +240,17 @@ safeSegment :: (Text -> v) -> [Text] -> Maybe (v, [Text])
 safeSegment build = \case
     seg : rest | isSafeComponent seg -> Just (build seg, rest)
     _ -> Nothing
+
+{- | The mount-relative path a route serves one set of captures under. A rewritten artifact URL
+is built through this, so the URL served and the route that must claim it are one record.
+-}
+renderRoute :: Route v -> [v] -> Maybe [Text]
+renderRoute Route{routeSegs = patternSegs} = fill patternSegs
+  where
+    fill [] [] = Just []
+    fill (SegLit lit : ps) vs = (lit :) <$> fill ps vs
+    fill (SegCap capture : ps) (v : vs) = (capRender capture v <>) <$> fill ps vs
+    fill _ _ = Nothing
 
 -- | Whether a request is the bodiless read. A @HEAD@ is a variation of its @GET@, not a route.
 isHead :: Method -> Bool

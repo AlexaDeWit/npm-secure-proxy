@@ -30,9 +30,10 @@ consumer's URLs. Each mount also carries an optional per-ecosystem
 the degenerate case, under its own derived prefix.
 
 A mount also carries its ecosystem's credential presentation: the form its clients put a
-credential in (npm: `Authorization: Bearer`). Écluse uses the same form when it forwards the
-credential upstream. The web layer compares what the mount recovered against the configured edge
-token in constant time and refuses anything else.
+credential in (npm: `Authorization: Bearer`; PyPI: HTTP Basic under any username). Écluse uses the
+same form when it forwards the credential upstream, rendering the recovered pair verbatim. The web
+layer compares the secret half of what the mount recovered against the configured edge token in
+constant time and refuses anything else.
 
 URL rewriting is load-bearing. Registry responses embed absolute artifact locations: npm's
 `dist.tarball`, and on public PyPI, file URLs on a separate host. Forwarded unchanged, those URLs let

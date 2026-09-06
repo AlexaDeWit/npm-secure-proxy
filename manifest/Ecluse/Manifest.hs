@@ -72,6 +72,7 @@ module Ecluse.Manifest (
     synthesizedPackumentSchema,
     synthesizedPackumentSchemaName,
     publishDocumentSchemaName,
+    simpleIndexSchemaName,
 ) where
 
 import Data.Aeson.Encode.Pretty qualified as Pretty
@@ -89,7 +90,8 @@ import Data.OpenApi (
     MediaTypeObject (_mediaTypeObjectSchema),
     NamedSchema (NamedSchema),
     OpenApi (_openApiComponents, _openApiInfo, _openApiPaths, _openApiServers, _openApiTags),
-    OpenApiType (OpenApiObject, OpenApiString),
+    OpenApiItems (OpenApiItemsObject),
+    OpenApiType (OpenApiArray, OpenApiObject, OpenApiString),
     Operation (_operationDescription, _operationOperationId, _operationRequestBody, _operationResponses, _operationSummary, _operationTags),
     Param (_paramDescription, _paramIn, _paramName, _paramRequired, _paramSchema),
     ParamLocation (ParamPath),
@@ -109,7 +111,7 @@ import Data.OpenApi (
     RequestBody (_requestBodyContent, _requestBodyDescription, _requestBodyRequired),
     Response (_responseContent, _responseDescription),
     Responses (_responsesDefault, _responsesResponses),
-    Schema (_schemaAdditionalProperties, _schemaDescription, _schemaFormat, _schemaProperties, _schemaRequired, _schemaTitle, _schemaType),
+    Schema (_schemaAdditionalProperties, _schemaDescription, _schemaFormat, _schemaItems, _schemaProperties, _schemaRequired, _schemaTitle, _schemaType),
     Server (Server, _serverDescription, _serverUrl, _serverVariables),
     Tag (Tag),
     ToSchema (declareNamedSchema),
@@ -153,7 +155,7 @@ canonicalManifestSource :: ManifestSource
 canonicalManifestSource =
     ManifestSource
         { manifestBaseUrl = "https://registry.ecluse.example"
-        , manifestEcosystems = Npm :| []
+        , manifestEcosystems = Npm :| [PyPI]
         }
 
 -- | Assemble the OpenAPI 3 document, a __pure__ function of the source.
@@ -199,7 +201,7 @@ ownedSchemas = \case
         [ (synthesizedPackumentSchemaName, synthesizedPackumentSchema)
         , (publishDocumentSchemaName, publishDocumentSchema)
         ]
-    PyPI -> []
+    PyPI -> [(simpleIndexSchemaName, simpleIndexSchema)]
     RubyGems -> []
 
 -- | The tag for an ecosystem (the manifest groups operations by mount).
@@ -486,4 +488,65 @@ renderManifest =
             , Pretty.confCompare = compare
             , Pretty.confNumFormat = Pretty.Generic
             , Pretty.confTrailingNewline = True
+            }
+
+-- | The name PyPI's route records reference the filtered Simple index by.
+simpleIndexSchemaName :: Text
+simpleIndexSchemaName = "PyPISimpleIndex"
+
+{- | The filtered PEP 691 Simple index a @pypi@ mount serves. Only the keys Écluse reads or
+rewrites are modelled, and every other key relays unchanged from the contributing upstream.
+-}
+simpleIndexSchema :: Schema
+simpleIndexSchema =
+    (mempty :: Schema)
+        { _schemaTitle = Just "Filtered Simple index"
+        , _schemaType = Just OpenApiObject
+        , _schemaDescription =
+            Just
+                "Écluse's merged-and-filtered view of a project's distribution files (PEP 691). Releases are \
+                \merged across upstreams and gated (private releases trusted, public releases admitted only by \
+                \policy), files that do not clear the integrity floor or that name an authority this mount does \
+                \not honour are dropped, and each surviving file's `url` is rewritten to resolve back through \
+                \this proxy. The PEP 658 `core-metadata` and `data-dist-info-metadata` keys are omitted, \
+                \because Écluse serves no `.metadata` companion."
+        , _schemaRequired = ["name", "files"]
+        , _schemaProperties =
+            InsOrd.fromList
+                [ ("meta", Inline metaSchema)
+                , ("name", Inline (stringSchema (Just "The project name in PEP 503 canonical form.")))
+                , ("versions", Inline versionsSchema)
+                , ("files", Inline filesSchema)
+                ]
+        , _schemaAdditionalProperties = Just (AdditionalPropertiesAllowed True)
+        }
+  where
+    metaSchema =
+        (mempty :: Schema)
+            { _schemaType = Just OpenApiObject
+            , _schemaDescription = Just "The index's own metadata, relayed from the contributing upstream so `_last-serial` still lets a mirror revalidate cheaply."
+            , _schemaAdditionalProperties = Just (AdditionalPropertiesAllowed True)
+            }
+    versionsSchema =
+        (mempty :: Schema)
+            { _schemaType = Just OpenApiArray
+            , _schemaDescription = Just "The surviving releases (PEP 700), in canonical PEP 440 form. A release the gate withheld does not appear."
+            , _schemaItems = Just (OpenApiItemsObject (Inline (stringSchema Nothing)))
+            }
+    filesSchema =
+        (mempty :: Schema)
+            { _schemaType = Just OpenApiArray
+            , _schemaDescription = Just "The surviving distribution files. A file the integrity floor or the artifact-host policy refused does not appear, and the served listing and the download gate therefore agree file by file."
+            , _schemaItems = Just (OpenApiItemsObject (Inline fileSchema))
+            }
+    fileSchema =
+        (mempty :: Schema)
+            { _schemaType = Just OpenApiObject
+            , _schemaRequired = ["filename", "url"]
+            , _schemaProperties =
+                InsOrd.fromList
+                    [ ("filename", Inline (stringSchema (Just "The distribution file name, which encodes the project, the release, and a wheel's tags.")))
+                    , ("url", Inline (stringSchema (Just "The file's location, rewritten under this mount so the bytes are fetched back through the gate.")))
+                    ]
+            , _schemaAdditionalProperties = Just (AdditionalPropertiesAllowed True)
             }

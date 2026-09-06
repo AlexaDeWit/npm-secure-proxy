@@ -17,7 +17,7 @@ module Ecluse.Core.Registry.Origin (
 
 import Network.HTTP.Client (Manager)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Security (Limits)
 import Ecluse.Core.Security.Egress (RegistryUrl)
 
@@ -29,8 +29,10 @@ data OriginClient = OriginClient
     -}
     , ocManager :: Manager
     -- ^ The shared @http-client@ 'Manager' to issue requests through.
-    , ocToken :: Maybe Secret
-    -- ^ An injected bearer token to attach, or 'Nothing' for anonymous requests.
+    , ocToken :: Maybe ClientCredential
+    {- ^ The credential to present on a request through this origin, or 'Nothing' for an
+    anonymous one. A passthrough read carries the caller's own pair verbatim.
+    -}
     , ocLimits :: Limits
     {- ^ The response-bound budget every read through this origin is held to, fail-closed
     past 'Ecluse.Core.Security.maxBodyBytes'.
@@ -40,6 +42,6 @@ data OriginClient = OriginClient
 {- | One origin from the four things that name it. Its builders take the bound first, because a
 caller usually holds one bound and reaches several origins under it.
 -}
-originClient :: Limits -> Manager -> RegistryUrl -> Maybe Secret -> OriginClient
+originClient :: Limits -> Manager -> RegistryUrl -> Maybe ClientCredential -> OriginClient
 originClient limits manager baseUrl token =
     OriginClient{ocBaseUrl = baseUrl, ocManager = manager, ocToken = token, ocLimits = limits}

@@ -72,18 +72,24 @@ admission gate is identical at one registry or three. Storage-layer scanning is 
 
 ## Integrity floors
 
-**Every served version must carry a strong integrity digest**, by default, in both trust
+**Every served file must carry a strong integrity digest**, by default, in both trust
 contexts. Écluse trusts a digest only as far as its algorithm is collision-resistant, so
 both contexts default to a SHA-256-or-stronger digest. The floors differ only in how far
 they may move.
+
+The check runs **per file**. A release ships several in most ecosystems, an sdist beside its
+wheels on PyPI, so a release keeps the files that clear the floor and loses the ones that do
+not, and disappears only when no file of it survives. The surviving set is what the merge plan
+carries into the served listing, so the listing and the download gate refuse the same files. A
+release whose file set is a singleton, npm's, either survives entire or drops entire.
 
 - The public (untrusted) floor is a hard SHA-256 boundary (`ECLUSE_INTEGRITY__MIN_PUBLIC`,
   default `sha256`). An operator may raise it to `sha384`, `sha512`, or `blake2b` but never
   lower it. Config load rejects a sub-floor or
   unknown value, and never clamps it. The floor refuses a public version with no digest, or
   one below it, such as a legacy SHA-1 `dist.shasum` with no SRI. The artifact gate
-  answers `403` and the packument path filters the version from the listing, so a client
-  never sees a version it couldn't verify. SHA-1 and MD5 have practical collisions, so a
+  answers `403` and the metadata path filters the file from the listing, so a client
+  never sees a file it couldn't verify. SHA-1 and MD5 have practical collisions, so a
   match can't prove the bytes weren't substituted.
 - The trusted (private) floor carries the same `sha256` default
   (`ECLUSE_INTEGRITY__MIN_TRUSTED`), so Écluse drops a SHA-1-only or hashless private version

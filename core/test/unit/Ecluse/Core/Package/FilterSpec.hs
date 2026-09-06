@@ -18,20 +18,21 @@ import Test.Hspec.Hedgehog (hedgehog)
 
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (
-    Artifact (artUrl),
+    Artifact (artFilename, artUrl),
     CodeExecSignal (NoCodeOnInstall, RunsCodeOnInstall),
-    InvalidEntry (invalidKind, invalidReason, invalidValue),
-    InvalidEntryKind (InvalidVersionManifest),
+    InvalidEntry (invalidKey, invalidKind, invalidReason, invalidValue),
+    InvalidEntryKind (InvalidIndexFile, InvalidVersionManifest),
     PackageDetails (..),
     PackageInfo (..),
     PackageName,
  )
-import Ecluse.Core.Package.Filter (FilterPlan (..), enforceArtifactScheme, enforceArtifactSchemeDetails)
+import Ecluse.Core.Package.Filter (FilterPlan (..), enforceArtifactLocations, enforceArtifactLocationsOf)
 import Ecluse.Core.Rules.Types (
     EvalContext (EvalContext),
     PrecededRule,
     Rule (AllowIfOlderThan, DenyInstallTimeExecution),
  )
+import Ecluse.Core.Security (AllowedHostPorts, ecosystemArtifactAuthorities)
 import Ecluse.Core.Version (compareVersions, isStable, mkVersion, parseVersionKey, renderVersion)
 import Ecluse.Test.Package (sampleArtifact, sampleDetails, thingName)
 import Ecluse.Test.Rules (atDefaultPrecedence, filterPlan, inertRuleDeps, isApproved)
@@ -42,8 +43,8 @@ spec = do
     latestSpec
     decisionsSpec
     propertiesSpec
-    enforceArtifactSchemeSpec
-    enforceArtifactSchemeDetailsSpec
+    enforceArtifactLocationsSpec
+    enforceArtifactLocationsOfSpec
 
 -- | A fixed "now" so the age-based admit/deny axis is deterministic.
 now :: UTCTime
@@ -244,33 +245,50 @@ latestRaw = fmap renderVersion . fpLatest
 isStableRaw :: Text -> Bool
 isStableRaw raw = either (const False) isStable (parseVersionKey Npm raw)
 
-{- | The https-only artifact-URL fold: keep an https URL, upgrade a same-host @http@ URL, and drop
-the version behind a foreign-host @http@ URL while recording an 'InvalidVersionManifest'. A
-non-https upstream leaves every URL untouched.
+{- | The served-location fold over a whole document: the scheme normalisation, the authority
+check against the serving origin, and the per-artifact partition that drops a version only
+when no file of it survives.
 -}
-enforceArtifactSchemeSpec :: Spec
-enforceArtifactSchemeSpec = describe "enforceArtifactScheme (https-only artifact-URL normalisation)" $ do
+enforceArtifactLocationsSpec :: Spec
+enforceArtifactLocationsSpec = describe "enforceArtifactLocations (served artifact locations)" $ do
     let httpsUpstream = "https://registry.npmjs.org"
         urlOf info = (\(art :| _) -> artUrl art) . pkgArtifacts <$> Map.lookup "1.0.0" (infoVersions info)
+        enforce = enforceArtifactLocations noArtifactHosts
 
     it "upgrades a same-host http artifact URL to https (https upstream)" $
-        urlOf (enforceArtifactScheme httpsUpstream (infoWithArtifact "http://registry.npmjs.org/thing/-/thing-1.0.0.tgz"))
+        urlOf (enforce httpsUpstream (infoWithArtifact "http://registry.npmjs.org/thing/-/thing-1.0.0.tgz"))
             `shouldBe` Just "https://registry.npmjs.org/thing/-/thing-1.0.0.tgz"
 
-    it "keeps an https artifact URL unchanged (https upstream)" $
-        urlOf (enforceArtifactScheme httpsUpstream (infoWithArtifact "https://cdn.example.net/thing-1.0.0.tgz"))
+    it "keeps an https artifact URL on the serving authority" $
+        urlOf (enforce httpsUpstream (infoWithArtifact "https://registry.npmjs.org/thing/-/thing-1.0.0.tgz"))
+            `shouldBe` Just "https://registry.npmjs.org/thing/-/thing-1.0.0.tgz"
+
+    it "drops an https artifact URL on a foreign authority for an ecosystem declaring no artifact hosts" $ do
+        let enforced = enforce httpsUpstream (infoWithArtifact "https://cdn.example.net/thing-1.0.0.tgz")
+        Map.lookup "1.0.0" (infoVersions enforced) `shouldBe` Nothing
+        map invalidKind (infoInvalidEntries enforced) `shouldBe` [InvalidVersionManifest]
+
+    it "keeps an https artifact URL on a declared artifact host" $
+        urlOf (enforceArtifactLocations (ecosystemArtifactAuthorities ["https://cdn.example.net"]) httpsUpstream (infoWithArtifact "https://cdn.example.net/thing-1.0.0.tgz"))
             `shouldBe` Just "https://cdn.example.net/thing-1.0.0.tgz"
 
+    it "drops the refused file and keeps the version when another file survives" $ do
+        let enforced = enforce httpsUpstream (infoWithArtifacts ("https://registry.npmjs.org/ok.whl" :| ["https://cdn.example.net/bad.whl"]))
+        map artFilename . toList . pkgArtifacts <$> Map.lookup "1.0.0" (infoVersions enforced)
+            `shouldBe` Just ["ok.whl"]
+        map invalidKind (infoInvalidEntries enforced) `shouldBe` [InvalidIndexFile]
+        map invalidKey (infoInvalidEntries enforced) `shouldBe` ["bad.whl"]
+
     it "drops a foreign-host http artifact URL and records it (https upstream)" $ do
-        let enforced = enforceArtifactScheme httpsUpstream (infoWithArtifact "http://evil.example.test/thing-1.0.0.tgz")
+        let enforced = enforce httpsUpstream (infoWithArtifact "http://evil.example.test/thing-1.0.0.tgz")
         Map.lookup "1.0.0" (infoVersions enforced) `shouldBe` Nothing
         map invalidKind (infoInvalidEntries enforced) `shouldBe` [InvalidVersionManifest]
 
     it "records the dropped artifact's authority, never its URL (the value reaches a log line)" $ do
-        -- An upstream-supplied dist.tarball can carry a credential in its userinfo or a
+        -- An upstream-supplied artifact location can carry a credential in its userinfo or a
         -- signed query string. The drop-tracking WARNING line renders the recorded value,
         -- so the filter keeps only the authority.
-        let enforced = enforceArtifactScheme httpsUpstream (infoWithArtifact credentialedTarball)
+        let enforced = enforce httpsUpstream (infoWithArtifact credentialedTarball)
         map invalidValue (infoInvalidEntries enforced) `shouldBe` [String "evil.test:443"]
         droppedText enforced `shouldSatisfy` (not . T.isInfixOf "hunter2")
         droppedText enforced `shouldSatisfy` (not . T.isInfixOf "sig=abc")
@@ -278,40 +296,53 @@ enforceArtifactSchemeSpec = describe "enforceArtifactScheme (https-only artifact
     it "keeps the credential out of the drop reason as well as the value" $
         -- The WARNING line renders the reason beside the value, and the refusal reason is
         -- the other place the offending URL could reach it.
-        map invalidReason (infoInvalidEntries (enforceArtifactScheme httpsUpstream (infoWithArtifact credentialedTarball)))
+        map invalidReason (infoInvalidEntries (enforce httpsUpstream (infoWithArtifact credentialedTarball)))
             `shouldBe` ["dist.tarball is http on a host other than the upstream registry: evil.test:443"]
 
     for_ credentialedSpellings $ \(label, url) ->
         it ("reduces a " <> label <> " artifact URL, which carries no scheme to key on") $ do
             -- 'mkInvalidEntry' recognises a URL by its scheme separator, so the filter, whose
             -- input is known to be a URL, reduces these spellings itself.
-            let enforced = enforceArtifactScheme httpsUpstream (infoWithArtifact url)
+            let enforced = enforce httpsUpstream (infoWithArtifact url)
             droppedText enforced `shouldSatisfy` (not . T.isInfixOf "hunter2")
             droppedText enforced `shouldSatisfy` (not . T.isInfixOf "sig=abc")
 
-    it "leaves artifact URLs untouched for a non-https (loopback) upstream" $
-        urlOf (enforceArtifactScheme "http://127.0.0.1:8080" (infoWithArtifact "http://127.0.0.1:8080/thing/-/thing-1.0.0.tgz"))
+    it "keeps a same-authority artifact URL for a non-https (loopback) upstream" $
+        urlOf (enforce "http://127.0.0.1:8080" (infoWithArtifact "http://127.0.0.1:8080/thing/-/thing-1.0.0.tgz"))
             `shouldBe` Just "http://127.0.0.1:8080/thing/-/thing-1.0.0.tgz"
 
-{- | The single-version form the selective-decode path uses: it upgrades a same-host @http@ URL,
-returns 'Nothing' for a foreign-host @http@ URL, and leaves a non-https upstream untouched.
+    it "still checks the authority for a non-https upstream, which the download gate also does" $
+        Map.lookup "1.0.0" (infoVersions (enforce "http://127.0.0.1:8080" (infoWithArtifact "http://evil.example.test/thing-1.0.0.tgz")))
+            `shouldBe` Nothing
+
+{- | The single-version form the selective-decode path uses: the same two predicates over one
+version's artifacts, with 'Nothing' when none survives.
 -}
-enforceArtifactSchemeDetailsSpec :: Spec
-enforceArtifactSchemeDetailsSpec = describe "enforceArtifactSchemeDetails (single-version form)" $ do
+enforceArtifactLocationsOfSpec :: Spec
+enforceArtifactLocationsOfSpec = describe "enforceArtifactLocationsOf (single-version form)" $ do
     let httpsUpstream = "https://registry.npmjs.org"
         urlOf = fmap ((\(art :| _) -> artUrl art) . pkgArtifacts)
+        enforce = enforceArtifactLocationsOf noArtifactHosts
 
     it "upgrades a same-host http artifact URL to https" $
-        urlOf (enforceArtifactSchemeDetails httpsUpstream (detailsWithArtifact "http://registry.npmjs.org/thing/-/thing-1.0.0.tgz"))
+        urlOf (enforce httpsUpstream (detailsWithArtifact "http://registry.npmjs.org/thing/-/thing-1.0.0.tgz"))
             `shouldBe` Just "https://registry.npmjs.org/thing/-/thing-1.0.0.tgz"
 
     it "drops the version when its artifact URL is http on a foreign host" $
-        enforceArtifactSchemeDetails httpsUpstream (detailsWithArtifact "http://evil.example.test/thing-1.0.0.tgz")
+        enforce httpsUpstream (detailsWithArtifact "http://evil.example.test/thing-1.0.0.tgz")
             `shouldBe` Nothing
 
-    it "leaves the version untouched for a non-https (loopback) upstream" $
-        urlOf (enforceArtifactSchemeDetails "http://127.0.0.1:8080" (detailsWithArtifact "http://127.0.0.1:8080/thing-1.0.0.tgz"))
+    it "drops the version when its artifact authority is neither the origin nor a declared host" $
+        enforce httpsUpstream (detailsWithArtifact "https://cdn.example.net/thing-1.0.0.tgz")
+            `shouldBe` Nothing
+
+    it "keeps a same-authority artifact URL for a non-https (loopback) upstream" $
+        urlOf (enforce "http://127.0.0.1:8080" (detailsWithArtifact "http://127.0.0.1:8080/thing-1.0.0.tgz"))
             `shouldBe` Just "http://127.0.0.1:8080/thing-1.0.0.tgz"
+
+-- | An ecosystem that declares no artifact host of its own, which is npm's posture.
+noArtifactHosts :: AllowedHostPorts
+noArtifactHosts = ecosystemArtifactAuthorities []
 
 -- | A dropped artifact URL carrying a credential in its userinfo and a signature in its query.
 credentialedTarball :: Text
@@ -344,3 +375,18 @@ infoWithArtifact url =
 detailsWithArtifact :: Text -> PackageDetails
 detailsWithArtifact url =
     (detailsAt "1.0.0" 30 False){pkgArtifacts = sampleArtifact{artUrl = url} :| []}
+
+{- | A one-version 'PackageInfo' whose version owns one artifact per URL, each named by that
+URL's own file name, so a per-artifact drop is identifiable.
+-}
+infoWithArtifacts :: NonEmpty Text -> PackageInfo
+infoWithArtifacts urls =
+    PackageInfo
+        { infoName = name
+        , infoVersions = Map.singleton "1.0.0" details
+        , infoDistTags = Map.empty
+        , infoInvalidEntries = []
+        }
+  where
+    details = (detailsAt "1.0.0" 30 False){pkgArtifacts = fmap artifactAt urls}
+    artifactAt url = sampleArtifact{artUrl = url, artFilename = T.takeWhileEnd (/= '/') url}

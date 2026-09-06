@@ -25,7 +25,7 @@ import Data.Time (UTCTime (UTCTime), fromGregorian, nominalDay)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Types (hContentType, status200, status404, statusCode)
 
-import Ecluse.Core.Credential (mkSecret, unSecret)
+import Ecluse.Core.Credential (ClientCredential (credSecret), bareCredential, mkSecret, unSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (PackageName, mkPackageName)
 import Ecluse.Core.Registry.Npm.Credential (npmCredential)
@@ -292,9 +292,9 @@ mountUnder mapping deps =
 declaring it accepts what an npm mount refuses, and refuses what an npm mount accepts.
 -}
 apiKeyCredential :: CredentialMapping
-apiKeyCredential = credentialMapping recoverApiKey "X-Api-Key" (encodeUtf8 . unSecret)
+apiKeyCredential = credentialMapping recoverApiKey "X-Api-Key" (encodeUtf8 . unSecret . credSecret)
   where
-    recoverApiKey headers = mkSecret . decodeUtf8 <$> lookup "X-Api-Key" headers
+    recoverApiKey headers = bareCredential . mkSecret . decodeUtf8 <$> lookup "X-Api-Key" headers
 
 -- | The token a gated mount requires at its edge, in the form a client presents it.
 edgeToken :: (IsString s) => s

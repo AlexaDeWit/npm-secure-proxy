@@ -158,8 +158,18 @@ library ecluse-core
     Ecluse.Core.Registry.Sweep.Package
     Ecluse.Core.Registry.Sweep.Types
     Ecluse.Core.Registry.Sweep.Walk
+    Ecluse.Core.Registry.PyPI.Adapter
+    Ecluse.Core.Registry.PyPI.Credential
+    Ecluse.Core.Registry.PyPI.Filter
     Ecluse.Core.Registry.PyPI.FirstParty
+    Ecluse.Core.Registry.PyPI.Metadata
+    Ecluse.Core.Registry.PyPI.Project
+    Ecluse.Core.Registry.PyPI.Request
+    Ecluse.Core.Registry.PyPI.Route
+    Ecluse.Core.Registry.PyPI.SelectiveDecode
+    Ecluse.Core.Registry.PyPI.Wire
     Ecluse.Core.Registry.Request
+    Ecluse.Core.Registry.ServedDocument
     Ecluse.Core.Registry.WireSupport
     Ecluse.Core.Rules
     Ecluse.Core.Rules.Effectful
@@ -172,6 +182,7 @@ library ecluse-core
     Ecluse.Core.Security.Limits
     Ecluse.Core.Server.Cache
     Ecluse.Core.Server.Cache.Store
+    Ecluse.Core.Server.Accept
     Ecluse.Core.Server.Admission
     Ecluse.Core.Server.Admission.Bytes
     Ecluse.Core.Server.Admission.Weighted
@@ -593,6 +604,7 @@ library ecluse-test-support
     Ecluse.Test.Port
     Ecluse.Test.Queue
     Ecluse.Test.Registry.Npm
+    Ecluse.Test.Registry.PyPI
     Ecluse.Test.Registry.PyPI.Wire
     Ecluse.Test.Registry.Rubygems.Wire
     Ecluse.Test.RegistryCapture
@@ -727,8 +739,18 @@ test-suite ecluse-core-unit
     Ecluse.Core.Registry.Npm.WireSpec
     Ecluse.Core.Registry.NpmSpec
     Ecluse.Core.Registry.PublishSpec
+    Ecluse.Core.Registry.PyPI.AdapterSpec
+    Ecluse.Core.Registry.PyPI.CredentialSpec
+    Ecluse.Core.Registry.PyPI.FilterSpec
     Ecluse.Core.Registry.PyPI.FirstPartySpec
+    Ecluse.Core.Registry.PyPI.MetadataSpec
+    Ecluse.Core.Registry.PyPI.ProjectSpec
+    Ecluse.Core.Registry.PyPI.RequestSpec
+    Ecluse.Core.Registry.PyPI.RouteSpec
+    Ecluse.Core.Registry.PyPI.SelectiveDecodeSpec
+    Ecluse.Core.Registry.PyPI.WireSpec
     Ecluse.Core.Registry.RequestSpec
+    Ecluse.Core.Registry.ServedDocumentSpec
     Ecluse.Core.Registry.WireSupportSpec
     Ecluse.Core.Rules.EffectfulSpec
     Ecluse.Core.RulesSpec
@@ -739,6 +761,7 @@ test-suite ecluse-core-unit
     Ecluse.Core.Security.LimitsSpec
     Ecluse.Core.SecuritySpec
     Ecluse.Core.Server.Admission.BytesSpec
+    Ecluse.Core.Server.AcceptSpec
     Ecluse.Core.Server.AdmissionSpec
     Ecluse.Core.Server.Cache.StoreSpec
     Ecluse.Core.Server.CacheSpec
@@ -1030,6 +1053,7 @@ test-suite ecluse-integration
     Ecluse.AwsEndToEndIntegrationSpec
     Ecluse.Core.Security.EgressIntegrationSpec
     Ecluse.Core.Server.Pipeline.OriginIntegrationSpec
+    Ecluse.Core.Registry.PyPI.AdapterIntegrationSpec
     Ecluse.Core.Server.Pipeline.PackumentIntegrationSpec
     Ecluse.Core.Server.Pipeline.PublishIntegrationSpec
     Ecluse.Core.Server.Pipeline.SharedIntegrationSpec

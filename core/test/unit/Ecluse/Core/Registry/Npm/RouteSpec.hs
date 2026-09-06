@@ -46,7 +46,7 @@ data Routed
 
 routed :: Method -> [Text] -> Routed
 routed method segments =
-    case routeName . fst <$> matchRoute npmRoutes method segments of
+    case routeName . fst <$> matchRoute npmRoutes method [] segments of
         Nothing -> Denied
         Just (RouteName "ping") -> ToPing
         Just (RouteName "search") -> ToSearch

@@ -153,6 +153,12 @@ data MergePlan = MergePlan
     {- ^ @dist-tags@ reconciled over the survivors. 'selectLatest' resolves @latest@, the plan keeps
     every other surviving-target tag, and it drops an absent-target tag.
     -}
+    , mpArtifacts :: Map Text (NonEmpty Text)
+    {- ^ The file names of each surviving version's artifacts, taken from the candidate that won
+    it. An assembly that replays this plan serves exactly these files, so the served listing and
+    the download gate agree file by file. A version whose artifact set is a singleton, npm's,
+    carries one name.
+    -}
     , mpTime :: Map Text UTCTime
     {- ^ The served @time@ map, rebuilt from the survivors. Each version's publish instant comes
     from the same candidate that won its manifest. A winner with no known time contributes no
@@ -205,6 +211,7 @@ applyDivergencePolicy Warn plan = plan
 applyDivergencePolicy FailClosed plan =
     plan
         { mpSurvivors = Map.withoutKeys (mpSurvivors plan) dropped
+        , mpArtifacts = Map.withoutKeys (mpArtifacts plan) dropped
         , mpTime = Map.withoutKeys (mpTime plan) dropped
         , mpDistTags = Map.filter (\target -> not (renderVersion target `Set.member` dropped)) (mpDistTags plan)
         }
@@ -366,6 +373,7 @@ planFrom acc = do
         MergePlan
             { mpName = name
             , mpSurvivors = Map.map (candSourceId . winnerOf) (mergeVersions acc)
+            , mpArtifacts = Map.map (fmap artFilename . pkgArtifacts . candDetails . winnerOf) (mergeVersions acc)
             , mpDistTags = reconciledTags
             , mpTime = reconciledTimes
             , mpDivergences = divergences

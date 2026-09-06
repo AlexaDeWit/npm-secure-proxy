@@ -35,7 +35,11 @@ Reads use **passthrough**: Écluse forwards the caller's own credential to the p
 reads the public upstream anonymously.
 
 - **Private upstream (read)**: Écluse forwards the client's credential and the upstream authorises
-  each request. Per request, never cached across clients.
+  each request. Per request, never cached across clients. A credential is a **pair**: a secret and
+  the username half a scheme such as HTTP Basic carries beside it. The pair travels verbatim,
+  because a private registry has username conventions of its own and rewriting one would
+  authenticate as somebody else. The edge gate compares the secret half alone, so one configured
+  edge token serves every ecosystem's presentation.
 - **Public upstream (read/fallback)**: queried anonymously. Any auth a public mirror needs is
   Écluse's own, not the client's.
 - **Mirror target (write)**: always Écluse's own
@@ -106,6 +110,25 @@ sequenceDiagram
     end
     Note over E,PubT: write-only from the proxy, read back via the private upstream
 ```
+
+## Where an artifact lives
+
+npm serves a package's bytes from the registry host that served its listing. PyPI does not: a
+Simple index names each file's own location, and public PyPI puts those on
+`files.pythonhosted.org` rather than on `pypi.org`. A client that resolved metadata through
+Écluse and then pulled the bytes from that host directly would be past the gate, so a mount
+rewrites every served location back under its own prefix.
+
+Which locations Écluse will fetch from is not the operator's to widen. An ecosystem declares the
+hosts it serves artifact bytes from by design, and a mount honours a file only on the authority
+that served its listing or on one of those declared hosts. A file anywhere else is **dropped
+from the served listing**, not listed and refused at download, so a client never resolves
+against a file it could not have installed. A release disappears when no file of it survives.
+The same check runs at the download gate from the same definition, so the listing and the gate
+cannot disagree.
+
+For npm this is visible: a packument naming a tarball on a foreign host used to serve the
+rewritten URL and refuse when the client asked for the bytes. That version now does not appear.
 
 ## Serving a tarball
 

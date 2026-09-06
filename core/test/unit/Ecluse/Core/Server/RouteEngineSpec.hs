@@ -35,6 +35,7 @@ import Ecluse.Core.Server.Contract (
  )
 import Ecluse.Core.Server.Route (
     Capture (Capture),
+    MediaNegotiation (AcceptsAnything),
     MethodMatch (MethodPost, MethodRead),
     PatternSeg (SegCap, SegLit),
     Route (Route, routeName),
@@ -134,6 +135,7 @@ pingRoute =
     Route
         (RouteName "ping")
         MethodRead
+        AcceptsAnything
         [SegLit "-", SegLit "ping"]
         (answering (responseValue [] ()))
         "Liveness probe"
@@ -146,6 +148,7 @@ fileRoute =
     Route
         (RouteName "file")
         MethodRead
+        AcceptsAnything
         [SegCap capName, SegLit "-", SegCap capFile]
         buildFile
         "Fetch a file"
@@ -162,6 +165,7 @@ uploadRoute =
     Route
         (RouteName "upload")
         MethodPost
+        AcceptsAnything
         [SegLit "-", SegLit "upload"]
         (answering (responseValue [] ()))
         "Submit a file"
@@ -170,14 +174,14 @@ uploadRoute =
         (emptyContract status404 "A refusal.")
 
 capName :: Capture ToyCap
-capName = Capture "name" "The thing's name." (safeSegment ToyName)
+capName = Capture "name" "The thing's name." (safeSegment ToyName) toySegment
 
 capFile :: Capture ToyCap
-capFile = Capture "file" "The file's name." (safeSegment ToyFile)
+capFile = Capture "file" "The file's name." (safeSegment ToyFile) toySegment
 
 -- The name of the route that claims a request, or 'Nothing' when none does.
 claimed :: Method -> [Text] -> Maybe RouteName
-claimed method segments = routeName . fst <$> matchRoute toyRoutes method segments
+claimed method segments = routeName . fst <$> matchRoute toyRoutes method [] segments
 
 catchAll :: NonEmpty RouteSpec
 catchAll = catchAllSpecs refusalContract catchAllParam
@@ -192,3 +196,9 @@ isEmptyBody :: BodySchema -> Bool
 isEmptyBody = \case
     SchemaEmpty -> True
     _ -> False
+
+-- | The one segment a toy capture claims, written back out.
+toySegment :: ToyCap -> [Text]
+toySegment = \case
+    ToyName name -> [name]
+    ToyFile file -> [file]

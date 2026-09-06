@@ -25,8 +25,8 @@ import Data.Time (addUTCTime, getCurrentTime)
 
 import Ecluse.Core.Credential (mkSecret)
 import Ecluse.Core.Package (mkScope)
-import Ecluse.Core.Registry.Adapter.Types (AdapterPublish (publishRelay), RegistryAdapter (adapterProjectName, adapterPublish))
-import Ecluse.Core.Registry.Npm.Adapter (npmAdapter)
+import Ecluse.Core.Registry.Adapter.Types (AdapterPublish (publishRelay), RegistryAdapter (adapterProjectName))
+import Ecluse.Core.Registry.Npm.Adapter (npmAdapter, npmPublish)
 import Ecluse.Core.Registry.Npm.Credential (npmCredential)
 import Ecluse.Core.Registry.Npm.Publish qualified as NpmPublish
 import Ecluse.Core.Registry.Npm.Route (npmNotFound, npmRouter)
@@ -118,7 +118,7 @@ basePublishDeps bodyBudget =
         , pubMaxRequestBytes = 26214400
         , pubHelp = Nothing
         , pubProjectName = adapterProjectName npmAdapter
-        , pubAdapter = adapterPublish npmAdapter
+        , pubAdapter = npmPublish
         }
 
 {- | The 'application' under a single @\/npm@ mount carrying the given publish deps,
@@ -138,8 +138,8 @@ fakeRouterApp = application (mkServerConfig [mountAt ("npm" :| []) fakeRouter]) 
     -- npm's @is-odd@ would be a packument read. Under this router it is a miss, so the two
     -- routers give observably different answers.
     fakeRouter :: MountRouter
-    fakeRouter _method ["beep"] = RouteAction fakeContract (AnswerLocally (variableResponse status200 [] "{}"))
-    fakeRouter _method _ = npmNotFound
+    fakeRouter _method _headers ["beep"] = RouteAction fakeContract (AnswerLocally (variableResponse status200 [] "{}"))
+    fakeRouter _method _headers _ = npmNotFound
 
     fakeContract :: ResponseContract (VariableResponse LByteString)
     fakeContract = variableOpaqueContract "application/json" "The fake router's response."
@@ -337,7 +337,7 @@ spec = do
                 -- the URL. It reaches the relay (502 to the unconnectable target), not a 403.
                 request methodPut "/npm/@acme/widget" [] "{\"_id\":\"@acme/widget\",\"name\":\"@acme/widget\",\"versions\":{\"1.0.0\":{\"name\":\"@acme/widget\",\"version\":\"1.0.0\"}}}" `shouldRespondWith` 502
 
-        with (publishAppWith (\b -> (basePublishDeps b){pubAdapter = (adapterPublish npmAdapter){publishRelay = \_ _ _ -> throwIO (RelayContractEscape "simulated relay contract escape")}})) $
+        with (publishAppWith (\b -> (basePublishDeps b){pubAdapter = npmPublish{publishRelay = \_ _ _ -> throwIO (RelayContractEscape "simulated relay contract escape")}})) $
             it "answers a relay contract escape with the route's declared 500 (not a torn session, not a 502)" $
                 -- The relay reports its failures as typed values, so a throw is an invariant break.
                 -- The perimeter answers it with the neutral 500 and the session survives.

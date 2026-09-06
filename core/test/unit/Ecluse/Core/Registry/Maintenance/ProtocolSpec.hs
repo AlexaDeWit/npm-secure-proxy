@@ -18,7 +18,7 @@ import Network.HTTP.Client (Manager, defaultManagerSettings, newManager)
 import Network.HTTP.Types.Status (Status, status200, status201, status404, status500, status503)
 import Test.Hspec
 
-import Ecluse.Core.Credential (mkSecret)
+import Ecluse.Core.Credential (bareCredential, mkSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Fault (TransportCause (TransportUnreachable), tfCause, tfDetail)
 import Ecluse.Core.Package (PackageInfo (infoVersions), PackageName)
@@ -57,14 +57,14 @@ import Ecluse.Test.Maintenance (withBucket)
 import Ecluse.Test.Package (unscopedNpm)
 import Ecluse.Test.Port (passthroughTracingPort)
 import Ecluse.Test.Stub (
-    Captured (capBody, capMethod, capPath),
+    Captured (capBody, capHeaders, capMethod, capPath),
     Stub,
     allCaptured,
     headerValue,
     stubLocalhostUrl,
     withRoutedStub,
  )
-import Ecluse.Test.Wai (freePort, localhost)
+import Ecluse.Test.Wai (freePort, localhost, selfBaseUrlOf)
 
 spec :: Spec
 spec = do
@@ -263,7 +263,7 @@ originAt manager limits baseUrl =
     OriginClient
         { ocBaseUrl = loopbackRegistryUrl baseUrl
         , ocManager = manager
-        , ocToken = Just (mkSecret "write-token")
+        , ocToken = Just (bareCredential (mkSecret "write-token"))
         , ocLimits = limits
         }
 
@@ -341,21 +341,21 @@ version = mkVersion Npm
 answerStore :: Captured -> (Status, LBS.ByteString)
 answerStore captured = case (capMethod captured, capPath captured) of
     ("GET", "/-/all") -> (status200, encode listingDocument)
-    ("GET", _) -> (status200, encode packumentDocument)
+    ("GET", _) -> (status200, encode (packumentDocumentOn (capAuthority captured)))
     _ -> (status201, "{\"ok\":true}")
 
 {- The store answers the tarball delete with a body past the bound. The delete reached it, so
 the version's fate is unknown, which is what the sequence's fault arm must report.  -}
 answerOversizedDelete :: Captured -> (Status, LBS.ByteString)
 answerOversizedDelete captured = case capMethod captured of
-    "GET" -> (status200, encode packumentDocument)
+    "GET" -> (status200, encode (packumentDocumentOn (capAuthority captured)))
     "DELETE" -> (status201, LBS.replicate 20000 0x61)
     _ -> (status201, "{\"ok\":true}")
 
 -- The store refuses the packument edit, so the tarball delete must never be sent.
 answerRefusingEdit :: Captured -> (Status, LBS.ByteString)
 answerRefusingEdit captured = case capMethod captured of
-    "GET" -> (status200, encode packumentDocument)
+    "GET" -> (status200, encode (packumentDocumentOn (capAuthority captured)))
     _ -> (status500, "{\"error\":\"refused\"}")
 
 -- A store holding nothing: the listing, the packument, and every read answer 404.
@@ -369,8 +369,8 @@ listingDocument :: Value
 listingDocument =
     object ["_updated" .= (1 :: Int), "leftpad" .= object [], "rightpad" .= object []]
 
-packumentDocument :: Value
-packumentDocument =
+packumentDocumentOn :: Text -> Value
+packumentDocumentOn authority =
     object
         [ "_id" .= ("leftpad" :: Text)
         , "_rev" .= ("3-abc" :: Text)
@@ -385,8 +385,15 @@ packumentDocument =
         object
             [ "name" .= ("leftpad" :: Text)
             , "version" .= raw
-            , "dist" .= object ["tarball" .= ("http://store.test/leftpad/-/leftpad-" <> raw <> ".tgz")]
+            , -- The store serves its own tarball bytes, so the location names the authority
+              -- that served the document. A foreign one would drop the version at projection.
+              "dist" .= object ["tarball" .= (authority <> "/leftpad/-/leftpad-" <> raw <> ".tgz")]
             ]
+
+{- The authority a captured request reached the stub on, so a fixture can name locations the
+store itself serves rather than a foreign host the projection would drop. -}
+capAuthority :: Captured -> Text
+capAuthority = selfBaseUrlOf . capHeaders
 
 -- The document the store's first packument edit carried.
 editedPackument :: Stub -> IO Object

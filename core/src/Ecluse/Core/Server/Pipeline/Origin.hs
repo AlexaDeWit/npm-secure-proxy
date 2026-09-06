@@ -37,6 +37,7 @@ module Ecluse.Core.Server.Pipeline.Origin (
     fetchPrivateOrigin,
     fetchPublicOrigin,
     withPublicMetadataClient,
+    withPrivateMetadataClient,
 
     -- * One origin's coordinates
     mountOrigin,
@@ -48,7 +49,7 @@ import Network.HTTP.Client (Manager)
 import UnliftIO (withRunInIO)
 import UnliftIO.Exception (tryAny)
 
-import Ecluse.Core.Credential (Secret)
+import Ecluse.Core.Credential (ClientCredential)
 import Ecluse.Core.Package (PackageInfo (infoVersions), PackageName, renderPackageName)
 import Ecluse.Core.Package.Merge (Provenance)
 import Ecluse.Core.Registry.Adapter.Capability (AdapterMetadata (metadataNewClient))
@@ -151,17 +152,16 @@ The metadata cache keys on the base URL alone, with no credential dimension, so 
 private document would let one client's hit serve another client's document and bypass that
 authorisation.
 -}
-fetchPrivateOrigin :: PackumentDeps -> ServeRuntime -> Maybe Secret -> PackageName -> Handler OriginResult
+fetchPrivateOrigin :: PackumentDeps -> ServeRuntime -> Maybe ClientCredential -> PackageName -> Handler OriginResult
 fetchPrivateOrigin deps rt token name = case pdPrivateBaseUrl deps of
     -- No private upstream on this mount (a serve-only pure public gate): the leg is
     -- structurally absent, so this constructs no client and attempts no fetch.
     Nothing -> pure OriginAbsent
     Just privateBase -> do
         logFM DebugS (ls ("fetching private origin for " <> renderPackageName name))
-        let origin = mountOrigin deps (srPrivateManager rt) privateBase token
         resolved <-
             tryAny $
-                withMetadataClient rt deps Metric.Private Uncached origin $ \client ->
+                withPrivateMetadataClient rt deps privateBase token $ \client ->
                     fetchFullManifest client name
         pure (originResultOf resolved)
 
@@ -206,6 +206,13 @@ withMetadataClient rt deps upstream caching origin k =
     -- The log lines name the origin, and a diagnostic reads characters, not a witness.
     baseUrl = registryUrlText (ocBaseUrl origin)
 
+{- | The private origin's read handle: uncached, carrying the client's own credential, because
+the cache keys on the base URL alone and one client's entry must never serve another's.
+-}
+withPrivateMetadataClient :: ServeRuntime -> PackumentDeps -> RegistryUrl -> Maybe ClientCredential -> (MetadataClient -> IO a) -> Handler a
+withPrivateMetadataClient rt deps baseUrl token =
+    withMetadataClient rt deps Metric.Private Uncached (mountOrigin deps (srPrivateManager rt) baseUrl token)
+
 {- | The public origin's read handle: anonymous, resolved through the shared metadata cache
 under the base URL's 'Source'. Both 'fetchFullManifest' and the tarball gate's
 'fetchVersionMetadata' go through it, so they share one cache entry.
@@ -219,5 +226,5 @@ withPublicMetadataClient rt deps baseUrl =
 {- | One origin's coordinates for this mount: its own response bound, the leg's manager, and
 the credential posture the caller decided. The artifact path forms its request through it too.
 -}
-mountOrigin :: PackumentDeps -> Manager -> RegistryUrl -> Maybe Secret -> OriginClient
+mountOrigin :: PackumentDeps -> Manager -> RegistryUrl -> Maybe ClientCredential -> OriginClient
 mountOrigin deps = originClient (pdLimits deps)

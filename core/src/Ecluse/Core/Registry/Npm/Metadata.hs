@@ -52,7 +52,7 @@ import Ecluse.Core.Package (
     PackageInfo,
     PackageName,
  )
-import Ecluse.Core.Package.Filter (enforceArtifactScheme, enforceArtifactSchemeDetails)
+import Ecluse.Core.Package.Filter (enforceArtifactLocations, enforceArtifactLocationsOf)
 import Ecluse.Core.Registry (FetchFault, RegistryResponse)
 import Ecluse.Core.Registry.CachedDocument (npmCached)
 import Ecluse.Core.Registry.Metadata (
@@ -68,7 +68,7 @@ import Ecluse.Core.Registry.Npm.Project (
     projectName,
     projectVersionEntry,
  )
-import Ecluse.Core.Registry.Npm.Request (MetadataForm (Full))
+import Ecluse.Core.Registry.Npm.Request (MetadataForm (Full), npmArtifactHosts)
 import Ecluse.Core.Registry.Npm.SelectiveDecode (
     SelectedVersion (svName, svTime, svVersion, svVersionCount),
     SelectiveError (SelectiveTooDeeplyNested, SelectiveUndecodable),
@@ -78,12 +78,14 @@ import Ecluse.Core.Registry.Origin (OriginClient (ocBaseUrl, ocLimits))
 import Ecluse.Core.Registry.Request (noValidators)
 import Ecluse.Core.Registry.WireSupport (Projection (NameMismatch, Projected), checkNameAgreement)
 import Ecluse.Core.Security (
+    AllowedHostPorts,
     LimitError (TooDeeplyNested),
     Limits,
     checkArtifactCount,
     checkNestingDepth,
     checkVersionCount,
     checkVersionCountOf,
+    ecosystemArtifactAuthorities,
     maxNestingDepth,
  )
 import Ecluse.Core.Security.Egress (registryUrlText)
@@ -125,7 +127,7 @@ strict body that read produced, the one place the wire bytes exist.
 fetchNpmManifest :: TracingPort -> OriginClient -> PackageName -> IO (Either MetadataError Manifest)
 fetchNpmManifest tracing origin name =
     fetchThenProject tracing (fetchNpmPackument origin) name $ \body ->
-        manifestOf (digestOf body) . first (enforceArtifactScheme (originBaseUrl origin))
+        manifestOf (digestOf body) . first (enforceArtifactLocations npmArtifactAuthorities (originBaseUrl origin))
             <$> projectNpmManifest (ocLimits origin) name body
   where
     -- Inject npm's raw packument 'Value' into the opaque served-document carrier at the
@@ -163,7 +165,12 @@ a forwarded miss.
 fetchNpmVersion :: TracingPort -> OriginClient -> PackageName -> Version -> IO (Either MetadataError (Maybe PackageDetails))
 fetchNpmVersion tracing origin name version =
     fetchThenProject tracing (fetchNpmPackument origin) name $
-        fmap (>>= enforceArtifactSchemeDetails (originBaseUrl origin)) . projectNpmVersion (ocLimits origin) name version
+        fmap (>>= enforceArtifactLocationsOf npmArtifactAuthorities (originBaseUrl origin)) . projectNpmVersion (ocLimits origin) name version
+
+-- Derived from the same list the adapter hands the tarball-host gate. It is empty, so an npm
+-- artifact is honoured only on the authority that served its packument.
+npmArtifactAuthorities :: AllowedHostPorts
+npmArtifactAuthorities = ecosystemArtifactAuthorities npmArtifactHosts
 
 {- The origin's base URL as characters, for the scheme normalisation that must still
 recognise a non-https (dev loopback) upstream and leave its artifact URLs alone. -}

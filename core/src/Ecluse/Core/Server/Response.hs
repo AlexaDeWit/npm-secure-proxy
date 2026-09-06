@@ -68,6 +68,11 @@ module Ecluse.Core.Server.Response (
     HelpMessage,
     mkHelpMessage,
     appendHelp,
+
+    -- * A refusal's two parts
+    Refusal (..),
+    mkRefusal,
+    renderRefusal,
 ) where
 
 import Data.Semigroup (Max (Max, getMax))
@@ -327,7 +332,25 @@ mkHelpMessage = HelpMessage . T.strip
 A blank or absent help message contributes nothing.
 -}
 appendHelp :: Maybe HelpMessage -> Text -> Text
-appendHelp help message =
-    case help of
-        Just (HelpMessage h) | not (T.null h) -> T.strip message <> " " <> h
-        _ -> message
+appendHelp help = renderRefusal . mkRefusal help
+
+{- | A refusal's text in its two parts, so an ecosystem renders whichever its own denial surface
+carries and the help message is not dropped for one with no envelope to hold both.
+-}
+data Refusal = Refusal
+    { refusalReason :: Text
+    -- ^ Why Écluse refused, in its own words. Always present.
+    , refusalHelp :: Maybe Text
+    -- ^ The operator's help message, absent when none is configured or it is blank.
+    }
+    deriving stock (Eq, Show)
+
+-- | Pair a decided reason with the mount's configured help message, if it has a non-blank one.
+mkRefusal :: Maybe HelpMessage -> Text -> Refusal
+mkRefusal help message = Refusal message (nonBlankHelp =<< help)
+  where
+    nonBlankHelp (HelpMessage h) = if T.null h then Nothing else Just h
+
+-- | The refusal as one line: the reason, with the help message appended after a single space.
+renderRefusal :: Refusal -> Text
+renderRefusal (Refusal reason help) = maybe reason ((T.strip reason <> " ") <>) help

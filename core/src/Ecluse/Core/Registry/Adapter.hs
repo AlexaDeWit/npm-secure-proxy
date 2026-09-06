@@ -27,6 +27,7 @@ module Ecluse.Core.Registry.Adapter (
 import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI, RubyGems))
 import Ecluse.Core.Registry.Adapter.Types
 import Ecluse.Core.Registry.Npm.Adapter (npmAdapter)
+import Ecluse.Core.Registry.PyPI.Adapter (pypiAdapter)
 
 {- | Resolve an ecosystem to its registered 'RegistryAdapter', or 'Nothing' when this build
 carries none. Every arm is explicit, so an added 'Ecosystem' surfaces here as a compiler error.
@@ -34,5 +35,5 @@ carries none. Every arm is explicit, so an added 'Ecosystem' surfaces here as a 
 adapterFor :: Ecosystem -> Maybe RegistryAdapter
 adapterFor = \case
     Npm -> Just npmAdapter
-    PyPI -> Nothing
+    PyPI -> Just pypiAdapter
     RubyGems -> Nothing

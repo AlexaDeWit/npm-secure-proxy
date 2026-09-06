@@ -10,6 +10,7 @@ import Data.Universe.Class (Universe (..))
 import Test.Hspec
 
 import Ecluse.Core.Package (
+    Artifact (artFilename),
     HashAlg (Blake2b, MD5, SHA1, SHA256, SHA384, SHA512, SRI),
     isComputable,
  )
@@ -22,6 +23,7 @@ import Ecluse.Core.Package.Integrity (
     mkMinTrustedIntegrity,
     parseMinIntegrity,
     parseMinTrustedIntegrity,
+    partitionByFloor,
     unMinIntegrity,
     unMinTrustedIntegrity,
  )
@@ -189,3 +191,36 @@ spec = do
         it "BelowFloor for a SHA-256-only version when the floor is SHA-512" $ do
             sha512Floor <- expectRight (mkMinIntegrity SHA512)
             classify sha512Floor [unsafeHash SHA256 validSha256] `shouldBe` BelowFloor
+
+    describe "partitionByFloor (the per-artifact gate)" $ do
+        let named filename hs = (artifactWith hs){artFilename = filename}
+            partition :: NonEmpty Artifact -> Either VersionIntegrity (NonEmpty Text)
+            partition arts = fmap (fmap artFilename) (partitionByFloor defaultMinIntegrity arts)
+
+        it "keeps the files that clear the floor and drops the ones that do not" $
+            -- A release loses only the files that cannot be tied to a tamper-evident
+            -- fingerprint, rather than disappearing whole.
+            partition (named "ok.whl" [unsafeHash SHA256 validSha256] :| [named "legacy.tar.gz" [unsafeHash SHA1 validSha1]])
+                `shouldBe` Right ("ok.whl" :| [])
+
+        it "keeps every file when every file clears the floor" $
+            partition (named "a.whl" [unsafeHash SHA256 validSha256] :| [named "b.whl" [unsafeHash SRI validSha512Sri]])
+                `shouldBe` Right ("a.whl" :| ["b.whl"])
+
+        it "reports BelowFloor when no file clears it but some carry a digest" $
+            partition (named "legacy.tar.gz" [unsafeHash SHA1 validSha1] :| [])
+                `shouldBe` Left BelowFloor
+
+        it "reports NoIntegrity when no file carries a digest at all" $
+            partition (named "bare.whl" [] :| [named "also-bare.tar.gz" []])
+                `shouldBe` Left NoIntegrity
+
+        it "reports BelowFloor when a digest-carrying file sits beside a hashless one" $
+            partition (named "legacy.tar.gz" [unsafeHash SHA1 validSha1] :| [named "bare.whl" []])
+                `shouldBe` Left BelowFloor
+
+        it "either keeps or drops a singleton entire, matching the whole-version verdict" $ do
+            -- npm's artifact set is always a singleton, so the partition is exactly the
+            -- classification it replaces and npm's behaviour does not move.
+            partition (named "one.tgz" [unsafeHash SHA256 validSha256] :| []) `shouldBe` Right ("one.tgz" :| [])
+            partition (named "one.tgz" [unsafeHash SHA1 validSha1] :| []) `shouldBe` Left BelowFloor

@@ -265,6 +265,9 @@ publish budget, which the memory plan allocates exactly when some mount publishe
 publishDepsFor :: RegistryAdapter -> AppConfig -> Limits -> Maybe PublishBudget -> Maybe HelpMessage -> VettedPublication -> Maybe PublishDeps
 publishDepsFor adapter app limits publishBudget helpMessage publication = do
     budget <- publishBudget
+    -- An ecosystem this build writes nothing for carries no publish capability, so the mount's
+    -- publish route stays opt-out and answers its documented refusal.
+    publish <- adapterPublish adapter
     pure
         PublishDeps
             { pubTargetUrl = publicationTargetUrl (vpubTarget publication)
@@ -276,7 +279,7 @@ publishDepsFor adapter app limits publishBudget helpMessage publication = do
             , pubMaxRequestBytes = pbMaxRequestBytes budget
             , pubHelp = helpMessage
             , pubProjectName = adapterProjectName adapter
-            , pubAdapter = adapterPublish adapter
+            , pubAdapter = publish
             }
 
 {- | Whether a name belongs to a namespace this deployment owns. Each arm derives the one predicate every
