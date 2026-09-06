@@ -21,8 +21,10 @@ The **default cycle** covers the first two, and it is what runs unless you turn 
 Each cycle:
 
 1. Reads the store's consent marker and its classification. Both are read again every cycle, so
-   withdrawing either stops the next cycle without a restart. Where a rule reads the advisory
-   database, the first cycle also waits for the first advisory sync, for at most one `cyclePause`.
+   withdrawing the marker on a `codeArtifact` store stops the next cycle with no restart. On a
+   `verdaccio` store consent is a configuration key, so withdrawing it takes a restart. Where a
+   rule reads the advisory database, the first cycle also waits for the first advisory sync, for
+   at most one `cyclePause`.
 2. Lists the store's package names, a page at a time.
 3. Keeps only the names the synced advisory database covers, plus the names an identity-deny rule
    pins. Both sides are read through the ecosystem's own name parser, so a spelling difference
@@ -68,9 +70,14 @@ The Dredger deletes from a store only when that store carries the operator's own
 and only when deleting from it destroys something. It reads both at the start of every cycle,
 through the store backend's own handle.
 
-A `codeArtifact` store carries consent as a repository tag. A `verdaccio` store carries it as
-`permitDeletion: true` under the mirror target's tag. A `registry` store has no consent form and no
-control plane, so the Dredger refuses it at boot and names the tag.
+| Store tag | How you attach consent | How you withdraw it |
+|---|---|---|
+| `codeArtifact` | a repository resource tag, key `ecluse-dredger-consent`, value `true` | remove the tag, and the next cycle halts with no restart |
+| `verdaccio` | `permitDeletion: true` under the mirror target's tag | unset the key and restart, because the boot reads it |
+| `registry` | no consent form and no control plane, so the Dredger refuses the store at boot and names the tag | |
+
+The Dredger never writes a consent marker. Placing one and removing it are yours alone, and the
+full walk's resumption marker is a separate tag key so a marker write cannot reach your consent.
 
 A store that refills itself from an upstream is not swept: deleting from a pull-through cache
 changes nothing, and the cycle halts saying so. The halt line names the backend, so an operator
