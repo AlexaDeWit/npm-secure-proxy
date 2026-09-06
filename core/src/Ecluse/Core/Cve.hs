@@ -57,7 +57,7 @@ import UnliftIO.Exception (catch, catchAny, onException, throwIO)
 import Ecluse.Core.Cve.Internal (AdvisoryRange (..), CveDbRejected (..), advisoriesQuery, coveredNamesQuery, openHardenedConnection, probeQuery, provenanceQuery)
 import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Osv.Types (UpperBound (..))
-import Ecluse.Core.Version (compareVersions, mkVersion)
+import Ecluse.Core.Version (compareVersions, mkVersion, parseVersionKey)
 
 import Database.SQLite.Simple (Connection, SQLError, close)
 
@@ -151,10 +151,14 @@ taggedQuery tag act = act `catch` \(err :: SQLError) -> throwIO (CveQueryFault t
 
 {- | Is this version inside the advisory segment's affected interval, under the ecosystem's
 version ordering? __Fail-closed:__ an unprovable comparison, from an unparseable bound or
-version, counts as __inside__.
+version, counts as __inside__, so a range with an endpoint the grammar rejects covers every
+version of its package. The one exception is a segment naming a single unorderable version
+('unorderablePoint'), which nothing can order and which therefore matches only itself.
 -}
 insideAffectedRange :: Ecosystem -> Text -> AdvisoryRange -> Bool
-insideAffectedRange eco versionText ar = atOrAboveIntroduced && withinUpperBound
+insideAffectedRange eco versionText ar = case unorderablePoint eco ar of
+    Just only -> versionText == only
+    Nothing -> atOrAboveIntroduced && withinUpperBound
   where
     v = mkVersion eco versionText
 
@@ -179,6 +183,19 @@ insideAffectedRange eco versionText ar = atOrAboveIntroduced && withinUpperBound
             Nothing -> True
         -- No upper bound: the range never ends.
         Unbounded -> True
+
+{- | The single version a segment names, when it names one that no ordering can place: both
+bounds are the same text and the grammar rejects it. OSV writes an exactly enumerated version
+this way, so the affected set is that literal string. A parseable point keeps the comparison,
+which admits the equal version through the ordinary inclusive bounds.
+-}
+unorderablePoint :: Ecosystem -> AdvisoryRange -> Maybe Text
+unorderablePoint eco ar = case (arIntroduced ar, arUpperBound ar) of
+    (Just introduced, LastAffected lastAffected)
+        | introduced == lastAffected
+        , isLeft (parseVersionKey eco introduced) ->
+            Just introduced
+    _ -> Nothing
 
 {- | Does this segment's score, a CVSS base score or an EPSS probability, meet the deny
 threshold? __Fail-closed:__ an absent score ('Nothing') meets every threshold, because an
