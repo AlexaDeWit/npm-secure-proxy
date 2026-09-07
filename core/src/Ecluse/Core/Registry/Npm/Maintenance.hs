@@ -2,12 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | npm's store maintenance verbs: the package listing @GET \/-\/all@, and the unpublish
-sequence that removes one version. Pure request formation and projection, in the shape
-"Ecluse.Core.Registry.Adapter.Capability" declares, so the backend leaf that drives them speaks
-no npm. The unpublish is two requests, both required: a @PUT@ of the packument with the version
-edited out, then a @DELETE@ of its tarball. Both address the document revision the edit was
-formed from, which is why the sequence is re-read per version rather than batched.
+{- | npm listing and unpublish requests for the protocol maintenance backend.
+The final version requires whole-package deletion, because an empty Verdaccio
+packument truncates subsequent store listings.
 -}
 module Ecluse.Core.Registry.Npm.Maintenance (
     npmMaintenance,
@@ -76,9 +73,7 @@ npmMaintenance =
         , maintenanceAlphabet = mkNameAlphabet npmNameLeadChars
         }
 
-{- | Form the listing read @GET {base}\/-\/all@. A store that does not implement it answers
-something other than @200@, which is the caller's to classify.
--}
+-- | Read the store listing. The caller classifies any response other than @200@.
 listingRequestFor :: OriginClient -> Either UrlFormationError Request
 listingRequestFor origin = do
     url <- joinPath (originBase origin) "-/all"
@@ -86,9 +81,7 @@ listingRequestFor origin = do
     pure . withToken (ocToken origin) $
         base{requestHeaders = (hAccept, "application/json") : requestHeaders base}
 
-{- | Project a listing body onto the names it holds. @\/-\/all@ carries an @_updated@
-bookkeeping key beside the packages, and a key that is no npm name is dropped.
--}
+-- | Ignore the @_updated@ bookkeeping key and keys that are not npm package names.
 parsePackageListing :: ByteString -> Either ParseError [PackageName]
 parsePackageListing body = case decodeStrict body :: Maybe Object of
     Nothing -> Left (ParseError "the store's package listing is not a JSON object")
@@ -101,16 +94,12 @@ parsePackageListing body = case decodeStrict body :: Maybe Object of
             , Right name <- [projectName raw]
             ]
 
-{- | Form the packument read the unpublish edit is built from. It asks for the full form,
-because the abbreviated install view carries neither @_rev@ nor @time@.
--}
+-- | Read the full packument, because the install view omits @_rev@ and @time@.
 packumentRequestFor :: OriginClient -> PackageName -> Either UrlFormationError Request
 packumentRequestFor origin =
     metadataRequest (originBase origin) (ocToken origin) Full noValidators
 
-{- | Form the two requests that remove one version: the edited packument, then its tarball.
-Both carry the revision the fetched packument reported.
--}
+-- | Refuse absent versions and unreadable revisions. Delete the whole package only for its last version.
 versionDeleteRequestsFor ::
     OriginClient ->
     PackageName ->
@@ -125,15 +114,19 @@ versionDeleteRequestsFor origin name version response = do
         maybeToRight
             (storeRefusal "VERSION_ABSENT" "the store's packument holds no such version")
             (KeyMap.lookup (Key.fromText raw) versions)
-    let filename = tarballFilename name version manifest
-        edited = removeVersion raw versions packument
-    editRequest <- unformable (packumentPutRequest origin name revision edited)
-    tarballRequest <- unformable (tarballDeleteRequest origin name filename revision)
-    pure (editRequest :| [tarballRequest])
+    if KeyMap.size versions == 1
+        then do
+            request <- unformable (packageUrl (originBase origin) name >>= deleteAtRevision origin revision)
+            pure (request :| [])
+        else do
+            let filename = tarballFilename name version manifest
+                edited = removeVersion raw versions packument
+            editRequest <- unformable (packumentPutRequest origin name revision edited)
+            tarballRequest <- unformable (artifactFileUrl (originBase origin) name filename >>= deleteAtRevision origin revision)
+            pure (editRequest :| [tarballRequest])
   where
     raw = renderVersion version
 
--- The base URL as characters, read once per formation rather than at every join.
 originBase :: OriginClient -> Text
 originBase = registryUrlText . ocBaseUrl
 
@@ -147,8 +140,7 @@ decodePackument body =
         (storeRefusal "UNREADABLE_DOCUMENT" "the store's packument is not a JSON object")
         (decodeStrict body)
 
-{- The revision marker addresses the edit at the document it was formed from. Verdaccio does
-not check it, and a registry that does would apply the edit to a document nobody read. -}
+-- Verdaccio does not enforce revision matching, so concurrent publishes can be lost.
 revisionOf :: Object -> Either StoreRefusal Text
 revisionOf packument = case KeyMap.lookup "_rev" packument of
     Just (String revision) | isSafeComponent revision -> Right revision
@@ -177,10 +169,9 @@ packumentPutRequest origin name revision packument = do
                     : requestHeaders base
             }
 
-tarballDeleteRequest :: OriginClient -> PackageName -> Text -> Text -> Either UrlFormationError Request
-tarballDeleteRequest origin name filename revision = do
-    url <- atRevision revision <$> artifactFileUrl (originBase origin) name filename
-    base <- parseRequestEither url
+deleteAtRevision :: OriginClient -> Text -> Text -> Either UrlFormationError Request
+deleteAtRevision origin revision url = do
+    base <- parseRequestEither (atRevision revision url)
     pure
         . withToken (ocToken origin)
         $ base
@@ -207,14 +198,12 @@ removeVersion raw versions packument =
             guard (KeyMap.lookup "latest" tags == Just (String raw))
             greatestVersion (map Key.toText (KeyMap.keys remaining))
 
--- Apply an edit to an object-valued key, leaving a key that is absent or not an object alone.
 adjustObject :: Key.Key -> (Object -> Object) -> Object -> Object
 adjustObject key edit document = case KeyMap.lookup key document of
     Just (Object inner) -> KeyMap.insert key (Object (edit inner)) document
     _ -> document
 
-{- The greatest of the surviving versions by npm's own ordering. A pair neither of which
-parses falls back to comparing the raw text, so the choice is total and deterministic. -}
+-- Non-semver pairs use text ordering to keep the choice deterministic.
 greatestVersion :: [Text] -> Maybe Text
 greatestVersion = foldl' keepGreater Nothing
   where
@@ -222,15 +211,12 @@ greatestVersion = foldl' keepGreater Nothing
     greater a b = if ordering a b == GT then a else b
     ordering a b = fromMaybe (compare a b) (compareVersions (mkVersion Npm a) (mkVersion Npm b))
 
-{- The tarball's on-the-wire filename. @dist.tarball@ is what this store itself serves the
-version from, and npm's conventional name stands in when the manifest carries none. -}
 tarballFilename :: PackageName -> Version -> Value -> Text
 tarballFilename name version manifest =
     fromMaybe conventional (mfilter isSafeComponent (nonBlank =<< distTarballSegment manifest))
   where
     conventional = unscopedName name <> "-" <> renderVersion version <> ".tgz"
 
-{- The filename of @dist.tarball@, which the store chose and Écluse never validated. -}
 distTarballSegment :: Value -> Maybe Text
 distTarballSegment manifest = urlFilename =<< tarballUrl manifest
 

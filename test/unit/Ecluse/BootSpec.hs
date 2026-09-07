@@ -2,6 +2,7 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | Process exits, configuration refusal, and resource cleanup at the boot boundary.
 module Ecluse.BootSpec (spec) where
 
 import Prelude hiding (get)
@@ -14,20 +15,21 @@ import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
-import UnliftIO (throwIO, timeout, try)
+import UnliftIO (bracket_, throwIO, timeout, try)
 import UnliftIO.Concurrent (threadDelay)
 
 import Ecluse (ProcessOutcome (..), exitCodeFor, run, superviseProcess)
-import Ecluse.Boot (BootAborted (..), applySecretFileIndirection, orExit, readConfigDocument)
+import Ecluse.Boot (BootAborted (..), BootEnv (beLogEnv), applySecretFileIndirection, logBootInfo, orExit, readConfigDocument, withBootEnv)
 import Ecluse.Composition.BootError (
     BootError (AwsEndpointMalformed, MirrorTargetOnMountEndpoint, SplitRoleNeedsDurableQueue),
     renderBootError,
  )
 import Ecluse.Composition.Support (malformedAwsEndpoint, noMaintenanceBackend, overrideEnv, withoutQueueUrl)
+import Ecluse.Composition.Types (BootRole (BootWithoutPipeline))
 import Ecluse.Config (AppConfig (cfgServer), Config (configApp), ServerSettings (srvAuthToken), loadConfig)
 import Ecluse.Core.Credential (Secret, mkSecret, unSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
-import Ecluse.Test.Log (captureStderr)
+import Ecluse.Test.Log (captureStderr, captureStdout)
 
 runEnv :: [(String, String)]
 runEnv =
@@ -41,11 +43,9 @@ runEnv =
     , ("ECLUSE_SERVER__PORT", "0")
     ]
 
--- | A CodeArtifact repository endpoint of the npm format, which its tag validates against.
 codeArtifactRepository :: String
 codeArtifactRepository = "https://d-111122223333.d.codeartifact.us-east-1.amazonaws.com/npm/r/"
 
--- | Whether a variable declares the registry-tagged mirror target 'runEnv' carries.
 isRegistryMirrorKey :: String -> Bool
 isRegistryMirrorKey name = "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__REGISTRY__" `isPrefixOf` name
 
@@ -55,8 +55,20 @@ awsRunEnv =
     ]
         <> runEnv
 
+-- | Verify role boot, process outcomes, and cleanup through the application entry points.
 spec :: Spec
 spec = do
+    describe "process log cleanup" $
+        forM_ [("normal return", Right ()), ("exceptional exit", Left (SimulatedServiceFault "role failed"))] $ \(label, expected) ->
+            it ("drains queued final audit lines on " <> label) $
+                bracket_ (traverse_ (uncurry setEnv) runEnv) (traverse_ (unsetEnv . fst) runEnv) $ do
+                    output <- captureStdout $ do
+                        result <- try $ withBootEnv BootWithoutPipeline $ \boot -> do
+                            replicateM_ 100 (logBootInfo (beLogEnv boot) "final queued audit marker")
+                            either throwIO pure expected
+                        result `shouldBe` expected
+                    length (filter (T.isInfixOf "final queued audit marker") (lines output)) `shouldBe` 100
+
     describe "run" $ do
         it "boots from the environment layer alone (no document, no AWS_REGION) and serves" $ do
             -- The queue URL's own host carries the region, so a real SQS
@@ -157,19 +169,14 @@ spec = do
             outcome `shouldBe` Nothing
 
         it "refuses ecluse mirror over the in-memory queue, naming that command" $
-            -- The one guard on the CLI-to-role mapping. 'ecluse proxy' boots this same
-            -- configuration, so a dispatch that named the wrong role would not refuse at all,
-            -- and one that named the other split role would quote the wrong command.
+            -- The proxy accepts this configuration, so the refusal identifies the dispatched role.
             splitRoleRefusal ["mirror"] `shouldReturn` refusalNaming "ecluse mirror"
 
         it "refuses ecluse proxy --no-worker over the in-memory queue, naming that command" $
             splitRoleRefusal ["proxy", "--no-worker"] `shouldReturn` refusalNaming "ecluse proxy --no-worker"
 
         it "refuses ecluse dredger where the mirror target is also the private upstream" $
-            -- The guard on the dredger's own CLI-to-role mapping. Only the pruning role refuses
-            -- this configuration: every other role advises and boots, so a dispatch naming the
-            -- wrong role would serve here instead of refusing. The collapsed target is also one
-            -- no backend here sweeps, and the pass reports both.
+            -- Only the Dredger refuses this collapsed target and its missing maintenance backend.
             bootRefusal ["dredger"] collapsedMirrorEnv
                 `shouldReturn` (Left (ExitFailure 2), map renderBootError [collapsedMirrorRefusal, noMaintenanceBackend])
 
@@ -256,9 +263,7 @@ spec = do
                                                   , "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__TOKEN"
                                                   , "ECLUSE_MOUNTS__NPM__PUBLICATION_TARGET__CODE_ARTIFACT__TOKEN"
                                                   ]
-                            -- The value must survive the whole load verbatim: a JSON-looking secret
-                            -- must never be coerced to a non-string. Only the auth token is loaded,
-                            -- because the mount tokens rightly refuse without their mirror target.
+                            -- JSON-looking secrets must retain their exact string value through loading.
                             case loadConfig (filter ((== "ECLUSE_SERVER__AUTH_TOKEN") . fst) env) Nothing of
                                 Left e -> expectationFailure ("unexpected decode error for " <> toString payload <> ": " <> show e)
                                 Right cfg ->
@@ -375,9 +380,7 @@ spec = do
                 other -> expectationFailure ("expected ServiceExited, got " <> show other)
 
         it "classifies a kill delivery (ThreadKilled) as RunCancelled" $
-            -- A genuine asynchronous delivery, as base 'Conc.throwTo', 'killThread' and the RTS
-            -- use. An async-hygienic catch would rethrow it before the classification ran, so this
-            -- pins that the perimeter observes real kills.
+            -- Deliver a real asynchronous exception to exercise the process perimeter's cancellation path.
             superviseProcess (Conc.myThreadId >>= \tid -> Conc.throwTo tid ThreadKilled >> pure ShutdownRequested)
                 `shouldReturn` RunCancelled
 
@@ -410,9 +413,6 @@ spec = do
                 Left (BootAborted rendered) -> rendered `shouldBe` "boot rejected"
                 Right () -> expectationFailure "expected the boot to abort"
 
-{- | Boot one argument vector over one environment: the exit status it earns, and the report it
-printed. A role that does not refuse serves instead, which the timeout ends.
--}
 bootRefusal :: [String] -> [(String, String)] -> IO (Either ExitCode (Maybe ()), [Text])
 bootRefusal args envVars = do
     unsetEnv "AWS_REGION"
@@ -427,36 +427,28 @@ bootRefusal args envVars = do
         Nothing -> fail "the boot left no outcome behind"
         Just result -> pure (result, reportLines report)
 
--- | 'bootRefusal' over a mirroring configuration with no durable queue.
 splitRoleRefusal :: [String] -> IO (Either ExitCode (Maybe ()), [Text])
 splitRoleRefusal args = bootRefusal args (withoutQueueUrl runEnv)
 
--- | The npm mount mirroring where it reads: a writing role's advisory, the Dredger's refusal.
 collapsedMirrorEnv :: [(String, String)]
 collapsedMirrorEnv = overrideEnv "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__REGISTRY__URL" "https://private.example.test" runEnv
 
--- | The one refusal that configuration earns, and only under @ecluse dredger@.
 collapsedMirrorRefusal :: BootError
 collapsedMirrorRefusal = MirrorTargetOnMountEndpoint Npm Npm "privateUpstream" "https://private.example.test"
 
--- | What 'splitRoleRefusal' must return: exit 2, and the refusal quoting one invocation.
 refusalNaming :: Text -> (Either ExitCode (Maybe ()), [Text])
 refusalNaming invocation =
     (Left (ExitFailure 2), [renderBootError (SplitRoleNeedsDurableQueue invocation)])
 
--- | 'malformedAwsEndpoint' as the refusal carries it, redacted behind the secret.
 malformedSecret :: Secret
 malformedSecret = mkSecret (toText malformedAwsEndpoint)
 
--- | The one rendered line both entry points report for 'malformedAwsEndpoint'.
 endpointRefusal :: Text
 endpointRefusal = renderBootError (AwsEndpointMalformed malformedSecret)
 
--- | The non-blank lines of a captured refusal report.
 reportLines :: Text -> [Text]
 reportLines = filter (not . T.null) . lines
 
--- | A typed stand-in for a service's synchronous escape.
 newtype SimulatedServiceFault = SimulatedServiceFault Text
     deriving stock (Eq, Show)
 

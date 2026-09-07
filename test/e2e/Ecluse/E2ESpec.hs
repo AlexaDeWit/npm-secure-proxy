@@ -2,21 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The end-to-end scenarios, driven through the real @npm@ CLI against the real image.
-
-__One data plane, shared per-describe proxies__. The whole suite shares a single data
-plane: the docker network plus the Verdaccio, nginx, and ministack containers, booted once
-by 'withGlobalDataPlane' under @aroundAll@. On top of it each @describe@ block boots its
-own proxy under @aroundAllWith@ ('withE2E' \/ 'withE2EWith'). A telemetry scenario also
-gets its own OTLP collector. A block's cases share that proxy rather than booting one per
-case. Cases stay independent by acting on __distinct fixture packages__, not by
-a fresh environment each. The scenarios use @allowPkg@, @denyPkg@, @tamperPkg@, @headPkg@,
-@mirrorPkg@, and others, so no case observes another's mirror state or its bracketed
-(paused-then-resumed) upstream. When the environment is unavailable (no docker or image),
-every case reports @pending@ rather than failing.
-
-Graceful drain is @pending@ here, and it sits outside the @aroundAll@ so it boots no
-environment until the drain path exists.
+{- | Whole-system scenarios share local stores and run real npm clients against the product image.
+Each scenario group boots its own proxy. Missing prerequisites report pending cases.
 -}
 module Ecluse.E2ESpec (spec) where
 
@@ -43,6 +30,7 @@ import Ecluse.E2E.Fixtures (
  )
 import Ecluse.E2E.Harness
 
+-- | Drive the product image with real npm clients and local stores.
 spec :: Spec
 spec = do
     unavailable <- runIO e2eUnavailable
@@ -56,10 +44,6 @@ spec = do
             dredgerFirstPartyScenario
             pendingScenarios
 
-{- | The active scenarios, grouped into @describe@ blocks that each share one proxy under
-@aroundAllWith@. Cases stay independent through distinct fixture packages, not a fresh
-environment each (see the module header).
--}
 scenarios :: SpecWith GlobalDataPlane
 scenarios = do
     describe "read-only and non-interfering scenarios (shared environment)" $ aroundAllWith withE2E $ do
@@ -76,9 +60,6 @@ scenarios = do
                 mirrored `shouldBe` False
 
             it "runs no package lifecycle script during a harness install (defence in depth)" $ \e2e -> do
-                -- This proves our own npm CLI runs no lifecycle script even when one is present,
-                -- closing the arbitrary-code-execution surface in Écluse's own CI. The probe
-                -- project's postinstall creates a sentinel, so none means ignore-scripts held.
                 (installed, scriptRan) <- installWithLifecycleProbe e2e
                 void $ shouldSucceed installed
                 scriptRan `shouldBe` False
@@ -106,9 +87,6 @@ scenarios = do
 
         describe "server↔worker -- the full mirror lifecycle" $
             it "mirrors a package served from public, then installs it from the mirror with public down" $ \e2e -> do
-                -- The core resilience loop: the proxy serves a package from public, the worker
-                -- mirrors it, then an npm ci succeeds with public paused. npm ci fetches from the
-                -- lockfile's resolved URL without re-resolving, so the bytes came from the mirror.
                 let name = psName mirrorPkg
                     ver = psVersion mirrorPkg
                 presentBefore <- verdaccioHasVersionNow e2e name ver -- (1) a miss in the private mirror
@@ -125,9 +103,6 @@ scenarios = do
                 status <- proxyPut e2e ("/npm/" <> publishInScopeName)
                 status `shouldBe` 405
 
-{- | The whole-system telemetry scenarios. Each @describe@ block boots its own proxy under
-@aroundAllWith@ with its own telemetry topology ('E2EConfig'), which no sibling block sees.
--}
 telemetryScenarios :: SpecWith GlobalDataPlane
 telemetryScenarios = do
     -- Real healthy OTLP publication: with telemetry on and an OTLP endpoint, a real npm
@@ -176,9 +151,6 @@ telemetryScenarios = do
                 logged <- awaitProxyLog e2e (T.isInfixOf "\"message\":") 80
                 logged `shouldBe` True
 
-    -- OTLP on with no collector standing, so its alias does not resolve. The batch exporter
-    -- fails off the request path, so an absent collector never takes the proxy down. The
-    -- runtime wraps the exporters because hs-opentelemetry 1.0.0.0 drops a failed export silently.
     describe "telemetry -- OTLP on but the collector unreachable (#325)" $
         aroundAllWith (withE2EWith E2EConfig{ecCollector = False, ecExtraEnv = otlpCollectorEnv}) $
             it "surfaces a throttled export-failure warning yet keeps serving -- an absent collector degrades visibly, no crash" $ \e2e -> do
@@ -236,10 +208,6 @@ telemetryScenarios = do
                         80
                 correlated `shouldBe` True
 
-{- | The first-party publish scenarios. The round-trip and the anti-shadowing refusal share one
-proxy with 'publishTargetEnv' layered in, where Verdaccio is both the publication target and the
-private upstream. The cases use distinct package names, so neither observes the other's publish.
--}
 publishScenarios :: SpecWith GlobalDataPlane
 publishScenarios = do
     describe "first-party publish -- publication target enabled" $
@@ -263,19 +231,12 @@ publishScenarios = do
                 -- below is attributable to the refusal, not to stale state.
                 absentBefore <- verdaccioHasVersionNow e2e name ver
                 absentBefore `shouldBe` False
-                -- The proxy refuses a name outside ECLUSE_MOUNTS__NPM__FIRST_PARTY with a 403
-                -- before the relay. The harness lets Verdaccio accept anonymous publishes, so it
-                -- would store anything that reached it, so a False proves nothing left the proxy.
                 withPublishProject e2e name ver $ \proj -> do
                     void $ npmPublishIn proj >>= shouldFail
                     threadDelay 1500000
                     reached <- verdaccioHasVersionNow e2e name ver
                     reached `shouldBe` False
 
-{- | The Dredger against the store the proxy mirrors into. Its own proxy seeds the store, and the
-sweep then runs as a one-shot container on the same data plane. Both cases act on fixture packages
-no other block installs, so an absence after a sweep is attributable to that sweep.
--}
 dredgerScenarios :: SpecWith GlobalDataPlane
 dredgerScenarios =
     describe "the Dredger against the mirror store" $ aroundAllWith withPlaneAndProxy $ do
@@ -300,15 +261,19 @@ dredgerScenarios =
             condemned <- verdaccioHasVersion e2e (psName dredgerPkg) (psVersion dredgerPkg)
             survivor <- verdaccioHasVersion e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
             (condemned, survivor) `shouldBe` (True, True)
+            namesBefore <- verdaccioListing e2e
             run <- runDredgerOnce gdp ["--once"] [("ECLUSE_RULES", identityDenyOf dredgerPkg)]
-            -- The Dredger's own log carries why a cycle swept nothing: a halt, a refused delete,
-            -- an empty candidate set, or a boot it never got past. Report it rather than a bare
-            -- False, so one run is enough to say what happened.
             unless (dredgerExit run == ExitSuccess) (failWithLog run "the sweep exited non-zero")
             gone <- verdaccioHasVersionNow e2e (psName dredgerPkg) (psVersion dredgerPkg)
             when gone (failWithLog run "the condemned version is still served")
             kept <- verdaccioHasVersionNow e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
             unless kept (failWithLog run "the version no rule named was deleted too")
+            namesAfter <- verdaccioListing e2e
+            namesAfter `shouldMatchList` filter (/= psName dredgerPkg) namesBefore
+            unless (("deleting " <> psName dredgerPkg <> "@" <> psVersion dredgerPkg <> ": blocked by DenyByIdentity") `T.isInfixOf` dredgerOutput run) $
+                failWithLog run "the sweep reported no deletion audit"
+            unless ("examined 1, deleted 1, kept 0, guard-skipped 0" `T.isInfixOf` dredgerOutput run) $
+                failWithLog run "the sweep counters disagree with the store"
 
         it "reports what a dry run would delete, and leaves the version the store serves" $ \(gdp, e2e) -> do
             void $ npmInstall e2e (psName dredgerDryRunPkg) >>= shouldSucceed
@@ -318,16 +283,19 @@ dredgerScenarios =
             -- package the store serves but has not listed is a package the sweep never sees.
             unlisted <- verdaccioAwaitListed e2e (psName dredgerDryRunPkg)
             whenJust unlisted (expectationFailure . toString)
+            namesBefore <- verdaccioListing e2e
             run <- runDredgerOnce gdp ["--once", "--dry-run"] [("ECLUSE_RULES", identityDenyOf dredgerDryRunPkg)]
             unless (dredgerExit run == ExitSuccess) (failWithLog run "the rehearsal exited non-zero")
             -- The rehearsal counts in the cycle's deleted column, so one dry run reports the reach
             -- a real run would have. Both the audit line and that count have to say so.
             unless (wouldDeleteLineFor dredgerDryRunPkg `T.isInfixOf` dredgerOutput run) $
                 failWithLog run "the rehearsal named no version it would delete"
-            unless ("deleted 1" `T.isInfixOf` dredgerOutput run) $
+            unless ("examined 1, deleted 1, kept 0, guard-skipped 0" `T.isInfixOf` dredgerOutput run) $
                 failWithLog run "the rehearsal reported no would-delete count"
             served <- verdaccioHasVersionNow e2e (psName dredgerDryRunPkg) (psVersion dredgerDryRunPkg)
             unless served (failWithLog run "the rehearsal deleted the version it only rehearsed")
+            namesAfter <- verdaccioListing e2e
+            namesAfter `shouldMatchList` namesBefore
 
         it "refuses to boot without the consent key, and names it" $ \(gdp, _) -> do
             -- The harness's own environment carries the consent, so the case withholds it by
@@ -343,9 +311,6 @@ dredgerScenarios =
             unless (consentKey `T.isInfixOf` dredgerOutput run) $
                 failWithLog run "the refusal did not name the key an operator sets"
 
-{- | The Dredger against a store holding a first-party version. It needs its own proxy, because
-publishing takes a publication target the other blocks do not configure.
--}
 dredgerFirstPartyScenario :: SpecWith GlobalDataPlane
 dredgerFirstPartyScenario =
     describe "the Dredger against a first-party version" $
@@ -356,6 +321,7 @@ dredgerFirstPartyScenario =
                 onTarget `shouldBe` True
                 unlisted <- verdaccioAwaitListed e2e publishDredgerName
                 whenJust unlisted (expectationFailure . toString)
+                namesBefore <- verdaccioListing e2e
                 -- The deny names this very version, so surviving is the belt's doing and not the
                 -- candidate set's. The Dredger reads the same namespace the publish was scoped to.
                 run <-
@@ -368,10 +334,12 @@ dredgerFirstPartyScenario =
                 unless (dredgerExit run == ExitSuccess) (failWithLog run "the sweep exited non-zero")
                 -- The belt skips a first-party version before reading its metadata, so it counts
                 -- under guard-skipped and never under examined.
-                unless ("guard-skipped 1" `T.isInfixOf` dredgerOutput run) $
+                unless ("examined 0, deleted 0, kept 0, guard-skipped 1" `T.isInfixOf` dredgerOutput run) $
                     failWithLog run "the sweep did not skip the version the belt shields"
                 kept <- verdaccioHasVersionNow e2e publishDredgerName publishVersion
                 unless kept (failWithLog run "the first-party version was deleted")
+                namesAfter <- verdaccioListing e2e
+                namesAfter `shouldMatchList` namesBefore
 
 -- The audit line a rehearsal writes for a version it would have deleted.
 wouldDeleteLineFor :: PkgSpec -> Text
@@ -390,17 +358,12 @@ failWithLog run reason =
 withPlaneAndProxy :: ((GlobalDataPlane, E2E) -> IO ()) -> GlobalDataPlane -> IO ()
 withPlaneAndProxy = withPlaneAndProxyWith defaultE2EConfig
 
--- | 'withPlaneAndProxy' over a proxy the case configures, for one that publishes as well as seeds.
 withPlaneAndProxyWith :: E2EConfig -> ((GlobalDataPlane, E2E) -> IO ()) -> GlobalDataPlane -> IO ()
 withPlaneAndProxyWith cfg action gdp = withE2EWith cfg (\e2e -> action (gdp, e2e)) gdp
 
-{- | A rule set with one identity deny and no advisory rule, so the sweep needs no advisory
-database and only the named version is condemned.
--}
 identityDenyOf :: PkgSpec -> Text
 identityDenyOf p = identityDenyOfName (psName p) (psVersion p)
 
--- | 'identityDenyOf' over a name a fixture does not carry, for a package a case publishes itself.
 identityDenyOfName :: Text -> Text -> Text
 identityDenyOfName name version =
     "{\"revoke-swept\":{\"type\":\"DenyByIdentity\",\"identity\":\""
@@ -409,15 +372,11 @@ identityDenyOfName name version =
         <> version
         <> "\"}}"
 
-{- | Placeholders for unimplemented work, kept outside @aroundAll@ so they boot no environment.
-Graceful drain @SIGTERM@s the proxy, so when written it needs its own @describe@ block and proxy.
--}
 pendingScenarios :: SpecWith GlobalDataPlane
 pendingScenarios =
     describe "graceful shutdown" $
         it "drains in-flight work on SIGTERM" $ \_ ->
             pendingWith "activates with the #160 graceful-drain work"
 
--- | The mount-relative tarball path for a fixture package's single version.
 tarballPath :: PkgSpec -> Text
 tarballPath p = "/npm/" <> psName p <> "/-/" <> psName p <> "-" <> psVersion p <> ".tgz"
