@@ -259,9 +259,7 @@ spec = do
 
     describe "secrets never reach a log field" $ do
         it "a Secret embedded in a payload renders only its redaction, never the token" $ do
-            -- The realistic leak path: code logs a value built from a Secret. The Secret's Show is
-            -- a fixed placeholder, so the token text cannot reach a structured field.
-            -- Token material must never reach a log (observability.md).
+            -- Token material must never reach a structured log field (observability.md).
             let token = "super-secret-token"
                 leaky = sl "credential" (T.pack (show (mkSecret token)))
             captured <- captureStdout $ do

@@ -13,8 +13,10 @@ module Ecluse.E2E.Harness.Verdaccio (
     verdaccioSnapshot,
 ) where
 
-import Data.Aeson (Object, decodeStrict)
+import Data.Aeson (Object, decodeStrict, eitherDecodeStrict, (.:))
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Types (parseEither)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -29,18 +31,16 @@ import Network.HTTP.Types (statusCode)
 import UnliftIO (handleAny)
 
 import Ecluse.Core.Package (PackageName, renderPackageName)
-import Ecluse.Core.Registry (ParseError (parseErrorMessage), RegistryResponse (RegistryResponse))
+import Ecluse.Core.Registry (ParseError (parseErrorMessage))
 import Ecluse.Core.Registry.Adapter.Capability (AdapterMaintenance (maintenanceListing, maintenanceVersionDelete))
 import Ecluse.Core.Registry.Maintenance (StoreMaintenance (listPackagesIn), collectPages, storeFaultOfMetadata)
 import Ecluse.Core.Registry.Maintenance.Protocol (ProtocolStore (..), newProtocolMaintenance)
 import Ecluse.Core.Registry.Npm.Maintenance (npmMaintenance, parsePackageListing)
 import Ecluse.Core.Registry.Npm.Metadata (fetchNpmManifest)
-import Ecluse.Core.Registry.Npm.Project (parseVersionList)
 import Ecluse.Core.Registry.Npm.Publish (npmPublishCodec)
 import Ecluse.Core.Registry.Origin (originClient)
 import Ecluse.Core.Security (defaultLimits)
 import Ecluse.Core.Security.Egress.DevHttp (loopbackRegistryUrl)
-import Ecluse.Core.Version (renderVersion)
 import Ecluse.E2E.Harness.Types
 import Ecluse.Test.Maintenance (withBucket)
 import Ecluse.Test.Poll (pollUntil)
@@ -120,15 +120,18 @@ verdaccioNamesUnder e2e raw = do
     names <- expectRight (first (\fault -> "Verdaccio bucket " <> raw <> ": " <> show fault) result)
     pure (sort (map renderPackageName names))
 
--- | Read exact version keys. Only HTTP 404 means the package is absent.
+{- | Preserve every raw version key, rejecting unreadable or malformed packuments.
+Only HTTP 404 means the package is absent.
+-}
 verdaccioVersions :: E2E -> Text -> IO [Text]
 verdaccioVersions e2e name = do
     resp <- fetchPackument e2e name
     let status = statusCode (responseStatus resp)
-        body = RegistryResponse (LBS.toStrict (responseBody resp))
+        body = LBS.toStrict (responseBody resp)
+        versions = eitherDecodeStrict body >>= parseEither (.: "versions") :: Either String Object
     case status of
         404 -> pure []
-        200 -> sort . map renderVersion <$> expectRight (first (\err -> name <> ": " <> parseErrorMessage err) (parseVersionList body))
+        200 -> sort . map Key.toText . KeyMap.keys <$> expectRight (first (\err -> name <> ": " <> toText err) versions)
         _ -> expectRight (Left (name <> ": packument returned HTTP " <> show status) :: Either Text [Text])
 
 -- | Snapshot every listed package and its versions, failing if a packument cannot be read.
