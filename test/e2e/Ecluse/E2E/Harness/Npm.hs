@@ -2,6 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
+{- | npm clients for end-to-end scenarios.
+Each project isolates npm state and disables package lifecycle scripts.
+-}
 module Ecluse.E2E.Harness.Npm (
     npmInstall,
     npmInstallIn,
@@ -38,24 +41,22 @@ import UnliftIO.Environment (getEnvironment)
 import Ecluse.E2E.Harness.Docker (uniqueSuffix)
 import Ecluse.E2E.Harness.Types
 
+-- | Fail the assertion with npm's output when the command failed.
 shouldSucceed :: (MonadIO m) => NpmResult -> m NpmResult
 shouldSucceed res = liftIO $ case npmExit res of
     ExitSuccess -> pure res
     _ -> expectationFailure ("npm failed!\nSTDOUT:\n" <> T.unpack (npmStdout res) <> "\nSTDERR:\n" <> T.unpack (npmStderr res)) >> pure res
 
+-- | Fail the assertion with npm's output when the command unexpectedly succeeded.
 shouldFail :: (MonadIO m) => NpmResult -> m NpmResult
 shouldFail res = liftIO $ case npmExit res of
     ExitSuccess -> expectationFailure ("npm incorrectly succeeded!\nSTDOUT:\n" <> T.unpack (npmStdout res) <> "\nSTDERR:\n" <> T.unpack (npmStderr res)) >> pure res
     _ -> pure res
 
-{- | Bracket an isolated npm consumer project: a consumer @package.json@, an empty @.npmrc@, and
-the pinned isolated environment. For a publish-capable project, see 'withPublishProject'.
--}
+-- | Isolate a consumer's npm state and remove its project directory after the action.
 withNpmProject :: E2E -> (NpmProject -> IO a) -> IO a
 withNpmProject e2e = withProjectContents e2e consumerPackageJson ""
 
-{- The shared body behind 'withNpmProject' and 'withPublishProject'. The pinned cache,
-userconfig, prefix, and @HOME@ keep developer global state out and the proxy the only registry. -}
 withProjectContents :: E2E -> Text -> Text -> (NpmProject -> IO a) -> IO a
 withProjectContents e2e packageJson npmrcContents use = do
     sfx <- uniqueSuffix
@@ -99,9 +100,7 @@ withProjectContents e2e packageJson npmrcContents use = do
         (\_ -> handleAny (const pass) (removePathForcibly projectDir))
         use
 
-{- | Bracket an isolated, __publishable__ npm project. Without the @.npmrc@ bearer token npm
-refuses the publish with @ENEEDAUTH@ before it reaches the proxy, so the identity is immaterial.
--}
+-- | Prepare an isolated publisher with the token npm requires before contacting the proxy.
 withPublishProject :: E2E -> Text -> Text -> (NpmProject -> IO a) -> IO a
 withPublishProject e2e name version =
     withProjectContents
@@ -109,7 +108,6 @@ withPublishProject e2e name version =
         (publishPackageJson name version)
         (npmAuthLine (e2eRegistry e2e) publishAuthToken)
 
--- | Run @npm@ with the given args in a project, capturing its exit and output.
 runNpm :: NpmProject -> [String] -> IO NpmResult
 runNpm proj args = do
     let cmd = setWorkingDir (npDir proj) . setEnv (npEnv proj) $ proc "npm" args
@@ -125,27 +123,19 @@ runNpm proj args = do
 npmInstallIn :: NpmProject -> Text -> IO NpmResult
 npmInstallIn proj pkg = runNpm proj ["install", toString pkg]
 
-{- | @npm ci@ in a project. It installs from the lockfile's @resolved@ URLs and never re-resolves
-through the packument, so it never contacts the public upstream.
--}
+-- | Install from the project's lockfile without resolving package metadata.
 npmCiIn :: NpmProject -> IO NpmResult
 npmCiIn proj = runNpm proj ["ci"]
 
-{- | @npm publish@ in a publishable project. A zero exit means the proxy admitted the publish and
-the target accepted it, and a non-zero means the anti-shadowing guard refused the name with a @403@.
--}
+-- | Publish through the configured proxy with package lifecycle scripts disabled.
 npmPublishIn :: NpmProject -> IO NpmResult
 npmPublishIn proj = runNpm proj ["publish"]
 
-{- | @npm install \<pkg\>@ against the proxy in a throwaway project (see 'withNpmProject'),
-for the one-shot cases that only need the install's outcome.
--}
+-- | Install through the proxy in a temporary project that is removed after the command.
 npmInstall :: E2E -> Text -> IO NpmResult
 npmInstall e2e pkg = withNpmProject e2e (`npmInstallIn` pkg)
 
-{- | Install a project whose own @postinstall@ would create a sentinel file, and report whether it
-appeared. The 'Bool' is 'False' on a faithful run, and flips to 'True' if script suppression breaks.
--}
+-- | Report whether installation executed a sentinel-writing lifecycle script that should be disabled.
 installWithLifecycleProbe :: E2E -> IO (NpmResult, Bool)
 installWithLifecycleProbe e2e =
     withProjectContents e2e lifecycleProbePackageJson "" $ \proj -> do
@@ -153,13 +143,9 @@ installWithLifecycleProbe e2e =
         ran <- doesFileExist (npDir proj </> lifecycleSentinel)
         pure (res, ran)
 
--- The file a lifecycle script would create. The path is relative, so it lands in the project root:
--- npm's working directory for a root package's own lifecycle scripts.
 lifecycleSentinel :: FilePath
 lifecycleSentinel = "lifecycle-script-ran"
 
--- The npm CLI runs a root package's lifecycle scripts on @npm install@ unless they are disabled,
--- so this @postinstall@ is a faithful probe for suppressed script execution.
 lifecycleProbePackageJson :: Text
 lifecycleProbePackageJson =
     "{\"name\":\"e2e-lifecycle-probe\",\"version\":\"1.0.0\",\"private\":true,\"scripts\":{\"postinstall\":\"touch lifecycle-script-ran\"}}\n"
@@ -167,37 +153,26 @@ lifecycleProbePackageJson =
 consumerPackageJson :: Text
 consumerPackageJson = "{\"name\":\"e2e-consumer\",\"version\":\"1.0.0\",\"private\":true}\n"
 
-{- | The extra proxy environment that turns the first-party publish path __on__. The target is
-Verdaccio, which the base topology also reads as the private upstream, so a published package is
-readable back over the private leg. The relay forwards the client's own bearer, so no static token.
--}
+-- | Publish first-party packages into the Verdaccio store used by the proxy's private upstream.
 publishTargetEnv :: [(Text, Text)]
 publishTargetEnv =
     [ ("ECLUSE_MOUNTS__NPM__PUBLICATION_TARGET__VERDACCIO__URL", "https://mirror/")
     , ("ECLUSE_MOUNTS__NPM__FIRST_PARTY", publishScope)
     ]
 
-{- | The first-party namespace 'publishTargetEnv' configures. Every in-scope name derives from
-it, so the configured scope and the names cannot drift apart.
--}
+-- | The configured first-party namespace, shared by all in-scope fixture names.
 publishScope :: Text
 publishScope = "@acme"
 
-{- | A first-party package __within__ the configured 'publishTargetEnv' scope, which the
-anti-shadowing guard admits and the relay forwards to the publication target.
--}
+-- | An in-scope package for publication through the proxy.
 publishInScopeName :: Text
 publishInScopeName = publishScope <> "/e2e-publish"
 
-{- | A package in a scope __outside__ the mount's first-party namespaces. The guard must refuse an
-@npm publish@ of it __before__ any upstream write, the property the refuse-before-write scenario proves.
--}
+-- | An out-of-scope package whose publication must stop before an upstream write.
 publishOutOfScopeName :: Text
 publishOutOfScopeName = "@rogue/e2e-shadow"
 
-{- | A first-party package the sweep scenarios publish and no other case touches, so its survival
-after a sweep that names it is attributable to the first-party belt alone.
--}
+-- | A first-party package reserved for the Dredger's protection scenario.
 publishDredgerName :: Text
 publishDredgerName = publishScope <> "/e2e-dredger-first-party"
 
@@ -210,14 +185,12 @@ publishVersion = "1.0.0"
 publishAuthToken :: Text
 publishAuthToken = "e2e-publisher-token"
 
--- A publishable project's @package.json@: the scoped name and version npm packs and
--- publishes. Deliberately not @private@: npm refuses to publish a private package.
+-- npm refuses to publish a package marked private.
 publishPackageJson :: Text -> Text -> Text
 publishPackageJson name version =
     "{\"name\":\"" <> name <> "\",\"version\":\"" <> version <> "\"}\n"
 
--- The npm CLI keys auth by the registry URL's host and path, with the scheme stripped and a leading
--- @\/\/@.
+-- npm keys authentication by the registry's host and path, without its scheme.
 npmAuthLine :: Text -> Text -> Text
 npmAuthLine registry token =
     "//" <> withoutScheme registry <> ":_authToken=" <> token <> "\n"
