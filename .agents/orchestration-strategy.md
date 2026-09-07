@@ -106,11 +106,14 @@ reviewer-specified fix directly, then re-runs the gate. Or, for a larger rework,
 build agent with the review. Either way the fix lands as a distinct, separately-reviewable commit.
 
 **One slice, one live delivery**. Before dispatch, query open PRs, branches, and worktrees for the
-issue. A parallel fresh attempt is local comparison work unless the architect explicitly asks for
-competing PRs. It does not push or open a PR. If the fresh attempt replaces the active delivery,
-close the old PR, stop its watch, and retire its worktree before opening the replacement. If an
-overlapping PR merges first, rebase the remaining branch and remove every duplicate hunk before its
-next review or CI run.
+issue.
+
+- Keep a parallel fresh attempt local unless the architect explicitly asks for competing PRs.
+- Do not push the attempt or open its PR.
+- For a replacement, close the old PR and stop its watch first.
+- Retire the old worktree before opening the replacement.
+- After an overlapping merge, rebase the remaining branch and remove every duplicate hunk.
+- Run its review and CI again.
 
 ## Subagents and isolation
 
