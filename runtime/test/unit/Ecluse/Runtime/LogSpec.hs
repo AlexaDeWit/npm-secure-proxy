@@ -2,6 +2,7 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | Logging contracts for rendered fields, severity admission, and JSONL messages.
 module Ecluse.Runtime.LogSpec (spec) where
 
 import Data.Aeson (Object, Value (Object), decodeStrict, eitherDecodeStrict, object, (.:), (.=))
@@ -44,24 +45,18 @@ import Ecluse.Runtime.Log (
     severityFloor,
     severityStatus,
  )
-import Ecluse.Test.Log (captureStdout)
+import Ecluse.Test.Log (captureStdout, lineMessage)
 import Ecluse.Test.WireVocab (wireRoundTrips)
 
--- | A fixed instant, so a rendered line is deterministic across runs.
 fixedTime :: UTCTime
 fixedTime = UTCTime (fromGregorian 2026 6 22) 0
 
--- | The boot-resolved identity the formatter stamps on every line.
 testIdentity :: DdContext
 testIdentity = DdContext "ecluse" (Just "prod") (Just "1.4.2") Nothing
 
-{- | Build a log 'Item' with the given payload and message, holding every other field
-fixed. Rendering it through the production formatter needs no stdout.
--}
 item :: SimpleLogPayload -> Text -> Item SimpleLogPayload
 item = itemAt WarningS
 
--- | 'item' at a chosen severity, for the status-mapping cases.
 itemAt :: Severity -> SimpleLogPayload -> Text -> Item SimpleLogPayload
 itemAt severity payload message =
     Item
@@ -78,46 +73,34 @@ itemAt severity payload message =
         , _itemLoc = Nothing
         }
 
-{- | The physical JSONL line an item renders to through the production formatter, at
-the scribe's own verbosity and with colour off (as 'newScribe' forces it).
--}
 renderLine :: DdContext -> Item SimpleLogPayload -> Text
 renderLine logIdentity logItem =
     toText (TB.toLazyText (formatterFor JsonLog logIdentity False V2 logItem))
 
--- | The decoded object of a rendered line, for asserting on structure.
 lineObject :: DdContext -> Item SimpleLogPayload -> Maybe Object
 lineObject logIdentity = decodeStrict . encodeUtf8 . renderLine logIdentity
 
--- | A top-level string field of a rendered line.
 topField :: Text -> Item SimpleLogPayload -> Maybe Text
 topField key logItem = lineObject testIdentity logItem >>= parseMaybe (\o -> o .: Key.fromText key)
 
--- | A field of the rendered line's @data@ object (the per-call structured payload).
 dataField :: Text -> Item SimpleLogPayload -> Maybe Text
 dataField key logItem = do
     o <- lineObject testIdentity logItem
     dat <- parseMaybe (.: "data") o
     parseMaybe (\d -> d .: Key.fromText key) dat
 
--- | The structured-context fields the audit trail attaches to a denial.
 deniedContext :: SimpleLogPayload
 deniedContext =
     sl "package" ("@evil/pkg" :: Text)
         <> sl "version" ("1.0.0" :: Text)
         <> sl "rule" ("DenyInstallTimeExecution" :: Text)
 
--- | The rendered line's top-level @dd@ correlation object.
 ddObjectOf :: DdContext -> Item SimpleLogPayload -> Maybe Object
 ddObjectOf logIdentity logItem = lineObject logIdentity logItem >>= parseMaybe (.: "dd")
 
--- | A string field of a @dd@ object.
 ddStr :: Text -> Object -> Maybe Text
 ddStr key = parseMaybe (\ob -> ob .: Key.fromText key)
 
-{- | Emit one event through a real 'LogEnv' at the given level and capture what the
-scribe wrote to stdout. The whole admission decision lives in the scribe.
--}
 emitAt :: LogLevel -> Severity -> Text -> IO Text
 emitAt level severity message =
     captureStdout $ do
@@ -125,6 +108,7 @@ emitAt level severity message =
         runKatipT logEnv $ logF (mempty :: SimpleLogPayload) (Namespace ["serve"]) severity (logStr message)
         void (closeScribes logEnv)
 
+-- | Verify log fields, severity thresholds, and message preservation through real scribes.
 spec :: Spec
 spec = do
     wireRoundTrips @LogFormat
@@ -357,12 +341,6 @@ spec = do
     isObjectValue = \case
         Right (Object _) -> True
         _ -> False
-
-    -- The top-level message field decoded back from a serialised JSON log line.
-    lineMessage :: Text -> Maybe Text
-    lineMessage line = case eitherDecodeStrict (encodeUtf8 line) of
-        Right o -> parseMaybe (.: "message") (o :: Object)
-        Left _ -> Nothing
 
     -- Newline-bearing messages whose escaping the JSONL line must preserve.
     escapeCases :: [(Text, Text)]

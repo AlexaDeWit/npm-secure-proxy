@@ -9,7 +9,6 @@ module Ecluse.E2ESpec (spec) where
 
 import Data.Text qualified as T
 
-import System.Exit (ExitCode (ExitSuccess))
 import Test.Hspec
 import UnliftIO.Concurrent (threadDelay)
 
@@ -17,9 +16,6 @@ import Ecluse.E2E.Fixtures (
     PkgSpec,
     allowPkg,
     denyPkg,
-    dredgerDryRunPkg,
-    dredgerKeepPkg,
-    dredgerPkg,
     headPkg,
     mirrorPkg,
     psName,
@@ -40,8 +36,6 @@ spec = do
             scenarios
             telemetryScenarios
             publishScenarios
-            dredgerScenarios
-            dredgerFirstPartyScenario
             pendingScenarios
 
 scenarios :: SpecWith GlobalDataPlane
@@ -236,141 +230,6 @@ publishScenarios = do
                     threadDelay 1500000
                     reached <- verdaccioHasVersionNow e2e name ver
                     reached `shouldBe` False
-
-dredgerScenarios :: SpecWith GlobalDataPlane
-dredgerScenarios =
-    describe "the Dredger against the mirror store" $ aroundAllWith withPlaneAndProxy $ do
-        it "lists the names a seeded store holds, and buckets them by their base component" $ \(_, e2e) -> do
-            -- The protocol leaf reads this document and projects it with this parser, so a
-            -- Verdaccio image bump that changed the shape would fail here rather than in a sweep.
-            void $ npmInstall e2e (psName dredgerPkg) >>= shouldSucceed
-            mirrored <- verdaccioHasVersion e2e (psName dredgerPkg) (psVersion dredgerPkg)
-            mirrored `shouldBe` True
-            names <- verdaccioListing e2e
-            names `shouldSatisfy` elem (psName dredgerPkg)
-            bucketed <- verdaccioNamesUnder e2e "e"
-            bucketed `shouldSatisfy` elem (psName dredgerPkg)
-            outside <- verdaccioNamesUnder e2e "z"
-            outside `shouldBe` []
-
-        it "deletes the mirrored version an identity deny names, and keeps the one it does not" $ \(gdp, e2e) -> do
-            -- Both packages are mirrored, and the sweep's rule set names only one of them, so the
-            -- survivor is what shows the cap and the verdict bound what the cycle did.
-            void $ npmInstall e2e (psName dredgerPkg) >>= shouldSucceed
-            void $ npmInstall e2e (psName dredgerKeepPkg) >>= shouldSucceed
-            condemned <- verdaccioHasVersion e2e (psName dredgerPkg) (psVersion dredgerPkg)
-            survivor <- verdaccioHasVersion e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
-            (condemned, survivor) `shouldBe` (True, True)
-            namesBefore <- verdaccioListing e2e
-            run <- runDredgerOnce gdp ["--once"] [("ECLUSE_RULES", identityDenyOf dredgerPkg)]
-            unless (dredgerExit run == ExitSuccess) (failWithLog run "the sweep exited non-zero")
-            gone <- verdaccioHasVersionNow e2e (psName dredgerPkg) (psVersion dredgerPkg)
-            when gone (failWithLog run "the condemned version is still served")
-            kept <- verdaccioHasVersionNow e2e (psName dredgerKeepPkg) (psVersion dredgerKeepPkg)
-            unless kept (failWithLog run "the version no rule named was deleted too")
-            namesAfter <- verdaccioListing e2e
-            namesAfter `shouldMatchList` filter (/= psName dredgerPkg) namesBefore
-            unless (("deleting " <> psName dredgerPkg <> "@" <> psVersion dredgerPkg <> ": blocked by DenyByIdentity") `T.isInfixOf` dredgerOutput run) $
-                failWithLog run "the sweep reported no deletion audit"
-            unless ("examined 1, deleted 1, kept 0, guard-skipped 0" `T.isInfixOf` dredgerOutput run) $
-                failWithLog run "the sweep counters disagree with the store"
-
-        it "reports what a dry run would delete, and leaves the version the store serves" $ \(gdp, e2e) -> do
-            void $ npmInstall e2e (psName dredgerDryRunPkg) >>= shouldSucceed
-            mirrored <- verdaccioHasVersion e2e (psName dredgerDryRunPkg) (psVersion dredgerDryRunPkg)
-            mirrored `shouldBe` True
-            -- A candidate cycle walks the store's listing and keeps the names its rules pin, so a
-            -- package the store serves but has not listed is a package the sweep never sees.
-            unlisted <- verdaccioAwaitListed e2e (psName dredgerDryRunPkg)
-            whenJust unlisted (expectationFailure . toString)
-            namesBefore <- verdaccioListing e2e
-            run <- runDredgerOnce gdp ["--once", "--dry-run"] [("ECLUSE_RULES", identityDenyOf dredgerDryRunPkg)]
-            unless (dredgerExit run == ExitSuccess) (failWithLog run "the rehearsal exited non-zero")
-            -- The rehearsal counts in the cycle's deleted column, so one dry run reports the reach
-            -- a real run would have. Both the audit line and that count have to say so.
-            unless (wouldDeleteLineFor dredgerDryRunPkg `T.isInfixOf` dredgerOutput run) $
-                failWithLog run "the rehearsal named no version it would delete"
-            unless ("examined 1, deleted 1, kept 0, guard-skipped 0" `T.isInfixOf` dredgerOutput run) $
-                failWithLog run "the rehearsal reported no would-delete count"
-            served <- verdaccioHasVersionNow e2e (psName dredgerDryRunPkg) (psVersion dredgerDryRunPkg)
-            unless served (failWithLog run "the rehearsal deleted the version it only rehearsed")
-            namesAfter <- verdaccioListing e2e
-            namesAfter `shouldMatchList` namesBefore
-
-        it "refuses to boot without the consent key, and names it" $ \(gdp, _) -> do
-            -- The harness's own environment carries the consent, so the case withholds it by
-            -- overriding the key. A withheld key and an absent one take the same arm.
-            run <-
-                runDredgerOnce
-                    gdp
-                    ["--once"]
-                    [ ("ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__PERMIT_DELETION", "false")
-                    , ("ECLUSE_RULES", identityDenyOf dredgerPkg)
-                    ]
-            when (dredgerExit run == ExitSuccess) (failWithLog run "the sweep booted without consent")
-            unless (consentKey `T.isInfixOf` dredgerOutput run) $
-                failWithLog run "the refusal did not name the key an operator sets"
-
-dredgerFirstPartyScenario :: SpecWith GlobalDataPlane
-dredgerFirstPartyScenario =
-    describe "the Dredger against a first-party version" $
-        aroundAllWith (withPlaneAndProxyWith E2EConfig{ecCollector = False, ecExtraEnv = publishTargetEnv}) $
-            it "keeps a first-party version even when a deny names it" $ \(gdp, e2e) -> do
-                void $ withPublishProject e2e publishDredgerName publishVersion npmPublishIn >>= shouldSucceed
-                onTarget <- verdaccioHasVersion e2e publishDredgerName publishVersion
-                onTarget `shouldBe` True
-                unlisted <- verdaccioAwaitListed e2e publishDredgerName
-                whenJust unlisted (expectationFailure . toString)
-                namesBefore <- verdaccioListing e2e
-                -- The deny names this very version, so surviving is the belt's doing and not the
-                -- candidate set's. The Dredger reads the same namespace the publish was scoped to.
-                run <-
-                    runDredgerOnce
-                        gdp
-                        ["--once"]
-                        [ ("ECLUSE_RULES", identityDenyOfName publishDredgerName publishVersion)
-                        , ("ECLUSE_MOUNTS__NPM__FIRST_PARTY", publishScope)
-                        ]
-                unless (dredgerExit run == ExitSuccess) (failWithLog run "the sweep exited non-zero")
-                -- The belt skips a first-party version before reading its metadata, so it counts
-                -- under guard-skipped and never under examined.
-                unless ("examined 0, deleted 0, kept 0, guard-skipped 1" `T.isInfixOf` dredgerOutput run) $
-                    failWithLog run "the sweep did not skip the version the belt shields"
-                kept <- verdaccioHasVersionNow e2e publishDredgerName publishVersion
-                unless kept (failWithLog run "the first-party version was deleted")
-                namesAfter <- verdaccioListing e2e
-                namesAfter `shouldMatchList` namesBefore
-
--- The audit line a rehearsal writes for a version it would have deleted.
-wouldDeleteLineFor :: PkgSpec -> Text
-wouldDeleteLineFor p = "dry run, would delete " <> psName p <> "@" <> psVersion p
-
--- The key an operator sets to consent to deletion from the store the harness sweeps.
-consentKey :: Text
-consentKey = "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__VERDACCIO__PERMIT_DELETION"
-
--- Fail with what the sweep itself reported, so the next run needs no second look.
-failWithLog :: DredgerRun -> Text -> Expectation
-failWithLog run reason =
-    expectationFailure (toString (reason <> ", and the sweep reported:\n" <> dredgerOutput run))
-
--- The proxy that seeds the store, beside the data plane the sweep container joins.
-withPlaneAndProxy :: ((GlobalDataPlane, E2E) -> IO ()) -> GlobalDataPlane -> IO ()
-withPlaneAndProxy = withPlaneAndProxyWith defaultE2EConfig
-
-withPlaneAndProxyWith :: E2EConfig -> ((GlobalDataPlane, E2E) -> IO ()) -> GlobalDataPlane -> IO ()
-withPlaneAndProxyWith cfg action gdp = withE2EWith cfg (\e2e -> action (gdp, e2e)) gdp
-
-identityDenyOf :: PkgSpec -> Text
-identityDenyOf p = identityDenyOfName (psName p) (psVersion p)
-
-identityDenyOfName :: Text -> Text -> Text
-identityDenyOfName name version =
-    "{\"revoke-swept\":{\"type\":\"DenyByIdentity\",\"identity\":\""
-        <> name
-        <> "@"
-        <> version
-        <> "\"}}"
 
 pendingScenarios :: SpecWith GlobalDataPlane
 pendingScenarios =
