@@ -50,8 +50,11 @@ validation applies to every registry endpoint regardless.
 
 **The mirror-target write token is the one standing credential a mirrored deployment holds.** A
 serve-only deployment holds none. The token is also the sharpest privilege, since it writes the
-trusted store. Scope it write-only, prefer container-role minting over a static secret, and
-minimise its TTL.
+trusted store. Scope it to mirror publication and the repository reads needed for the presence
+probe. Token-mint permission is separate from both. Prefer container-role minting over a static
+secret and minimise its TTL. Dredger needs a different action set: reads and deletion, not
+publication. The [operator permission table](https://ecluse-proxy.com/docs/dredger/#permissions)
+owns those action and resource scopes.
 
 The mirror queue is part of the same trust boundary. A job is unauthenticated and directs the
 worker to fetch-and-publish, so anyone who can enqueue can make the worker write the trusted
@@ -72,10 +75,10 @@ admission gate is identical at one registry or three. Storage-layer scanning is 
 
 ## Integrity floors
 
-**Every served file must carry a strong integrity digest**, by default, in both trust
-contexts. Écluse trusts a digest only as far as its algorithm is collision-resistant, so
-both contexts default to a SHA-256-or-stronger digest. The floors differ only in how far
-they may move.
+**Public artifact admission and metadata listings require a strong digest by default.** Both
+trust contexts default to SHA-256 or stronger. The public floor cannot be lowered, while the
+trusted listing floor can. A conventional private npm artifact hit bypasses metadata admission
+and therefore has no serve-time floor.
 
 The check runs **per file**. A release ships several in most ecosystems, an sdist beside its
 wheels on PyPI, so a release keeps the files that clear the floor and loses the ones that do

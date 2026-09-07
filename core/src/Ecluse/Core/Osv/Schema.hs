@@ -2,23 +2,12 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The compiled advisory artifact's schema contract.
-
-Écluse Pilot compiles OSV advisory data into a read-only SQLite artifact (@osv.db@)
-and publishes it to object storage. The proxy downloads it and queries it locally on
-the request path. This module is the one place the writer and the reader agree on what
-that artifact looks like. It holds the table-schema epoch that names and stamps the
-artifact. It also holds the tables' canonical DDL, the column requirements the reader
-verifies at acceptance, and the keys of the @meta@ table.
-
-The artifact is immutable, and every compilation rebuilds it from scratch, so there
-are no migrations. There is only a read-compatibility contract between whoever wrote a
-file and whoever reads it. The epoch expresses exactly that contract. It moves only
-when the shape of the data breaks. The key therefore stays findable, and the stamp
-stays checkable across releases of either side.
+{- | The advisory artifact contract shared by Pilot and its consumers.
+The epoch covers incompatible table shapes and incompatible meanings of stored values.
+Artifacts are rebuilt rather than migrated. Compatible additions preserve the epoch.
 -}
 module Ecluse.Core.Osv.Schema (
-    -- * The table-schema epoch
+    -- * The artifact epoch
     osvSchemaEpoch,
     osvDbFileName,
 
@@ -37,22 +26,11 @@ module Ecluse.Core.Osv.Schema (
 import Data.Universe.Class (Universe (..))
 import Data.Universe.Generic (universeGeneric)
 
-{- | The version of the artifact's shape, shared by the Pilot writer and the proxy
-reader. Bump it only for a breaking change to the existing shape, never for an additive
-one: a reader selects explicit columns.
-
-The epoch names the published artifact ('osvDbFileName'), and SQLite's @user_version@
-carries it as the artifact's stamp. A reader rejects an artifact whose stamp does not
-match its own compiled-in epoch and keeps its last known-good database.
--}
+-- | Advance for incompatible shape or stored-value semantics, not compatible additions.
 osvSchemaEpoch :: Int
 osvSchemaEpoch = 3
 
-{- | The artifact's file name, and object-storage key, for an ecosystem.
-
-The key is stable per ecosystem, so a reader can poll one known key by ETag. It
-embeds only the epoch, so the key changes exactly when a reader could no longer use
-the file.
+{- | A stable per-ecosystem key until the artifact's read contract changes.
 
 >>> osvDbFileName "npm"
 "npm-osv-schema3.db"

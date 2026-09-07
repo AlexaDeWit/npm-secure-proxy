@@ -38,8 +38,8 @@ constant time and refuses anything else.
 URL rewriting is load-bearing. Registry responses embed absolute artifact locations: npm's
 `dist.tarball`, and on public PyPI, file URLs on a separate host. Forwarded unchanged, those URLs let
 a client resolve metadata through the proxy and then download the bytes straight from upstream, past
-the gate. So a mount rewrites embedded artifact URLs under its own prefix
-(`{mount-base}/{pkg}/-/{file}`) before it serves metadata.
+the gate. A mount therefore rewrites embedded artifact URLs under its own protocol-specific
+route and prefix before serving metadata.
 
 Same-host artifacts have a second benefit. The npm client attaches credentials only to requests on
 the registry host. A same-host artifact URL keeps that auth on a tarball fetch. A separate host
@@ -50,9 +50,10 @@ explicit configuration (`server.publicUrl` plus its derived prefix).
 ## Meta-routes: ping, health, and search
 
 `/livez` and `/readyz` stay distinct for orchestration. Liveness means the process responds.
-Readiness means the config is loaded and the listener is serving. Readiness is deliberately lenient
-about public-upstream reachability. The proxy still serves private hits while public is down, so an
-upstream blip must not pull a healthy pod from rotation. `/-/ping` answers locally, and
+Readiness includes startup, draining, and each configured ecosystem's first advisory sync.
+Public-upstream reachability is not a readiness requirement, because private hits can still serve
+during a public outage. The [operator probe contract](https://ecluse-proxy.com/docs/operations/#health-probes)
+also describes role-specific conditions. `/-/ping` answers locally, and
 `/-/v1/search` returns `501`, a discovery convenience rather than an install path.
 The three dist-tag routes, `GET /-/package/{package}/dist-tags` and the `PUT` and `DELETE` of
 `/-/package/{package}/dist-tags/{tag}`, return `501` too: a dist-tag is a mutable named pointer,
@@ -61,8 +62,8 @@ body, while a `POST` over those paths takes the deny-by-default `404`.
 
 ## OpenAPI spec
 
-Écluse speaks package-registry protocols (npm today), not a bespoke HTTP API.
-Clients (`npm`, `pnpm`, `yarn`) hardcode the protocol and never read an API description, so the
+Écluse speaks npm and PyPI read protocols, with npm-only publication, not a bespoke HTTP API.
+Package clients use those protocols rather than an API description, so the
 published OpenAPI spec is not a client-integration contract. It states which protocols this
 server speaks, and what each ecosystem does and does not support. That stops being self-evident as mounts multiply.
 
@@ -100,12 +101,14 @@ touches and what it leaves alone.
 The proxy pulls from upstream only as fast as the client drains: constant memory regardless of
 artifact size, with backpressure for free.
 
-The proxy streams an artifact through without hashing it. It relies on the client's own integrity
-check against the packument's `dist.integrity`, which it preserves unaltered when it
-[filters](rules-engine.md#applying-verdicts-to-a-packument) the document (npm always verifies it).
-Serve-side verification waits until a weakly-verifying ecosystem (e.g. PyPI) or a non-verifying
-client lands. The mirror worker does verify before it publishes to the sanitised home (see
-[Mirror queue](cloud-backends.md#mirror-queue)).
+The proxy streams artifact responses without hashing their bodies. Integrity on this path depends
+on the client checking the preserved metadata hashes. npm documents integrity checking on cache
+insertion and extraction ([npm cache](https://docs.npmjs.com/cli/v11/commands/npm-cache/)). pip checks
+index-supplied hashes against download corruption, while locally pinned hashes provide a separate
+check against a changed remote source ([pip secure installs](https://pip.pypa.io/en/stable/topics/secure-installs/)).
+Do not assume every client or configuration provides identical checks. PyPI reads already ship
+with this client-verification dependency. The npm mirror worker verifies bytes before publication
+(see [Mirror queue](cloud-backends.md#mirror-queue)).
 
 A `HEAD` must never run the full-`GET` streaming pump. A bodiless `HEAD` that opened the upstream
 connection and pumped a whole body for warp to discard is a DoS-amplification lever. Cheap `HEAD`s
