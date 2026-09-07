@@ -105,6 +105,16 @@ natural first choice for a fix that continues what it just built. Or the team le
 reviewer-specified fix directly, then re-runs the gate. Or, for a larger rework, it briefs a fresh
 build agent with the review. Either way the fix lands as a distinct, separately-reviewable commit.
 
+**One slice, one live delivery**. Before dispatch, query open PRs, branches, and worktrees for the
+issue.
+
+- Keep a parallel fresh attempt local unless the architect explicitly asks for competing PRs.
+- Do not push the attempt or open its PR.
+- For a replacement, close the old PR and stop its watch first.
+- Retire the old worktree before opening the replacement.
+- After an overlapping merge, rebase the remaining branch and remove every duplicate hunk.
+- Run its review and CI again.
+
 ## Subagents and isolation
 
 - **Implementer:** builds one slice. General-purpose agent, full tools.
