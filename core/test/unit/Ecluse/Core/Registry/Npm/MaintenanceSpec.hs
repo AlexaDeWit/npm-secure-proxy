@@ -2,6 +2,7 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | Request formation and refusal contracts for npm store maintenance.
 module Ecluse.Core.Registry.Npm.MaintenanceSpec (spec) where
 
 import Data.Aeson (Object, Value (Object, String), decodeStrict, encode, object, (.=))
@@ -30,6 +31,7 @@ import Ecluse.Core.Security.Egress.DevHttp (loopbackRegistryUrl)
 import Ecluse.Core.Version (Version, mkVersion)
 import Ecluse.Test.Package (unscopedNpm)
 
+-- | Verify that deletion addresses only versions present in the fetched document.
 spec :: Spec
 spec = do
     listingSpec
@@ -94,9 +96,27 @@ deleteSequenceSpec = describe "the version delete verb" $ do
         edited <- editedPackument latestOnDeleted leftpad (version "2.0.0")
         KeyMap.lookup "latest" (objectUnder "dist-tags" edited) `shouldBe` Just (String "10.0.0")
 
-    it "drops latest when the deleted version was the only one" $ do
-        edited <- editedPackument onlyVersion leftpad (version "1.0.0")
-        KeyMap.lookup "latest" (objectUnder "dist-tags" edited) `shouldBe` Nothing
+    forM_ [(leftpad, "/leftpad/-rev/3-abc"), (acmeTool, "/@acme%2Ftool/-rev/3-abc")] $ \(name, path) ->
+        it ("deletes the whole package for its only version at " <> decodeUtf8 path) $ do
+            origin <- storeOrigin
+            requests <-
+                either (fail . show) pure $
+                    versionDeleteRequestsFor origin name (version "1.0.0") (RegistryResponse (encoded onlyVersion))
+            case requests of
+                request :| [] -> do
+                    Client.method request `shouldBe` "DELETE"
+                    Client.path request `shouldBe` path
+                    headerOf "Authorization" request `shouldBe` Just "Bearer write-token"
+                    headerOf "Accept" request `shouldBe` Just "application/json"
+                other -> expectationFailure ("expected one request, got " <> show (length other))
+
+    it "keeps a malformed survivor instead of deleting the whole package" $ do
+        let document = packument "leftpad" [] [("1.0.0", withTarball "leftpad-1.0.0.tgz"), ("broken", String "invalid")]
+        edited <- editedPackument document leftpad (version "1.0.0")
+        KeyMap.lookup "broken" (objectUnder "versions" edited) `shouldBe` Just (String "invalid")
+
+    it "refuses an absent version even when the package holds only one other version" $
+        refusalOf (encoded onlyVersion) (version "9.9.9") `shouldReturn` Just "VERSION_ABSENT"
 
     it "leaves every other top-level key the store wrote" $ do
         edited <- editedPackument twoVersions leftpad (version "1.0.0")
@@ -149,8 +169,6 @@ deleteSequenceSpec = describe "the version delete verb" $ do
         refusalOf (encoded (withRevision ".." twoVersions)) (version "1.0.0")
             `shouldReturn` Just "NO_REVISION"
 
-{- Every formation under test is pure and opens no connection, so one manager serves the whole
-suite and it depends on no live listener. -}
 storeOrigin :: IO OriginClient
 storeOrigin = originOver <$> newManager defaultManagerSettings
 
@@ -178,7 +196,6 @@ acmeTool = mkPackageName Npm (Just (mkScope "acme")) "tool"
 version :: Text -> Version
 version = mkVersion Npm
 
--- The two requests the delete verb forms, failing the case on a refusal.
 deletePair :: Value -> PackageName -> Version -> IO (Request, Request)
 deletePair document name subject = do
     origin <- storeOrigin
@@ -187,7 +204,6 @@ deletePair document name subject = do
         Right (edit :| [tarball]) -> pure (edit, tarball)
         Right other -> fail ("expected two requests, got " <> show (length other))
 
--- The edited packument the PUT carries, read back out of its request body.
 editedPackument :: Value -> PackageName -> Version -> IO Object
 editedPackument document name subject = do
     (edit, _) <- deletePair document name subject
@@ -224,13 +240,12 @@ withRevision revision = \case
     Object document -> Object (KeyMap.insert "_rev" (String revision) document)
     other -> other
 
--- A one-version packument whose only interesting field is the tarball URL the store wrote.
 tarballAt :: Text -> Value
 tarballAt url =
     packument
         "leftpad"
         ["latest" .= ("1.0.0" :: Text)]
-        [("1.0.0", object ["dist" .= object ["tarball" .= url]])]
+        [("1.0.0", object ["dist" .= object ["tarball" .= url]]), ("2.0.0", withTarball "leftpad-2.0.0.tgz")]
 
 -- Two versions, the deleted one also carrying an @old@ dist-tag beside @latest@.
 twoVersions :: Value
@@ -258,11 +273,11 @@ onlyVersion =
 -- The store named the file its own way, so the conventional name addresses the wrong tarball.
 renamedTarball :: Value
 renamedTarball =
-    packument "leftpad" ["latest" .= ("1.0.0" :: Text)] [("1.0.0", withTarball "leftpad-1.0.0-rc.tgz")]
+    tarballAt "http://store.test/leftpad/-/leftpad-1.0.0-rc.tgz"
 
 noDist :: Text -> Value
 noDist raw =
-    packument raw ["latest" .= ("1.0.0" :: Text)] [("1.0.0", object ["version" .= ("1.0.0" :: Text)])]
+    packument raw ["latest" .= ("1.0.0" :: Text)] [("1.0.0", object []), ("2.0.0", object [])]
 
 packument :: Text -> [Pair] -> [(Text, Value)] -> Value
 packument raw tags versions =

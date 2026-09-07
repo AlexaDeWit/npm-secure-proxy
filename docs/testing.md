@@ -105,6 +105,11 @@ network. It then asserts client- and mirror-observable outcomes:
 - an installed package round-trips server → worker to the private mirror,
 - a tampered artifact fails the integrity gate and never publishes.
 
+The Dredger cases seed Verdaccio through the proxy and mirror worker, then run the same
+image with an identity deny and no advisory database. They cover `--once`, `--dry-run`,
+consent refusal, first-party protection, and listing preservation after the final version
+is deleted. These cases do not verify behaviour against a real CodeArtifact repository.
+
 It catches composition-root and cross-component regressions nothing else does. The mount rewrites a
 served `dist.tarball` to an absolute installable URL under `ECLUSE_SERVER__PUBLIC_URL`, because
 `npm` cannot install the path-relative form.

@@ -2,10 +2,7 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The protocol leaf driven against an in-process upstream that records what Écluse sent.
-The upstream implements none of a store's behaviour: it answers by path and method, so the
-leaf's sequencing, fault mapping, and verdicts are what the assertions read.
--}
+-- | Protocol maintenance against a recording HTTP stub for sequencing and fault contracts.
 module Ecluse.Core.Registry.Maintenance.ProtocolSpec (spec) where
 
 import Data.Aeson (Object, Value (Object), decodeStrict, encode, object, (.=))
@@ -66,6 +63,7 @@ import Ecluse.Test.Stub (
  )
 import Ecluse.Test.Wai (freePort, localhost, selfBaseUrlOf)
 
+-- | Verify bounded reads, request order, and deletion outcomes against an HTTP store.
 spec :: Spec
 spec = do
     factsSpec
@@ -182,6 +180,24 @@ enumerationSpec = describe "enumeration over the protocol's own reads" $ do
 
 deletionSpec :: Spec
 deletionSpec = describe "deletion over the protocol's own request sequence" $ do
+    it "removes the final version with one package DELETE after the document read" $
+        withStore True (answerSingleVersion status201 "{\"ok\":true}") $ \handle stub -> do
+            deleteVersions handle leftpad [version "1.0.0"]
+                `shouldReturn` [(version "1.0.0", VersionRemoved)]
+            calls stub `shouldReturn` [("GET", "/leftpad"), ("DELETE", "/leftpad/-rev/3-abc")]
+
+    it "reports a refused whole-package DELETE without reporting the version removed" $
+        withStore True (answerSingleVersion status500 "{}") $ \handle stub -> do
+            outcomes <- deleteVersions handle leftpad [version "1.0.0"]
+            map (refusedAs . snd) outcomes `shouldBe` [Just "HTTP 500"]
+            calls stub `shouldReturn` [("GET", "/leftpad"), ("DELETE", "/leftpad/-rev/3-abc")]
+
+    it "reports an oversized whole-package DELETE response as an unknown outcome" $
+        withBoundedStore midSequenceBound (answerSingleVersion status201 (LBS.replicate 20000 0x61)) $ \handle stub -> do
+            outcomes <- deleteVersions handle leftpad [version "1.0.0"]
+            map (unreachedRetry . snd) outcomes `shouldBe` [Just RetryFutile]
+            calls stub `shouldReturn` [("GET", "/leftpad"), ("DELETE", "/leftpad/-rev/3-abc")]
+
     it "reads the document, edits it, then deletes the tarball, in that order" $
         withStore True answerStore $ \handle stub -> do
             deleteVersions handle leftpad [version "1.0.0"]
@@ -287,15 +303,10 @@ protocolStore permitted origin = do
   where
     required verb = maybe (fail ("npm fills no " <> verb <> " verb")) pure
 
-{- The read the composition root assembles for a protocol store: the ecosystem's own manifest
-fetch over the store's endpoint, with its failures folded into the maintenance vocabulary. -}
 readManifestOver :: OriginClient -> StoreManifestRead
 readManifestOver origin name =
     first storeFaultOfMetadata <$> fetchNpmManifest passthroughTracingPort origin name
 
-{- | 'withStore' under a caller-chosen response bound, for the fail-closed read that refuses a
-body larger than the origin admits.
--}
 withBoundedStore ::
     Limits ->
     (Captured -> (Status, LBS.ByteString)) ->
@@ -303,7 +314,7 @@ withBoundedStore ::
     IO a
 withBoundedStore = withStoreUnder True
 
--- | A handle whose origin addresses a port nothing is listening on.
+-- A closed port exercises transport failures without an external dependency.
 unreachableStore :: IO StoreMaintenance
 unreachableStore = do
     port <- freePort
@@ -329,8 +340,6 @@ leftpad = unscopedNpm "leftpad"
 listWholeStore :: StoreMaintenance -> IO (Either StoreFault [PackageName])
 listWholeStore handle = listBucketOf handle ""
 
-{- One bucket by the spelling a store filter would carry, so the filter the leaf applies is
-drivable even though it advertises no alphabet of its own. -}
 listBucketOf :: StoreMaintenance -> Text -> IO (Either StoreFault [PackageName])
 listBucketOf handle raw = withBucket raw (collectPages . listPackagesIn handle)
 
@@ -343,6 +352,11 @@ answerStore captured = case (capMethod captured, capPath captured) of
     ("GET", "/-/all") -> (status200, encode listingDocument)
     ("GET", _) -> (status200, encode (packumentDocumentOn (capAuthority captured)))
     _ -> (status201, "{\"ok\":true}")
+
+answerSingleVersion :: Status -> LBS.ByteString -> Captured -> (Status, LBS.ByteString)
+answerSingleVersion status body captured = case capMethod captured of
+    "GET" -> (status200, encode (packumentWithVersions ["1.0.0"] (capAuthority captured)))
+    _ -> (status, body)
 
 {- The store answers the tarball delete with a body past the bound. The delete reached it, so
 the version's fate is unknown, which is what the sequence's fault arm must report.  -}
@@ -370,7 +384,10 @@ listingDocument =
     object ["_updated" .= (1 :: Int), "leftpad" .= object [], "rightpad" .= object []]
 
 packumentDocumentOn :: Text -> Value
-packumentDocumentOn authority =
+packumentDocumentOn = packumentWithVersions ["1.0.0", "2.0.0"]
+
+packumentWithVersions :: [Text] -> Text -> Value
+packumentWithVersions held authority =
     object
         [ "_id" .= ("leftpad" :: Text)
         , "_rev" .= ("3-abc" :: Text)
@@ -380,7 +397,6 @@ packumentDocumentOn authority =
         , "time" .= object [Key.fromText raw .= ("2020-01-01T00:00:00.000Z" :: Text) | raw <- held]
         ]
   where
-    held = ["1.0.0", "2.0.0"] :: [Text]
     manifest raw =
         object
             [ "name" .= ("leftpad" :: Text)
@@ -390,8 +406,6 @@ packumentDocumentOn authority =
               "dist" .= object ["tarball" .= (authority <> "/leftpad/-/leftpad-" <> raw <> ".tgz")]
             ]
 
-{- The authority a captured request reached the stub on, so a fixture can name locations the
-store itself serves rather than a foreign host the projection would drop. -}
 capAuthority :: Captured -> Text
 capAuthority = selfBaseUrlOf . capHeaders
 

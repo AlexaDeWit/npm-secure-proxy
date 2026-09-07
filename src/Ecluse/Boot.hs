@@ -2,12 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The shared process-boot bracket for Écluse service roles. 'withBootEnv' applies the
-@*_FILE@ secret indirection, loads the configuration under the @ECLUSE_CONFIG@ semantics,
-applies the runtime posture, builds the process logger, resolves the 'BootPlan', and
-brackets the telemetry substrate. It is the one place the plan's lines reach the boot log.
-It then hands the 'BootEnv' to the role dispatch in "Ecluse", which plans that role's runtime
-and starts the behaviour the plan names.
+{- | The shared boot environment owns the process logger and telemetry resources.
+Role work ends before these resources drain and close.
 -}
 module Ecluse.Boot (
     BootEnv (..),
@@ -27,10 +23,10 @@ module Ecluse.Boot (
 import Data.ByteString qualified as BS
 import Data.List (lookup)
 import Data.Text qualified as T
-import Katip (Environment (Environment), LogEnv, Severity (InfoS, WarningS))
+import Katip (Environment (Environment), LogEnv, Severity (InfoS, WarningS), closeScribes)
 import System.Environment (getEnvironment)
 import System.IO.Error (ioeGetErrorString, isDoesNotExistError)
-import UnliftIO (throwIO, tryIO)
+import UnliftIO (bracket, throwIO, tryIO)
 
 import Ecluse.Composition.BootError (renderBootErrors)
 import Ecluse.Composition.MirrorQueue (
@@ -76,27 +72,19 @@ import Ecluse.Runtime.Telemetry (Telemetry, TelemetrySwitch (TelemetryOff, Telem
 import Ecluse.Runtime.Telemetry.Correlation (ddIdentityFromEnvironment)
 import Ecluse.Runtime.Telemetry.Resolve (prepareTelemetry)
 
-{- | The boot context 'withBootEnv' assembles once at start-up. Each subcommand builds the
-heavier serve- and worker-side handles later (see "Ecluse.Service").
--}
+-- | Configuration and process resources borrowed by a running role.
 data BootEnv = BootEnv
     { beConfig :: Config
-    {- ^ The whole loaded configuration document. A subcommand that wants only the
-    application slice projects it with 'configApp'.
-    -}
+    -- ^ The complete loaded configuration, including its provenance.
     , beLogEnv :: LogEnv
     -- ^ The process structured-logging environment.
     , beTelemetry :: Telemetry
     -- ^ The telemetry handle, inert unless @ECLUSE_OBSERVABILITY__TELEMETRY@ enabled it.
     , beBootPlan :: BootPlan
-    {- ^ Every decision the configuration settled, including the role this process boots.
-    'withBootEnv' has already logged the plan's lines.
-    -}
+    -- ^ The resolved plan, whose diagnostics were logged before role work starts.
     }
 
-{- | Apply the @*_FILE@ secret indirection: a secret-typed @\<VAR\>_FILE@ names a file whose
-contents become its value, one trailing newline stripped. Both spellings at once refuse.
--}
+-- | Resolve secret files, strip trailing newlines, and refuse conflicting direct values.
 applySecretFileIndirection :: [(String, String)] -> IO (Either Text [(String, String)])
 applySecretFileIndirection envVars = do
     reads' <- traverse readOne fileVars
@@ -135,9 +123,7 @@ applySecretFileIndirection envVars = do
     secretFileSuffixes :: [Text]
     secretFileSuffixes = map (<> "_FILE") secretEnvSpellings
 
-{- | Read the config document per the @ECLUSE_CONFIG@ semantics. An absent default path
-yields no bytes, and an explicit path that resolves to nothing refuses.
--}
+-- | Accept a missing default document, but refuse an explicit path that does not exist.
 readConfigDocument :: [(String, String)] -> IO (Either Text (Maybe ByteString))
 readConfigDocument envVars = do
     let docPath = configDocumentPath envVars
@@ -163,9 +149,7 @@ readConfigDocument envVars = do
                         <> T.pack (ioeGetErrorString err)
                     )
 
-{- | Assemble the 'BootEnv' for a role and run @action@ within it. A configuration error refuses
-before the runtime posture applies, and the plan's own refusals follow it.
--}
+-- | Drain the process logger after role work and telemetry cleanup, on normal or exceptional exit.
 withBootEnv :: BootRole -> (BootEnv -> IO a) -> IO a
 withBootEnv role action = do
     rawEnvVars <- getEnvironment
@@ -184,48 +168,50 @@ withBootEnv role action = do
     -- Resolve the log identity from the table the SDK reads, before any OTEL_* projection
     -- applies, so a boot line carries the same identity as a served request.
     ddIdentity <- ddIdentityFromEnvironment
-    logEnv <- newLogEnv (obsLogFormat observability) (obsLogLevel observability) ddIdentity (Environment "production")
-    -- Apply the runtime posture before anything else spins up. It may exec the binary in
-    -- place to enforce a heap ceiling (same PID, see Ecluse.Rts).
-    runtimePlan <-
-        applyRuntimePosture (logBootInfo logEnv) (logBootWarning logEnv) runtimeOverrides
-    fdLimit <- openFileSoftLimit
-    let report =
-            resolveBootPlan
-                role
-                BootInputs
-                    { biEnvVars = envVars
-                    , biDocument = docBlob
-                    , biConfig = config
-                    , biRuntimePlan = runtimePlan
-                    , biFdLimit = fdLimit
-                    }
-    -- The provenance block logs ahead of every refusable phase, so a refusal that names a
-    -- config key stays traceable to the layer that set it.
-    traverse_ (logBootInfo logEnv) (brProvenance report)
-    let logAdvisories = traverse_ (logBootWarning logEnv) (brAdvisories report)
-    bootPlan <- case brOutcome report of
-        -- An advisory about a configuration that will not start is still one its operator
-        -- must act on, so a refusal reports beside it rather than instead of it.
-        Left errs -> logAdvisories >> refuseBoot (renderBootErrors errs)
-        Right plan -> pure plan
-    -- @ecluse check-config@ prints the same lists in this order, so a transcript and a
-    -- boot log agree line for line.
-    traverse_ (logBootInfo logEnv) (bpLines bootPlan)
-    traverse_ (logBootWarning logEnv) (bpWarnings bootPlan)
-    logAdvisories
-    prepareTelemetryBoot (obsTelemetry observability) logEnv
-    withTelemetry (obsTelemetry observability) logEnv $ \telemetry ->
-        action
-            BootEnv
-                { beConfig = config
-                , beLogEnv = logEnv
-                , beTelemetry = telemetry
-                , beBootPlan = bootPlan
-                }
+    bracket
+        (newLogEnv (obsLogFormat observability) (obsLogLevel observability) ddIdentity (Environment "production"))
+        (void . closeScribes)
+        $ \logEnv -> do
+            -- Apply the runtime posture before anything else spins up. It may exec the binary in
+            -- place to enforce a heap ceiling (same PID, see Ecluse.Rts).
+            runtimePlan <-
+                applyRuntimePosture (logBootInfo logEnv) (logBootWarning logEnv) runtimeOverrides
+            fdLimit <- openFileSoftLimit
+            let report =
+                    resolveBootPlan
+                        role
+                        BootInputs
+                            { biEnvVars = envVars
+                            , biDocument = docBlob
+                            , biConfig = config
+                            , biRuntimePlan = runtimePlan
+                            , biFdLimit = fdLimit
+                            }
+            -- The provenance block logs ahead of every refusable phase, so a refusal that names a
+            -- config key stays traceable to the layer that set it.
+            traverse_ (logBootInfo logEnv) (brProvenance report)
+            let logAdvisories = traverse_ (logBootWarning logEnv) (brAdvisories report)
+            bootPlan <- case brOutcome report of
+                -- An advisory about a configuration that will not start is still one its operator
+                -- must act on, so a refusal reports beside it rather than instead of it.
+                Left errs -> logAdvisories >> refuseBoot (renderBootErrors errs)
+                Right plan -> pure plan
+            -- @ecluse check-config@ prints the same lists in this order, so a transcript and a
+            -- boot log agree line for line.
+            traverse_ (logBootInfo logEnv) (bpLines bootPlan)
+            traverse_ (logBootWarning logEnv) (bpWarnings bootPlan)
+            logAdvisories
+            prepareTelemetryBoot (obsTelemetry observability) logEnv
+            withTelemetry (obsTelemetry observability) logEnv $ \telemetry ->
+                action
+                    BootEnv
+                        { beConfig = config
+                        , beLogEnv = logEnv
+                        , beTelemetry = telemetry
+                        , beBootPlan = bootPlan
+                        }
 
-{- Build the config-selected mirror queue. Only the memory arm spends @memoryDepth@, and
-'deadLetterTerminusWarning' is decided here because it needs the built handle. -}
+-- | Build the planned queue and log its durability and delivery-limit warnings.
 buildMirrorQueue :: LogEnv -> Int -> MirrorQueuePlan -> IO MirrorQueue
 buildMirrorQueue logEnv memoryDepth plan = do
     queue <- case plan of
@@ -235,22 +221,19 @@ buildMirrorQueue logEnv memoryDepth plan = do
     whenJust (deadLetterTerminusWarning plan (deliveryBudget queue) (deadLetterTerminus queue)) (logBootWarning logEnv)
     pure queue
 
-{- | The server configuration of a probe-only role: the configured port over no mounts, so
-the process answers @\/livez@ and @\/readyz@ and gives every other path the neutral @404@.
--}
+-- | Serve health probes on the configured port, with no package mounts.
 probeServerConfig :: AppConfig -> ServerConfig
 probeServerConfig appConfig = (mkServerConfig []){scPort = srvPort (cfgServer appConfig)}
 
--- One boot line at 'WarningS', tagged with the root namespace rather than a submodule.
+-- | Report a boot warning under the root module's logging context.
 logBootWarning :: LogEnv -> Text -> IO ()
 logBootWarning logEnv = moduleLog logEnv "Ecluse" WarningS
 
--- One boot line at 'InfoS', for a non-warning boot diagnostic.
+-- | Report a boot diagnostic under the root module's logging context.
 logBootInfo :: LogEnv -> Text -> IO ()
 logBootInfo logEnv = moduleLog logEnv "Ecluse" InfoS
 
-{- Log every wired mount's resolved rule boot order, the same total order evaluation walks.
-A mount with no packument deps (the unserved stub) contributes nothing. -}
+-- | Report evaluation order for each wired mount.
 logRuleBootOrder :: LogEnv -> [MountBinding] -> IO ()
 logRuleBootOrder logEnv = traverse_ logMount
   where
@@ -260,21 +243,17 @@ logRuleBootOrder logEnv = traverse_ logMount
         logBootInfo logEnv ("rule boot order for mount " <> label <> ":")
         traverse_ (logBootInfo logEnv) (renderBootOrder (pdRules deps))
 
-{- | Raised to abort start-up, carrying the rendered refusal the exit site reports. A typed
-abort, rather than 'exitFailure', lets a test observe it without the process exiting.
--}
+-- | A start-up refusal that the process perimeter reports before exiting.
 newtype BootAborted = BootAborted Text
     deriving stock (Eq, Show)
 
 instance Exception BootAborted
 
-{- | Abort start-up with a rendered refusal. The caller renders the whole aggregated block, so
-one failed launch shows every problem.
--}
+-- | Raise the complete refusal for the process perimeter to report.
 refuseBoot :: Text -> IO a
 refuseBoot = throwIO . BootAborted
 
--- Refuse on a Left through 'refuseBoot', otherwise yield the value.
+-- | Abort on a rendered refusal, or return the successful result.
 orExit :: (e -> Text) -> Either e a -> IO a
 orExit render = either (refuseBoot . render) pure
 

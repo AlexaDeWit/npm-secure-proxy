@@ -2,16 +2,21 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | Mirror-store probes and diagnostics for the local Verdaccio end-to-end topology.
 module Ecluse.E2E.Harness.Verdaccio (
     verdaccioHasVersion,
     verdaccioHasVersionNow,
     verdaccioListing,
+    verdaccioAwaitListed,
     verdaccioNamesUnder,
 ) where
 
+import Data.Aeson (Object, decodeStrict)
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text qualified as T
 import Network.HTTP.Client (
+    Response,
     httpLbs,
     parseRequest,
     responseBody,
@@ -27,36 +32,72 @@ import Ecluse.Core.Registry.Npm.Maintenance (parsePackageListing)
 import Ecluse.E2E.Harness.Types
 import Ecluse.Test.Poll (pollUntil)
 
-{- | Poll Verdaccio (the mirror) until it serves the given version of a package, or the
-timeout lapses. A 'False' means the version never appeared within the patience window.
--}
+-- | Poll for a version, returning 'False' if the mirror does not serve it before the timeout.
 verdaccioHasVersion :: E2E -> Text -> Text -> IO Bool
 verdaccioHasVersion e2e pkg version =
     pollUntil 40 500000 id (verdaccioHasVersionNow e2e pkg version)
 
-{- | Check once whether the mirror already serves a version, with no retry. Use it for an
-absent-now precondition, to skip the patience window 'verdaccioHasVersion' spends.
--}
+-- | Probe once for a version, returning 'False' on HTTP or transport failure.
 verdaccioHasVersionNow :: E2E -> Text -> Text -> IO Bool
 verdaccioHasVersionNow e2e pkg version =
     handleAny (\_ -> pure False) $ do
-        req <- parseRequest (toString (e2eVerdaccio e2e <> "/" <> pkg))
-        resp <- httpLbs req (e2eManager e2e)
+        resp <- fetchPackument e2e pkg
         pure
             ( statusCode (responseStatus resp) == 200
                 && version `T.isInfixOf` decodeUtf8 (LBS.toStrict (responseBody resp))
             )
 
-{- | Every package name the store lists, read through the same @\/-\/all@ document and the same
-projector the protocol maintenance leaf drives. It is what a sweep intersects its candidates with,
-so an image whose listing changed shape fails here rather than inside a cycle.
--}
+-- | Project package names from the store's @\/-\/all@ document, failing on an unreadable listing.
 verdaccioListing :: E2E -> IO [Text]
 verdaccioListing e2e = map renderPackageName <$> verdaccioPackages e2e
 
-{- | The names the store lists that fall in one bucket of the name space, through the same
-predicate a store with no prefix filter of its own is walked by.
--}
+-- | Wait for a package to enter the listing, returning a diagnostic only when it never appears.
+verdaccioAwaitListed :: E2E -> Text -> IO (Maybe Text)
+verdaccioAwaitListed e2e pkg = do
+    listed <- pollUntil 40 500000 id (handleAny (\_ -> pure False) (elem pkg <$> verdaccioListing e2e))
+    if listed then pure Nothing else Just <$> unlistedReport e2e pkg
+
+unlistedReport :: E2E -> Text -> IO Text
+unlistedReport e2e pkg =
+    handleAny (\err -> pure (preamble <> "the listing could not be read: " <> show err)) $ do
+        body <- verdaccioListingBody e2e
+        served <- packumentReport e2e pkg
+        pure
+            ( preamble
+                <> "the projector read: "
+                <> either parseErrorMessage (T.intercalate ", " . map renderPackageName) (parsePackageListing body)
+                <> "\nthe same handle's packument for it: "
+                <> served
+                <> "\nthe store served (first 2048 characters): "
+                <> T.take 2048 (decodeUtf8 body)
+            )
+  where
+    preamble = "the store never listed " <> pkg <> ". "
+
+packumentReport :: E2E -> Text -> IO Text
+packumentReport e2e pkg =
+    handleAny (\err -> pure ("unreadable: " <> show err)) $ do
+        resp <- fetchPackument e2e pkg
+        let body = LBS.toStrict (responseBody resp)
+        pure
+            ( "status "
+                <> show (statusCode (responseStatus resp))
+                <> ", time key "
+                <> (if hasTimeKey body then "present" else "absent")
+                <> ", first 512 characters: "
+                <> T.take 512 (decodeUtf8 body)
+            )
+
+fetchPackument :: E2E -> Text -> IO (Response LBS.ByteString)
+fetchPackument e2e pkg = do
+    req <- parseRequest (toString (e2eVerdaccio e2e <> "/" <> pkg))
+    httpLbs req (e2eManager e2e)
+
+-- Verdaccio's listing entries all carry @time@, so its absence is worth reporting.
+hasTimeKey :: ByteString -> Bool
+hasTimeKey body = maybe False (KeyMap.member "time") (decodeStrict body :: Maybe Object)
+
+-- | Filter the listing by a package-name prefix, failing if the prefix cannot be parsed.
 verdaccioNamesUnder :: E2E -> Text -> IO [Text]
 verdaccioNamesUnder e2e raw = do
     names <- verdaccioPackages e2e
@@ -65,7 +106,12 @@ verdaccioNamesUnder e2e raw = do
 
 verdaccioPackages :: E2E -> IO [PackageName]
 verdaccioPackages e2e = do
+    body <- verdaccioListingBody e2e
+    either (fail . toString . parseErrorMessage) pure (parsePackageListing body)
+
+verdaccioListingBody :: E2E -> IO ByteString
+verdaccioListingBody e2e = do
     req <- parseRequest (toString (e2eVerdaccio e2e <> "/-/all"))
     resp <- httpLbs req (e2eManager e2e)
     when (statusCode (responseStatus resp) /= 200) (fail "the store served no package listing")
-    either (fail . toString . parseErrorMessage) pure (parsePackageListing (LBS.toStrict (responseBody resp)))
+    pure (LBS.toStrict (responseBody resp))

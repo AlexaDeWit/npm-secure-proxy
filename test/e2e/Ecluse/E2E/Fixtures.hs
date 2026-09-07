@@ -2,23 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Fixture generation for the end-to-end suite: the static file tree the nginx
-public-upstream stub serves.
-
-Each fixture package is an npm-format packument plus a real gzipped tar artifact.
-Its __sha-512 SRI covers the bytes actually written__. The proxy's serve path, the
-worker's integrity gate, and npm's own SRI check therefore see one digest. The tamper
-case makes that digest deliberately inconsistent. The builder backdates each version
-well past the default @min-age@ quarantine, so the age rule does not gate the allow path
-shut.
-
-The tree mirrors the npm registry layout the stub serves over HTTP:
-
-> \<name\>            -- the packument JSON
-> \<name\>/-/\<name\>-\<version\>.tgz -- the artifact
-
-so a packument's @dist.tarball@ (@https:\/\/upstream\/\<name\>\/-\/…@) resolves on the
-same stub.
+{- | npm fixtures for the nginx upstream in end-to-end tests.
+Versions predate quarantine, and artifact integrity matches the served bytes
+except in the tampering fixture.
 -}
 module Ecluse.E2E.Fixtures (
     PkgSpec (..),
@@ -28,6 +14,7 @@ module Ecluse.E2E.Fixtures (
     mirrorPkg,
     dredgerPkg,
     dredgerKeepPkg,
+    dredgerDryRunPkg,
     tamperPkg,
     headPkg,
     telemetryPkg,
@@ -56,18 +43,16 @@ data PkgSpec = PkgSpec
     , psInstallScript :: Bool
     -- ^ Declare an install script: the @DenyInstallTimeExecution@ trigger.
     , psTamper :: Bool
-    {- ^ Corrupt the artifact bytes after the packument's SRI is computed, so the
-    served bytes no longer match the declared integrity.
-    -}
+    -- ^ Corrupt the served bytes after computing their declared integrity.
     }
     deriving stock (Eq, Show)
 
--- | A benign package: one backdated version, no install script, untampered bytes.
+-- | One backdated version with no install script or altered artifact bytes.
 defaultPkgSpec :: Text -> PkgSpec
 defaultPkgSpec name =
     PkgSpec{psName = name, psVersion = "1.0.0", psInstallScript = False, psTamper = False}
 
--- | An allow-listed package: installs cleanly end to end.
+-- | An allow-listed package for the install path.
 allowPkg :: PkgSpec
 allowPkg = defaultPkgSpec "e2e-allow"
 
@@ -83,38 +68,35 @@ mirrorPkg = defaultPkgSpec "e2e-mirror"
 tamperPkg :: PkgSpec
 tamperPkg = (defaultPkgSpec "e2e-tamper"){psTamper = True}
 
-{- | A package used only for @HEAD@ probes. No scenario installs or @GET@s it, so an empty
-mirror is attributable to the @HEAD@ alone.
--}
+-- | A package reserved for @HEAD@ probes, so no install can seed its mirror entry.
 headPkg :: PkgSpec
 headPkg = defaultPkgSpec "e2e-head"
 
-{- | A package the Dredger deletes from the mirror. No other case installs or observes it, so an
-absence after a sweep is attributable to that sweep alone.
--}
+-- | A package reserved for deletion by the Dredger scenario.
 dredgerPkg :: PkgSpec
 dredgerPkg = defaultPkgSpec "e2e-dredger"
 
-{- | A package that is mirrored beside 'dredgerPkg' and that no deny names, so a sweep that
-deleted it would prove the sweep deletes more than the rule condemned.
--}
+-- | A mirrored package that the Dredger's deny rule does not name.
 dredgerKeepPkg :: PkgSpec
 dredgerKeepPkg = defaultPkgSpec "e2e-dredger-keep"
+
+-- | A package condemned only by a dry run, which must preserve it.
+dredgerDryRunPkg :: PkgSpec
+dredgerDryRunPkg = defaultPkgSpec "e2e-dredger-dry-run"
 
 -- | A package used to exercise telemetry domain-span emission.
 telemetryPkg :: PkgSpec
 telemetryPkg = defaultPkgSpec "e2e-telemetry"
 
+-- | A package for correlating mirrored requests with Datadog telemetry.
 telemetryDdPkg :: PkgSpec
 telemetryDdPkg = defaultPkgSpec "e2e-telemetry-datadog"
 
 -- | The full fixture set the stub serves.
 fixturePackages :: [PkgSpec]
-fixturePackages = [allowPkg, denyPkg, mirrorPkg, tamperPkg, headPkg, dredgerPkg, dredgerKeepPkg, telemetryPkg, telemetryDdPkg]
+fixturePackages = [allowPkg, denyPkg, mirrorPkg, tamperPkg, headPkg, dredgerPkg, dredgerKeepPkg, dredgerDryRunPkg, telemetryPkg, telemetryDdPkg]
 
-{- | Write every fixture package under @root@, the nginx stub's document root, with each
-packument's @dist.integrity@ fixed to the artifact's real sha-512.
--}
+-- | Write nginx fixtures with matching artifact integrity, then apply any requested tampering.
 buildFixtures :: FilePath -> [PkgSpec] -> IO ()
 buildFixtures root = traverse_ (buildOne root)
 
@@ -157,11 +139,9 @@ buildOne root spec = do
         -- gate and npm's own check must now reject these bytes.
         BS.appendFile tgzPath "tampered"
 
--- | @sha512-<base64>@ Subresource-Integrity string over the given bytes.
 sha512Sri :: ByteString -> Text
 sha512Sri = sriSha512Of
 
--- | The artifact's @package.json@: identity plus, for the deny case, an install script.
 tarballPackageJson :: PkgSpec -> Value
 tarballPackageJson spec =
     object $
@@ -170,9 +150,6 @@ tarballPackageJson spec =
         ]
             <> ["scripts" .= object ["install" .= ("node -e \"\"" :: Text)] | psInstallScript spec]
 
-{- | The npm packument the stub serves: one backdated version whose integrity is the real
-digest. The deny case adds @hasInstallScript@ and a declared install script.
--}
 packument :: PkgSpec -> Text -> Value
 packument spec sri =
     packumentValue

@@ -209,9 +209,10 @@ store's own: a user whose package rights cover the mirror store and nothing else
 ## Known limits
 
 **One Dredger per store.** There is no lease. Two Dredgers against one store double the cap's blast
-radius and interleave their marker writes. On a `verdaccio` store the unpublish reads the package
-document, writes it back edited, then deletes the tarball, so a concurrent publish of another
-version of the same package can be lost from the document.
+radius and interleave their marker writes. On a `verdaccio` store, unpublish deletes the whole
+package when its last version is removed. Otherwise it edits the package document and deletes
+the version's tarball. Verdaccio does not enforce the document revision on these writes, so
+either path can lose a concurrent publish of another version of the same package.
 
 **A public version that entered the mirror before you declared its namespace is unreachable.** The
 first-party belt shields every version under a declared namespace, so such a version stays and your
