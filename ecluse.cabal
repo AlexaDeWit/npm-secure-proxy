@@ -1203,6 +1203,7 @@ test-suite ecluse-e2e
   main-is:            Spec.hs
   hs-source-dirs:     test/e2e
   other-modules:
+    Ecluse.DredgerE2ESpec
     Ecluse.E2E.Fixtures
     Ecluse.E2E.Harness
     Ecluse.E2E.Harness.Docker

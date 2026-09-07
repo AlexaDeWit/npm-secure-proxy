@@ -108,7 +108,9 @@ network. It then asserts client- and mirror-observable outcomes:
 The Dredger cases seed Verdaccio through the proxy and mirror worker, then run the same
 image with an identity deny and no advisory database. They cover `--once`, `--dry-run`,
 consent refusal, first-party protection, and listing preservation after the final version
-is deleted. These cases do not verify behaviour against a real CodeArtifact repository.
+is deleted. `Ecluse.DredgerE2ESpec` also drives `listPackagesIn` against the store and compares
+complete package-version snapshots with the audit records and cycle counts. Its first-party
+fixture holds two versions. These cases do not verify behaviour against a real CodeArtifact repository.
 
 It catches composition-root and cross-component regressions nothing else does. The mount rewrites a
 served `dist.tarball` to an absolute installable URL under `ECLUSE_SERVER__PUBLIC_URL`, because

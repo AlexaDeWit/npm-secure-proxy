@@ -14,8 +14,11 @@ module Ecluse.Test.Log (
     jsonLogEnv,
     captureStdout,
     captureStderr,
+    lineMessage,
 ) where
 
+import Data.Aeson (Object, eitherDecodeStrict, (.:))
+import Data.Aeson.Types (parseMaybe)
 import GHC.IO.Handle (hClose, hDuplicate, hDuplicateTo)
 import Katip (
     ColorStrategy (ColorLog),
@@ -81,3 +84,9 @@ captureHandle stream act =
         hFlush stream
         hDuplicateTo saved stream
         hClose saved
+
+-- | Read a JSONL message, returning 'Nothing' for malformed JSON or a missing or non-text message.
+lineMessage :: Text -> Maybe Text
+lineMessage line = case eitherDecodeStrict (encodeUtf8 line) of
+    Right o -> parseMaybe (.: "message") (o :: Object)
+    Left _ -> Nothing
