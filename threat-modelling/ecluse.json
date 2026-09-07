@@ -2236,6 +2236,17 @@
                   "id": "0ec10e5e-0000-4000-8000-000000000107"
                 },
                 {
+                  "number": 110,
+                  "status": "Accepted",
+                  "severity": "Low",
+                  "title": "An admitted mirror transfer can finish after an advisory changes",
+                  "type": "Tampering",
+                  "description": "The worker re-evaluates queued work before downloading the artifact and verifies its bytes before publishing. An advisory can change after that check. The pending transfer can then publish a version the new evidence denies, including after Dredger removes an earlier copy, if the backend permits recreation. A later private read trusts the resulting copy until eligible cleanup succeeds.",
+                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07 in #1235. Retain the existing worker re-evaluation and byte verification. Do not add another last-moment rule check, cancellation barrier, or distributed write coordination for this timing window. The owner considers the transfer a seconds-scale operation relative to advisory propagation, which can take hours before new evidence reaches the proxy. These are operational expectations, not measured latency bounds from the audit. Admission before advisory evidence is available is already an accepted limit of the model. Subsequent Dredger cycles reconcile eligible late publications under current evidence and existing guards. Current pruning targets B only. The proposed B+C cleanup in #1227 is required for retained downstream copies and remains unimplemented. This acceptance does not promise immediate revocation or waive integrity verification, intentional rule precedence, consent, or first-party protection. The local probe established publication-callback ordering, not production frequency or physical registry refill. See https://github.com/AlexaDeWit/Ecluse/issues/1235 .",
+                  "modelType": "STRIDE",
+                  "id": "bd6136ad-e767-424b-bda4-53144a8a7f10"
+                },
+                {
                   "number": 22,
                   "status": "Mitigated",
                   "severity": "Medium",
