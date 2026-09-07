@@ -57,7 +57,8 @@
                 "f1646094-9885-422a-b7e7-7888c72905ef",
                 "c8455307-cef2-4843-a821-ff90db9643d2",
                 "f66e2ffa-c6bf-4b45-8aad-a23ced3a97ff",
-                "d5da865d-6e80-44da-a2ee-841f6bebd567"
+                "d5da865d-6e80-44da-a2ee-841f6bebd567",
+                "c9e4d8b4-1234-4d1c-8948-a0ba03f82abd"
               ],
               "crossingFlows": [
                 "0ec10e5e-0000-4000-8000-000000000040",
@@ -2961,7 +2962,19 @@
               "isSigned": false,
               "storesCredentials": false,
               "storesInventory": false,
-              "threats": []
+              "threats": [
+                {
+                  "number": 106,
+                  "status": "Accepted",
+                  "severity": "Medium",
+                  "title": "Cold-start advisory availability depends on S3",
+                  "type": "Denial of service",
+                  "description": "A proxy configured to sync advisories from S3 starts without a loaded advisory generation. An S3 outage, missing object, or denied read can prevent its first sync. A replaced Kubernetes Pod loses its emptyDir data. A container restart within the same Pod can retain that data, but the current proxy does not load the retained database at boot. A warm process instead keeps using its last good generation during a fetch failure.",
+                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07. The deployment may depend on S3 at cold start rather than require durable local advisory storage or recovery from a retained file. Under #1233, advisory acquisition failure leaves the process alive to retry. Exhausting the bounded initial retry budget reports ERROR, and readiness is false when no mount is ready. The earlier proposal to exit the process is superseded. Current code already keeps polling and logs the exhausted boot budget at ERROR, but readiness waits for every configured ecosystem's first sync. #1223 requires healthy mounts to remain routable despite another ecosystem's missing artifact. That partial-readiness change is not implemented. Readiness alone does not block direct requests. Requests retain configured trusted-read, allow, skip, and refusal semantics. When evaluation reaches a FailDeny advisory rule, an absent database prevents public admission. #1230 requires ERROR-level outage reporting without per-serve log duplication. Exact readiness interfaces and retry configuration remain design details. #1221 separately governs maximum advisory age and #1222 governs publication ordering and operator rollback. Kubernetes storage semantics: https://kubernetes.io/docs/concepts/storage/volumes/#emptydir .",
+                  "modelType": "STRIDE",
+                  "id": "6a368fa6-e4c8-446e-8e24-0685bb0980ef"
+                }
+              ]
             }
           },
           {
@@ -3071,7 +3084,7 @@
             "id": "f66e2ffa-c6bf-4b45-8aad-a23ced3a97ff",
             "data": {
               "name": "\u00c9cluse Dredger",
-              "description": "The mirror-store pruning role of the multicall binary, run as `ecluse dredger`. It prunes already-mirrored versions that the shared rules engine now denies, on a named decisive deny that is advisory-driven or identity-driven, with no age condition. It deletes from the mirror store (Registry B) only, never the private upstream and never the publication target. It takes zero ingress and exposes only its liveness and readiness probes. It shares ecluse-core, so its rules cannot drift from the ones the serve and ingest gates run.",
+              "description": "The pruning role of the multicall binary, run as `ecluse dredger`. Current code deletes named-denied versions from the mirror store (Registry B) only. It exposes health probes and uses the shared rules engine with its own boot configuration. Issue #1227 proposes explicit cleanup of retained mirror-derived copies in the private read repository (Registry C), using DeletePackageVersions and never DisposePackageVersions there. That extension is not implemented. The proposed C flow records its additional authority and completion risks.",
               "type": "tm.Process",
               "isTrustBoundary": false,
               "outOfScope": false,
@@ -3088,6 +3101,17 @@
                   "mitigation": "Dredger must delete only from the mirror. It must delete a version only on a named decisive deny from the shared rules engine, never on deny-by-default and never while the advisory database is unavailable, because fail closed for a reaper means refusing to delete. A per-cycle deletion cap halts the cycle when a mass denial appears, which is the breaker against a poisoned advisory database. The cap's default is computed at boot as a conservative allowance per sweepable mirror store, and the configuration key raises it deliberately. The pause between sweep chunks carries a hardcoded floor the boot refuses beneath, so a mistaken sweep stays interruptible. A dry-run mode rehearses a sweep and reports what it would remove without removing it. Deletion is the backend's plain delete rather than a tombstone, so a culled version whose deny later lifts is re-admissible through the normal admission gate and the mirror behaves as a cache. A serve-only mount declares no mirrorTarget, so it holds no mirror to delete from and this surface does not exist there.",
                   "modelType": "STRIDE",
                   "id": "43f60aec-7a7c-4450-8992-ae2b42d20b0f"
+                },
+                {
+                  "number": 109,
+                  "status": "Accepted",
+                  "severity": "Medium",
+                  "title": "An outdated Dredger policy deletes the only remaining package copy",
+                  "type": "Denial of service",
+                  "description": "The owner assesses this rollout residual as unlikely. No deployment frequency was measured. Loss requires a retained version, disagreement that lets an old Dredger deny what the intended policy permits, a deletion during that disagreement, and no remaining usable source of the bytes. The public source can disappear before the rollout. No new admission during the rollout is required. Later policy agreement cannot restore the lost bytes. Current Dredger deletes from mirror B only. The proposed B+C cleanup in #1227 extends the locations affected by this residual.",
+                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07 in #1228. The ecosystem uses eventual consistency, with recommended operator rollout ordering rather than a mandatory coordinated pause or shared policy authority. Planned operator guidance must explain stricter and looser policy transitions and the risk of leaving an old Dredger active during a relaxation. Existing consent, first-party protection, named-deny requirements, and deletion caps remain applicable. Both B and the proposed C cleanup use plain deletion, never disposal. Deletion permits later publication but does not recover unavailable bytes. Once roles adopt the intended policy and older writes finish, repeated scans can remove eligible denied copies, subject to backend availability and consent. They cannot undo loss of the only bytes or guarantee convergence while roles indefinitely apply conflicting policies. This acceptance is limited to rollout disagreement, not general deletion bugs, poisoned advisories, or unauthorised targets. B+C cleanup and its convergence tests remain unimplemented. See https://github.com/AlexaDeWit/Ecluse/issues/1228 .",
+                  "modelType": "STRIDE",
+                  "id": "f2e4bd60-86cc-4a3d-b94a-5e971c29ae08"
                 },
                 {
                   "number": 26,
@@ -3176,6 +3200,52 @@
                   "mitigation": "Both components parse against the same deny-by-default component gate the serve path applies, which refuses an empty component, a bare dot or dot-dot, and any component holding a slash, a backslash, or a control character. A file name that fails the gate falls back to the conventional name built from the package and the version, and a revision marker that fails it refuses that one version rather than forming a request. The build then percent-encodes every component it interpolates and keeps only the unreserved set verbatim, so safety rests on encode-on-build and not on the gate alone. Every request is formed against the store's own base URL, which is https-only with certificate validation, and it reaches the wire sealed with the redirect count pinned to zero, so no hop can move a credential-bearing write after the request is formed. The document is read under the response-size bound, so an oversized answer ends the read. Residual: the gate is structural, so a name that is a valid component but not the version's own artifact still forms a delete against this one store, bounded by the mirror store the credential reaches.",
                   "modelType": "STRIDE",
                   "id": "0ec10e5e-0000-4000-8000-000000000128"
+                }
+              ],
+              "isEncrypted": true,
+              "isPublicNetwork": false
+            }
+          },
+          {
+            "shape": "flow",
+            "zIndex": 10,
+            "id": "c9e4d8b4-1234-4d1c-8948-a0ba03f82abd",
+            "source": {
+              "cell": "f66e2ffa-c6bf-4b45-8aad-a23ced3a97ff"
+            },
+            "target": {
+              "cell": "0ec10e5e-0000-4000-8000-000000000032"
+            },
+            "data": {
+              "name": "delete retained mirror versions (proposed)",
+              "description": "Proposed in #1227, not implemented: Dredger reads candidates from both mirror B and private upstream C, preserving per-location presence and provenance. It uses DeletePackageVersions on explicitly authorised C targets. DisposePackageVersions is forbidden there. Operator guidance must state the package-scoped permission, per-target consent, first-party exclusions, and recovery limits. Repeated scans rediscover residual copies. An optional queue or journal cannot replace actual repository state.",
+              "type": "tm.Flow",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "threats": [
+                {
+                  "number": 107,
+                  "status": "Open",
+                  "severity": "High",
+                  "title": "Downstream cleanup gains authority over unrelated private versions",
+                  "type": "Elevation of privilege",
+                  "description": "Registry C can retain both mirror-derived and first-party versions. Granting Dredger deletion permission there extends its authority beyond Registry B. A misdirected cleanup or compromised process can remove a private version outside the intended mirrored set. A package-level IAM grant covers that package's versions and does not prove their provenance. Plain deletion permits later publication, but cannot recover bytes when no source remains.",
+                  "mitigation": "Proposed controls, not implemented: bind cleanup to explicit account, region, domain, repository, ecosystem, package, and version identities. Require consent for each target and enough evidence to identify retained mirror-derived content. Keep first-party and unknown provenance outside automatic deletion. Preserve caps and dry-run. Use DeletePackageVersions only on Registry C, never DisposePackageVersions, DeletePackage, or repository deletion. Document package-ARN permission scope and the separate read and consent permissions. Do not globally relax the existing mirror collision refusals. CodeArtifact INTERNAL origin alone does not prove retention from the mirror. Its domain entry point records original publication, not the last upstream hop. Application checks cannot constrain a compromised process beyond its IAM grant. See https://github.com/AlexaDeWit/Ecluse/issues/1227 .",
+                  "modelType": "STRIDE",
+                  "id": "987569ac-0a3a-4b7f-8b0a-7b67ee234097"
+                },
+                {
+                  "number": 108,
+                  "status": "Open",
+                  "severity": "High",
+                  "title": "Partial downstream cleanup leaves revoked content available",
+                  "type": "Tampering",
+                  "description": "Cleanup can remove a version from Registry B and fail before removing Registry C's retained copy. A restart can lose the remaining work, and later B listings no longer name the version. A successful private read then continues serving it. An available upstream or pending writer can also recreate content after a downstream delete. A pre-read or one successful delete cannot establish final removal across the configured targets.",
+                  "mitigation": "Proposed controls, not implemented: derive candidates from actual inventories in both mirror B and private upstream C, then repeat both scans after failures and restarts. Preserve per-location presence and provenance when deduplicating identities. A retained C copy remains discoverable after B removes its copy, and a B version remains discoverable before C retains it. Re-evaluate current policy, provenance, and consent before later writes. Record per-target outcomes and retry transient failures under bounded backoff. Optional scheduling or audit records cannot replace repository truth or authorise stale decisions. CodeArtifact listing APIs show local inventory, so neither listing alone covers both states. First-party and unrelated upstream content remain outside cleanup authority. Verify the private read result after cleanup and consider delayed checks for refill. Coordinate source removal and pending publications. Count every target operation against the chosen cap. Report incomplete work explicitly. See https://github.com/AlexaDeWit/Ecluse/issues/1227 and https://github.com/AlexaDeWit/Ecluse/issues/1235 .",
+                  "modelType": "STRIDE",
+                  "id": "1780db57-6b2f-456c-a393-e4e6b8b532f3"
                 }
               ],
               "isEncrypted": true,
