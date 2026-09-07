@@ -2678,7 +2678,7 @@
             "data": {
               "type": "tm.Process",
               "name": "\u00c9cluse Pilot\n(Ingestion Pipeline)",
-              "description": "Pilot is an unopinionated data ingestion pipeline. It fetches vulnerability data and delivers an optimised osv.db to S3. The proxy therefore never queries osv.dev on the critical path and never meets its rate limits. Pilot makes no security or blocking decision. The proxy's rules engine is the sole opinionated enforcement point. Only the rules engine evaluates that data, for example to block on CVE severity or an EPSS score, or to fast-lane a remediation package.",
+              "description": "Pilot fetches configured OSV exports and the independent EPSS score feed, compiles per-ecosystem SQLite artifacts, and publishes them to S3. It produces advisory evidence rather than package-admission decisions. Proxy, mirror-worker, and Dredger roles use the shared rules engine against their loaded artifacts. Current Pilot compilation requires a successful EPSS feed. Configuration-dependent optional EPSS failure is planned in #1224.",
               "outOfScope": false,
               "isTrustBoundary": false,
               "reasonOutOfScope": "",
@@ -2722,6 +2722,17 @@
                   "id": "c87367bd-fc3f-4792-94b6-8db459011823"
                 },
                 {
+                  "number": 111,
+                  "status": "Accepted",
+                  "severity": "High",
+                  "title": "Incorrect EPSS source scores become authoritative policy evidence",
+                  "type": "Spoofing",
+                  "description": "Pilot trusts the configured EPSS feed as the authority for its scores, separately from OSV vulnerability records. A compromised or incorrect source can supply plausible scores that pass validation. An overstated score can cause an EPSS denial and eligible Dredger deletion. An understated score can fail to trigger an EPSS denial. Other configured rules still apply. Transport and schema validity do not establish the accuracy of a predictive score.",
+                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07 in #1238, following the separate-entry requirement in #539. Rely on the configured EPSS source without adding independent verification of score truth. HTTPS, bounded fetching, parsing, and score validation constrain transport and malformed-input failures, not plausible source errors. This acceptance does not waive completeness, availability, or freshness handling. #1224 specifies unconditional enrichment attempts with configuration-dependent failure. #1225 restores abstention for an individual absent EPSS score, rather than a positive denial. #1234 guards empty or shrinking compiled output. #1221 addresses advisory age. Those runtime changes remain unimplemented. Keep the OSV source assumption in threat 101 separate and preserve all existing admission and deletion guards. See https://github.com/AlexaDeWit/Ecluse/issues/1238 .",
+                  "modelType": "STRIDE",
+                  "id": "4d309275-cc3c-43d0-a1a2-f024789e9f17"
+                },
+                {
                   "number": 20,
                   "status": "Mitigated",
                   "severity": "Medium",
@@ -2733,6 +2744,164 @@
                   "id": "3735906e-a06a-4e0f-ba45-894ba5400ce8"
                 }
               ]
+            }
+          },
+          {
+            "position": {
+              "x": 1477,
+              "y": 1090
+            },
+            "size": {
+              "width": 170,
+              "height": 110
+            },
+            "attrs": {
+              "text": {
+                "text": "EPSS feed"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1.5,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "actor",
+            "zIndex": 12,
+            "ports": {
+              "groups": {
+                "top": {
+                  "position": "top",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "position": "right",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "bottom": {
+                  "position": "bottom",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "left": {
+                  "position": "left",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                }
+              },
+              "items": [
+                {
+                  "group": "top",
+                  "id": "68dc407f-373e-4e26-a2ee-b79d7a3290a0"
+                },
+                {
+                  "group": "right",
+                  "id": "68dc407f-373e-4e26-a2ee-b79d7a3290a1"
+                },
+                {
+                  "group": "bottom",
+                  "id": "68dc407f-373e-4e26-a2ee-b79d7a3290a2"
+                },
+                {
+                  "group": "left",
+                  "id": "68dc407f-373e-4e26-a2ee-b79d7a3290a3"
+                }
+              ]
+            },
+            "id": "7ecb4bda-c005-4c1c-8eb6-868168c304db",
+            "data": {
+              "type": "tm.Actor",
+              "name": "EPSS feed",
+              "description": "The configured EPSS score source, defaulting to FIRST.org's daily CSV feed. Its score authority is independent of OSV vulnerability records.",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": false,
+              "providesAuthentication": false,
+              "threats": []
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": ""
+                },
+                "strokeDasharray": null
+              }
+            },
+            "zIndex": 10,
+            "connector": "smooth",
+            "id": "c02b5948-c82c-419b-a240-cf223204dba4",
+            "source": {
+              "cell": "7ecb4bda-c005-4c1c-8eb6-868168c304db",
+              "port": "68dc407f-373e-4e26-a2ee-b79d7a3290a3"
+            },
+            "target": {
+              "cell": "f1646094-9885-422a-b7e7-7888c72905ef",
+              "port": "a1d34122-d242-4d6e-9801-9ef96ef00f95"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "EPSS scores by CVE identity",
+              "description": "Pilot fetches the configured gzip CSV feed over HTTPS and joins scores onto OSV advisory ranges through CVE identifiers and aliases. This fetch is independent of the OSV export.",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": false,
+              "isBidirectional": false,
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "protocol": "HTTPS",
+              "threats": [],
+              "trustBoundaryIds": []
             }
           },
           {
@@ -3314,6 +3483,6 @@
     ],
     "diagramTop": 1,
     "reviewer": "",
-    "threatTop": 105
+    "threatTop": 111
   }
 }
