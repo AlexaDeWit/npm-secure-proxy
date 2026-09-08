@@ -24,6 +24,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
 
 import Ecluse.Core.Package.Merge (MergePlan (mpSurvivors), SourceId)
 import Ecluse.Core.Text (urlFilename)
@@ -50,11 +51,14 @@ safeDocumentName parse document = case KeyMap.lookup "name" document of
     Just (String name) -> parse name
     _ -> Nothing
 
-{- | Rebase an artifact under this mount, refusing a missing or unsafe filename.
+{- | Rebase an artifact under this mount, checking filenames before and after URL whitespace trimming.
 Idempotent while the renderer keeps the filename in the terminal path segment.
 -}
 rebaseArtifactUrl :: (Text -> Maybe Text) -> Text -> Maybe Text
-rebaseArtifactUrl renderMountUrl url = renderMountUrl =<< urlFilename url
+rebaseArtifactUrl renderMountUrl url = do
+    filename <- urlFilename url
+    _ <- urlFilename (T.strip url)
+    renderMountUrl filename
 
 -- | The 'Text' at @key@ in a raw document object, if present and a JSON string.
 stringField :: Key.Key -> KeyMap Value -> Maybe Text

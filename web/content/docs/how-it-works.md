@@ -76,6 +76,7 @@ version unless a named deny becomes decisive. See
 [Revoking a mirrored version](@/docs/operations.md#revoking-a-mirrored-version-internal-yank).
 
 Listings omit files whose URLs lack a filename, name `.` or `..`, or have a backslash or control character in the filename.
+The check also applies after one percent decode and refuses encoded separators or invalid UTF-8.
 A release disappears when no file survives.
 
 The current npm mirror writer omits dependency and executable fields from its published manifest.

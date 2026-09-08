@@ -21,12 +21,14 @@ module Ecluse.Core.Text (
 
 import Data.Char (isControl)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Builder qualified as TB
 import Data.Text.Lazy.Builder.Int qualified as TBI
 import Data.Text.Read qualified as TR
 import Data.Time (UTCTime (UTCTime), diffTimeToPicoseconds, toGregorian)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Network.HTTP.Types.URI (urlDecode)
 
 {- | The text trimmed of surrounding whitespace, or 'Nothing' when nothing remains.
 An empty or all-whitespace value therefore counts as absent.
@@ -46,11 +48,16 @@ slashes the base writes. It appends the path verbatim, and neither encodes nor v
 joinUrlPath :: Text -> Text -> Text
 joinUrlPath b path = stripTrailingSlash b <> "/" <> path
 
--- | The final URL path component without query or fragment, or 'Nothing' if it fails 'isSafeComponent'.
+{- | The final URL path component, preserving its encoded spelling without query or fragment.
+Both the raw and once-decoded component must pass 'isSafeComponent', with valid decoded UTF-8.
+-}
 urlFilename :: Text -> Maybe Text
-urlFilename url =
+urlFilename url = do
     let filename = T.takeWhileEnd (/= '/') (T.takeWhile inPath url)
-     in if isSafeComponent filename then Just filename else Nothing
+    guard (isSafeComponent filename)
+    decoded <- rightToMaybe (TE.decodeUtf8' (urlDecode False (encodeUtf8 filename)))
+    guard (isSafeComponent decoded)
+    pure filename
   where
     inPath ch = ch /= '?' && ch /= '#'
 

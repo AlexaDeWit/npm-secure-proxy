@@ -41,7 +41,7 @@ spec = do
 
 droppedArtifactSpec :: Spec
 droppedArtifactSpec = describe "served artifact filename refusals" $
-    for_ ["a\\..\\..\\x", ".", "..", "", ".. ", ". ", " "] $ \filename -> do
+    for_ ["a\\..\\..\\x", ".", "..", "", ".. ", ". ", " ", "%2e", ".%2E", "%2e.", "%2E%2e", "a%2fb", "a%5Cb"] $ \filename -> do
         it ("drops and records an npm version whose URL ends in " <> show filename) $ do
             let version = Npm.versionValue (Npm.versionSpec "lodash" "1.0.0" ("https://registry.npmjs.org/" <> filename))
                 source = Npm.packumentValue "lodash" "1.0.0" [("1.0.0", version)] [] []
@@ -55,25 +55,26 @@ droppedArtifactSpec = describe "served artifact filename refusals" $
                     field "versions" (assembleMergedPackument "https://ecluse.test/npm" (Map.singleton 0 source) plan source)
                         `shouldBe` Just (Object mempty)
 
-        for_ [False, True] $ \keepSibling ->
-            it ("drops and records a PyPI file whose URL ends in " <> show filename <> ", sibling=" <> show keepSibling) $ do
+        for_ ["absent", "distinct", "duplicate" :: Text] $ \siblingKind ->
+            it ("drops and records a PyPI file whose URL ends in " <> show filename <> ", sibling=" <> toString siblingKind) $ do
                 let refusedName = "requests-1.0.0.tar.gz"
-                    siblingName = "requests-1.0.0-py3-none-any.whl"
+                    keepSibling = siblingKind /= "absent"
+                    siblingName = if siblingKind == "duplicate" then refusedName else "requests-1.0.0-py3-none-any.whl"
                     refused = withFileKeys [("url", String ("https://files.pythonhosted.org/" <> filename))] (simpleFile refusedName)
                     files = refused : [simpleFile siblingName | keepSibling]
                     source = object ["name" .= ("requests" :: Text), "meta" .= object ["api-version" .= ("1.0" :: Text)], "files" .= files]
-                    index = Map.fromList [(refusedName, "1.0.0"), (siblingName, "1.0.0")]
+                    index = Map.fromList [(refusedName, "1"), (siblingName, "1")]
                 info <- projectedInfo =<< expectRight (projectSimpleIndexFromValue (mkPackageName PyPI Nothing "requests") source)
                 let kept = enforceArtifactLocations (ecosystemArtifactAuthorities ["https://files.pythonhosted.org"]) "https://pypi.org" info
                 map invalidKind (infoInvalidEntries kept) `shouldBe` [if keepSibling then InvalidIndexFile else InvalidVersionManifest]
-                map invalidKey (infoInvalidEntries kept) `shouldBe` [if keepSibling then refusedName else "1.0.0"]
+                map invalidKey (infoInvalidEntries kept) `shouldBe` [if keepSibling then refusedName else "1"]
                 case mergePackuments [(GatedSource, kept)] of
                     Nothing -> expectationFailure "expected a merge plan for the listing"
                     Just plan -> do
                         let served = assembleSimpleIndex "https://ecluse.test/pypi" (Map.singleton 0 (source, index)) plan source
                             sibling = withFileKeys [("url", String ("https://ecluse.test/pypi/simple/requests/" <> siblingName))] (simpleFile siblingName)
                         field "files" served `shouldBe` Just (Array (fromList [sibling | keepSibling]))
-                        field "versions" served `shouldBe` Just (Array (fromList [String "1.0.0" | keepSibling]))
+                        field "versions" served `shouldBe` Just (Array (fromList [String "1" | keepSibling]))
 
 projectedInfo :: Projection a -> IO a
 projectedInfo = \case
@@ -148,9 +149,14 @@ rebaseSpec = describe "rebaseArtifactUrl" $ do
         rebaseArtifactUrl mountUrl "https://registry.npmjs.org/lodash/" `shouldBe` Nothing
         rebaseArtifactUrl mountUrl "" `shouldBe` Nothing
 
-    for_ ["a\\..\\..\\x", ".", ".."] $ \filename ->
+    for_ ["a\\..\\..\\x", ".", "..", ".. ", ". ", " ", "bad\n", "%2e", ".%2e", "%2E.", "%2E%2e", "a%2fb", "a%5Cb"] $ \filename ->
         it ("refuses to rebase " <> show filename) $
             rebaseArtifactUrl mountUrl ("https://registry.npmjs.org/" <> filename) `shouldBe` Nothing
+
+    for_ ["%2e%2e.tgz", "two%20words.tgz", "name+tag.tgz", "%252e%252e"] $ \filename ->
+        it ("preserves an admitted encoded filename when rebasing " <> show filename) $
+            rebaseArtifactUrl mountUrl ("https://registry.npmjs.org/" <> filename)
+                `shouldBe` mountUrl filename
 
     it "is idempotent: rebasing an already-rebased URL yields the same URL" $
         hedgehog $ do

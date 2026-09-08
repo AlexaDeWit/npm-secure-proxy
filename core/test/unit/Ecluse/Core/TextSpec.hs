@@ -148,7 +148,11 @@ urlFilenameSpec = describe "urlFilename" $ do
         it ("refuses the unsafe filename " <> show filename) $
             urlFilename ("https://host/" <> filename) `shouldBe` Nothing
 
-    for_ ["archive..tgz", ".hidden", "two words.tgz", "%2e%2e.tgz"] $ \filename ->
+    for_ ["%2e", "%2E", ".%2e", "%2E.", "%2e%2e", "%2E%2e", "a%2fb", "a%2Fb", "a%5cb", "a%5Cb", "bad%00name", "bad%0Aname", "%ff", "%c0%ae"] $ \filename ->
+        it ("refuses the once-decoded unsafe filename " <> show filename) $
+            urlFilename ("https://host/" <> filename) `shouldBe` Nothing
+
+    for_ ["archive..tgz", ".hidden", "two words.tgz", "%2e%2e.tgz", "two%20words.tgz", "caf%C3%A9.tgz", "name+tag.tgz", "%252e%252e", "%252f", "%255c", "literal%", "literal%2", "literal%zz"] $ \filename ->
         it ("keeps the valid filename " <> show filename) $
             urlFilename ("https://host/" <> filename <> "?sig=abc#hash") `shouldBe` Just filename
 

@@ -2,15 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Assembling the PEP 691 Simple index Écluse serves, from a cross-upstream 'MergePlan' and
-the raw source documents.
-
-The served index is an open document, so the assembly works structurally over the raw @aeson@
-'Value' and every unmodelled key on a surviving entry reaches the client. The plan owns which
-releases and files survive. This module owns the wire shape: selecting entries out of the
-winning source's flat @files@ array through the file-to-version index the fetch computed,
-rebasing each location onto this mount, dropping the two PEP 658 sidecar keys Écluse serves no
-companion for, and rebuilding the PEP 700 @versions@ array.
+{- | Assemble PEP 691 Simple indexes from a cross-upstream 'MergePlan' and raw documents.
+Surviving entries retain unmodelled keys and must have a mount-local artifact URL.
 -}
 module Ecluse.Core.Registry.PyPI.Filter (
     -- * Assembling the served index
@@ -52,40 +45,32 @@ assembleSimpleIndex mountBase bySource plan base =
         Object o -> o
         _ -> mempty
 
-    -- An entry survives when the plan kept its file and named its source the winner of the
-    -- release it belongs to, which the fetch-time index resolves without re-parsing a name.
     survivingFiles :: [Value]
     survivingFiles =
-        [ served entry
+        [ dropSidecarKeys rebased
         | (sid, (source, fileIndex)) <- Map.toList bySource
         , entry <- entriesOf source
         , Just filename <- [entryFilename entry]
         , Set.member filename keptFiles
         , Just version <- [Map.lookup filename fileIndex]
         , Map.lookup version (mpSurvivors plan) == Just sid
+        , Just rebased <- [rebaseEntry (servedFileUrl mountBase (mpName plan)) entry]
         ]
 
     keptFiles :: Set Text
     keptFiles = allKeptFiles plan
 
-    -- One served entry: its location rebased onto this mount, and the sidecar keys dropped.
-    served :: Value -> Value
-    served = dropSidecarKeys . rebaseEntry (servedFileUrl mountBase (mpName plan))
-
-{- The mount-local URL a served file resolves to, rendered from the distribution route that must
-claim it. -}
 servedFileUrl :: Text -> PackageName -> Text -> Maybe Text
 servedFileUrl mountBase project filename = joinUrlPath mountBase <$> distributionPath project filename
 
--- Rebase one file entry's @url@ onto this mount. An entry with no string @url@, or one naming
--- no file, is left as it stands.
-rebaseEntry :: (Text -> Maybe Text) -> Value -> Value
+-- A kept filename can also name a refused sibling, so each raw entry must pass rebasing.
+rebaseEntry :: (Text -> Maybe Text) -> Value -> Maybe Value
 rebaseEntry renderUrl = \case
     Object entry
         | Just url <- stringField "url" entry
         , Just rebased <- rebaseArtifactUrl renderUrl url ->
-            Object (KeyMap.insert "url" (String rebased) entry)
-    other -> other
+            Just (Object (KeyMap.insert "url" (String rebased) entry))
+    _ -> Nothing
 
 -- Écluse serves no @.metadata@ companion, and the wheel carries the same metadata.
 dropSidecarKeys :: Value -> Value
@@ -97,13 +82,11 @@ dropSidecarKeys = \case
 sidecarKeys :: [Key.Key]
 sidecarKeys = ["core-metadata", "data-dist-info-metadata"]
 
--- A source document's raw @files@ array, empty when the document carries none.
 entriesOf :: Value -> [Value]
 entriesOf = \case
     Object o | Just (Array files) <- KeyMap.lookup "files" o -> toList files
     _ -> []
 
--- One file entry's declared name, when it declares a string one.
 entryFilename :: Value -> Maybe Text
 entryFilename = \case
     Object entry -> stringField "filename" entry
@@ -119,15 +102,12 @@ assembleSimpleDocument mountBase bySource plan base =
     sources = Map.mapMaybe (snd pypiSimpleCached) bySource
     baseValue = maybe (Object mempty) fst (snd pypiSimpleCached =<< base)
 
-    {- The assembled document's own file-to-version index: the entries the assembly served, so a
-    re-read of the served document resolves exactly the releases it lists. -}
     servedIndex :: FileVersionIndex
     servedIndex =
         Map.filterWithKey
             (\filename version -> Map.member version (mpSurvivors plan) && Set.member filename (allKeptFiles plan))
             (foldMap snd (Map.elems sources))
 
--- Every file the per-artifact partition kept, across every surviving release.
 allKeptFiles :: MergePlan -> Set Text
 allKeptFiles plan = Set.fromList (concatMap toList (Map.elems (mpArtifacts plan)))
 
