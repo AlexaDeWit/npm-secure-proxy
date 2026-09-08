@@ -2,81 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The npm 'UpstreamFixture': the first and (today) only concrete instance of the
-ecosystem interface the load benchmarks harness drives ("Ecluse.BenchLoad.Harness").
-
-It runs npm's traffic scenarios over stub upstreams and the real composed
-'Ecluse.Server.application':
-
-  1. __merge (cold)__: a packument @GET@ that fans to both upstreams, merges, gates,
-     rewrites, and re-serialises, with the public metadata cache disabled (a zero TTL).
-     Every request pays the live private fetch, the merge, the rule sweep, and the
-     re-serialise. The public leg's fetch and ~40 ms decode are
-     __single-flight-amortised__ under concurrency (see below), not paid per request.
-  2. __cached-public hit__: the same @GET@ with the public origin served from the warm
-     metadata cache (no public fetch or decode), the cheap high-throughput path.
-  3. __cache-fits-large__ / __cache-evicts-large__: a uniform working set of large
-     packuments served at a positive TTL, with the cache bound holding the whole set
-     (fits, the baseline) against the bound held below it (evicts, continual eviction
-     and re-derivation). That is the cache-eviction-under-large-datasets comparison.
-  4. __worker mirroring__: the @fetch → verify → publish → ack@ loop, driven in-process
-     (it has no HTTP surface) over a stub artifact upstream.
-
-== The serve mix: a real-world corpus, large-emphasis
-
-The packument scenarios serve the __curated real-world corpus__ of substantial,
-many-version packages rather than one synthetic payload, because a trivial few-version
-package stresses nothing. The public upstream serves each package's real captured
-packument by the requested name: the full work-per-request corpus, scoped packages
-included. 'requestedPackage' recovers @\@scope\/name@ from the request path, and the
-captures live under @bench\/corpus\/npm\/@ (see "Ecluse.Test.Corpus").
-
-The @merge-cold@ and @cached-public-hit@ scenarios drive a __weighted mix__ ('serveMix')
-with the heavy many-version packuments as the __primary drivers__. That is a deliberate
-stress emphasis rather than a traffic-realism model. The two @cache-*-large@ scenarios drive a
-__uniform__ working set ('uniformMix') so a too-small bound thrashes. The private upstream
-serves a small disjoint overlay per package, so every request still merges a genuine
-cross-upstream union. The worker scenario keeps its synthetic, payload-sized artifact,
-since it mirrors a tarball rather than a packument.
-
-Everything here is npm-specific setup and teardown: the corpus serve mix, the stub
-upstreams, the worker's artifact payload, and the proxy wiring (the npm classifier,
-renderer, and mount prefix). Every ecosystem reuses the harness structure unchanged: the
-@oha@ driver, the runtime-statistics capture, and the reporting. A second ecosystem (PyPI,
-RubyGems) is a second 'UpstreamFixture' beside this one, never a change to the harness.
-
-== Cache strategy and the scenarios
-
-The proxy's default @passthrough@ posture caches only the __anonymous public__ origin. The
-trusted private origin is the per-client authority, so the proxy fetches it per request
-and never caches it (see "Ecluse.Core.Server.Pipeline"). The packument scenarios therefore
-differ in the cache TTL and entry bound. The cold merge uses a zero TTL, so the cache is
-off. The cached-public hit uses a long TTL with a bound that holds the whole set. The two
-@cache-*-large@ scenarios use a long TTL with the bound at or below the working set.
-Entries then leave by __eviction__ rather than by expiry, and the next request re-derives
-them.
-
-A zero TTL does __not__ mean every request pays the public fetch and decode. The public
-leg resolves through the metadata cache's __single-flight__ path
-('Ecluse.Core.Server.Cache.resolveMetadata'). Even at a zero TTL, concurrent misses
-coalesce onto one in-flight fetch and share the leader's parsed packument. Followers
-therefore skip both the fetch and the ~40 ms decode. At the default concurrency the public fetch and
-decode are therefore __amortised across followers__, which narrows the contrast with the
-cached-public hit. Both amortise the public fetch, one through the cache and one through
-single-flight.
-
-The cold merge's per-request cost is the live private leg, the merge, the rule sweep, and
-the re-serialise. This is real production behaviour, and the scenario does not defeat
-coalescing. A literal "private-only cache hit" is not a shape the passthrough model has.
-The cached-public hit is its faithful realisation of the cheap, no-public-fetch path.
-
-== Hermeticity
-
-All upstreams are in-process @warp@ stubs on loopback, addressed by the @localhost@ DNS
-name rather than a bare IP literal. The internal-range block only recognises a literal,
-never a name, so the fetch lands with no opt-in. The proxy and the worker fetch the stubs
-over plain (no-TLS) managers, exactly as the integration suite does. The harness therefore
-opens no external socket and needs no Docker.
+{- | Local npm load scenarios for metadata, artifacts, caches, and the mirror worker.
+Private reads stay live. Public requests can share one in-flight fetch even at zero cache TTL.
+The harness uses loopback upstreams and the production composition defaults.
 -}
 module Ecluse.BenchLoad.Npm (
     npmFixture,
@@ -177,10 +105,7 @@ npmFixture =
             ]
         }
 
-{- | The headline packument @GET@ path: both upstreams fetched and merged with the public
-metadata cache off (TTL 0). The public leg is single-flight, so this narrows the contrast
-with the cached-public hit rather than standing as a strict per-request worst case.
--}
+-- | The headline packument @GET@ path: both upstreams fetched and merged with the public metadata cache off (TTL 0).
 mergeScenario :: Scenario
 mergeScenario =
     Scenario
@@ -191,9 +116,7 @@ mergeScenario =
         , scenarioBoot = \knobs k -> withNpmProxy knobs 0 defaultCacheEntries serveMix (k . DriveHttpUrls)
         }
 
-{- | The cheap high-throughput path: the same packument @GET@ with the public origin served
-from a warm metadata cache, so only the live private leg and the merge run.
--}
+-- | Measure a warm public cache while private reads remain live.
 cacheHitScenario :: Scenario
 cacheHitScenario =
     Scenario
@@ -204,10 +127,7 @@ cacheHitScenario =
         , scenarioBoot = \knobs k -> withNpmProxy knobs longCacheTtl defaultCacheEntries serveMix (k . DriveHttpUrls)
         }
 
-{- | The conditional-revalidation path: every request echoes a primed @ETag@ as
-@If-None-Match@ and the proxy answers @304@. A @304@ costs the private fetch and the plan,
-never the document assembly, the encode, or an output hash.
--}
+-- | The conditional-revalidation path: every request echoes a primed @ETag@ as @If-None-Match@ and the proxy answers @304@.
 revalidateScenario :: Scenario
 revalidateScenario =
     Scenario
@@ -224,8 +144,6 @@ revalidateScenario =
                     [] -> benchFail "revalidate-not-modified: no URL to drive"
         }
 
-{- Prime the revalidation scenario: one plain @GET@ against the proxy. It warms the
-public cache entry, and the drive echoes its response @ETag@. -}
 primeETag :: Text -> IO Text
 primeETag url = do
     manager <- newManager defaultManagerSettings
@@ -235,10 +153,7 @@ primeETag url = do
         Just tag -> pure (decodeUtf8 tag)
         Nothing -> benchFail "revalidate-not-modified: the priming GET returned no ETag"
 
-{- | The cache-eviction baseline: a uniform working set of large packuments against a cache
-bound that holds the whole set, so every entry stays resident after warm-up. Read it
-against the @cache-evicts-large@ scenario to isolate the eviction cost.
--}
+-- | Measure a uniform working set that fits entirely in the cache after warm-up.
 cacheFitsScenario :: Scenario
 cacheFitsScenario =
     Scenario
@@ -251,11 +166,7 @@ cacheFitsScenario =
              in withNpmProxy knobs longCacheTtl (length pkgs) (uniformMix pkgs) (k . DriveHttpUrls)
         }
 
-{- | The cache-eviction stress: the same uniform working set against a cache bound smaller
-than it, so the cache continually evicts entries and re-derives them on the next request.
-The bound and the working-set size are the @BENCH_LOAD_CACHE_MAX_ENTRIES@ and
-@BENCH_LOAD_WORKING_SET@ knobs.
--}
+-- | Measure the same working set with a smaller cache to isolate repeated eviction and reconstruction.
 cacheEvictsScenario :: Scenario
 cacheEvictsScenario =
     Scenario
@@ -278,10 +189,7 @@ tarballScenario =
         , scenarioBoot = \knobs k -> withNpmProxy knobs longCacheTtl defaultCacheEntries tarballMix (k . DriveHttpUrls)
         }
 
-{- | The onboarding fail-over: every tarball request misses the private pull-through and
-takes the public leg, the shape a new project drives before the mirror warms. At steady
-state 'tarballScenario' serves these reads instead.
--}
+-- | Model onboarding before the mirror warms, with each artifact supplied by the public fallback.
 tarballOnboardingScenario :: Scenario
 tarballOnboardingScenario =
     Scenario
@@ -302,11 +210,7 @@ tarballOnboardingScenario =
                     (k . DriveHttpUrls)
         }
 
-{- | The streaming-ceiling probe: the private-hit relay at four times the shared concurrency
-against a 2 ms stub latency, so the proxy's own relay binds instead of the client's
-connections x RTT. The scale lands on about 400 concurrent streams at the default base,
-and the shared operating-point line prints the unscaled base.
--}
+-- | Probe relay capacity at four times the base concurrency with 2 ms upstream latency.
 tarballCeilingScenario :: Scenario
 tarballCeilingScenario =
     Scenario
@@ -340,10 +244,7 @@ benchCacheConfig ttl maxEntries =
   where
     capEntries budget = budget{sbMaxEntries = maxEntries}
 
-{- | Boot the two path-aware packument upstream stubs over the real-world corpus, then the
-composed proxy over them, and yield the caller's serve mix. All sockets are loopback @warp@
-stubs torn down on exit.
--}
+-- | Run corpus-backed local upstreams and the proxy for the supplied request mix.
 withNpmProxy :: LoadKnobs -> NominalDiffTime -> Int -> (Int -> [Text]) -> ([Text] -> IO a) -> IO a
 withNpmProxy knobs ttl maxEntries mkMix body = do
     bodies <- loadServeBodies
@@ -359,10 +260,7 @@ withNpmProxy knobs ttl maxEntries mkMix body = do
         mkMix
         body
 
-{- | Boot the composed proxy over the given private and public upstream stubs, the shared
-shell of every HTTP scenario. Admission and the private pool resolve through the
-composition root's own functions, so an unknobbed run measures the shipped defaults.
--}
+-- | Boot the composed proxy over the given private and public upstream stubs, the shared shell of every HTTP scenario.
 withProxyOverStubs :: LoadKnobs -> NominalDiffTime -> Int -> Application -> Application -> (Int -> [Text]) -> ([Text] -> IO a) -> IO a
 withProxyOverStubs knobs ttl maxEntries privateApp publicApp mkMix body = do
     capabilities <- getNumCapabilities
@@ -437,10 +335,7 @@ npmDeps privatePort publicPort = do
             , pdEgressUrl = Right . loopbackRegistryUrl
             }
 
-{- | The mirror worker's hot loop, driven in-process against a stub artifact upstream. The
-mirror-presence probe answers absent, so every job pays the full pipeline rather than the
-dedup short-circuit.
--}
+-- | The mirror worker's hot loop, driven in-process against a stub artifact upstream.
 workerScenario :: Scenario
 workerScenario =
     Scenario
@@ -453,9 +348,7 @@ workerScenario =
             let bytes = artifactBytes (lkPayloadBytes knobs)
             testWithApplication (pure (stubUpstream octetContentType (lkUpstreamLatencyMicros knobs) bytes)) $ \artPort -> do
                 manager <- newManager defaultManagerSettings
-                -- The drive enqueues one job then receives it, so the cap of 16 is far above the
-                -- single outstanding job. A drop means the cadence broke, and it fails the run
-                -- loudly.
+                -- A dropped job breaks the single-outstanding-job cadence and fails the run.
                 queue <-
                     newBoundedInMemoryQueue
                         (defaultMemoryQueueConfig 16)
@@ -480,10 +373,7 @@ workerScenario =
                 k (DriveInProcess (runWorkerLoop knobs logEnv runtime queue job counter))
         }
 
-{- | Run the worker loop for the configured duration and return the per-job latencies in
-seconds. A shortfall in the published count means the fetch, verify, or publish wiring
-broke, so the run fails rather than reporting a result.
--}
+-- | Run the worker loop for the configured duration and return the per-job latencies in seconds.
 runWorkerLoop :: LoadKnobs -> LogEnv -> WorkerRuntime -> MirrorQueue -> MirrorJob -> IORef Int -> IO [Double]
 runWorkerLoop knobs logEnv runtime queue job counter = do
     deadline <- (+ fromIntegral (lkDurationSeconds knobs)) <$> getMonotonicTime
@@ -532,7 +422,7 @@ succeedingPublishClient counter =
         { mpPublishArtifact = \_ _ _ _ -> do
             atomicModifyIORef' counter (\n -> (n + 1, ()))
             pure (Right ())
-        , mpProbeMetadata = const (pure (Right (RegistryResponse "")))
+        , mpProbeMetadata = const (pure (Right (RegistryResponse 200 "")))
         , mpParseVersionList = const (Left (ParseError "bench mirror: nothing mirrored yet"))
         }
 
@@ -567,11 +457,7 @@ corpusPublicStub rewritten latency bodies request respond = do
         Just packument -> responseLBS status200 [(hContentType, jsonContentType)] packument
         Nothing -> responseLBS status404 [(hContentType, jsonContentType)] "{}"
 
-{- The corpus captures name @registry.npmjs.org@ as their tarball authority, and a stub does
-not serve that host. Écluse honours an artifact location only on the authority that served the
-listing, so a capture replayed verbatim would have every version dropped and the scenario would
-measure a refusal. Point each capture's locations at the stub's own authority instead, which is
-what a real registry does. It is one substitution per capture, memoised on first request. -}
+-- Point captured artifact locations at the stub's authority so the scenario measures admitted versions.
 selfHosted :: IORef (Map Text LByteString) -> Text -> Map Text LByteString -> IO (Map Text LByteString)
 selfHosted rewritten authority bodies =
     readIORef rewritten >>= \case
@@ -613,11 +499,7 @@ requestedPackage request = case pathInfo request of
     [] -> Nothing
     segments -> Just (T.intercalate "/" segments)
 
-{- | The onboarding fixture: the private stub answers @404@ after the injected latency,
-because an unwarmed pull-through still costs a probe round trip. The public stub self-hosts
-a one-version admissible packument whose @dist.tarball@ names its own authority, so the
-same-host tarball policy holds with no configuration.
--}
+-- | Include probe latency before the private upstream reports an onboarding miss.
 onboardingPrivateStub :: Int -> Application
 onboardingPrivateStub latency _request respond = do
     when (latency > 0) (threadDelay latency)
@@ -674,9 +556,7 @@ loadServeBodies = Map.fromList <$> traverse load corpusPackages
         when (LBS.null packument) (benchFail ("bench-load: corpus capture is empty: " <> toText (cpPath cp)))
         pure (cpName cp, packument)
 
-{- | A trusted-private overlay for the requested package: three versions disjoint from any
-real version and old enough to clear the quarantine, so the merge serves a genuine union.
--}
+-- | Three old, disjoint versions exercise a merge with the public corpus.
 privateOverlay :: Text -> Text -> Value
 privateOverlay authority name =
     packumentValue
@@ -689,9 +569,6 @@ privateOverlay authority name =
     overlayVersions :: [Text]
     overlayVersions = ["9999.0.0", "9999.0.1", "9999.0.2"]
 
-{- The integrity digests meet the floor and the tarball names the stub's own authority, so the
-gate admits the version and the serve-time rewrite runs. The stub serves the bytes for any
-@\/-\/@ path, so one authority answers both the listing and the download. -}
 overlayVersionObject :: Text -> Text -> Text -> Value
 overlayVersionObject authority name version =
     versionValue

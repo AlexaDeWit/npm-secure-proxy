@@ -5,43 +5,8 @@
 -- segments in 'takePackage' and 'takeScoped' ((,rest) / (,more)). See STYLE.md §2.
 {-# LANGUAGE TupleSections #-}
 
-{- | npm's route table: the list of routes an npm mount serves.
-
-Each entry is one 'Ecluse.Core.Server.Route.Route' record. It carries the method
-condition, the path template, what to /do/ on a match, and its prose. Its
-'Ecluse.Core.Server.Contract.ResponseContract' admits every response the route can emit.
-'npmRouter' folds the list into the mount's router, where the first match wins and no
-match is the deny-by-default @404@. 'npmRouteSpecs' projects the same list for the
-OpenAPI spec. The routed surface, the emitted responses, and the documented ones
-are all readings of one declaration.
-
-Each response body is a codec ('Ecluse.Core.Registry.Npm.Serve.npmErrorCodec' for a
-denial) or a named hand-authored schema (the merged packument, the publish document).
-The wire body and the documented schema are therefore one source. The package, artifact,
-and publish routes name the shared data-plane handlers ("Ecluse.Core.Server.Pipeline").
-The meta-routes answer locally through their declared outcome.
-
-A @PUT \/{pkg}@ is the npm __publish__ request, so the method is part of the match. A
-@PUT@ over a bare-package path publishes. A __read__ (@GET@, or its bodiless @HEAD@) over
-the same path fetches the packument. A @DELETE@ reaches one route only, the dist-tag
-removal, and a @POST@ reaches none. A method no route claims denies.
-
-The model is __deny by default__. Three npm-specific facts shape the matching:
-
-* __The table matches reserved meta-routes (@\/-\/…@) first__. A real package name can
-  never begin with @\'-\'@, so a leading @"-"@ segment is unambiguously a meta-route.
-
-* __Scoped names arrive in two encodings__. The path is percent-decoded before it reaches
-  this table, so a scoped name arrives either as one decoded segment (@\@scope\/pkg@) or
-  as two (@\@scope@, @pkg@). This table normalises both to the same 'PackageName'.
-
-* __A tarball path is @\/{pkg}\/-\/{file}.tgz@__. 'tarballCoordinate' is the npm-side
-  parse of the artifact coordinate. A basename that does not match the package is a
-  __path-confusion__ attempt and denies.
-
-The agnostic web layer handles mount dispatch, prefix-stripping, and the
-liveness\/readiness routes (see @docs\/architecture\/web-layer.md@). This table only ever
-sees the npm-native request.
+{- | The npm router and OpenAPI description share one route table.
+Reserved routes take precedence over package captures.
 -}
 module Ecluse.Core.Registry.Npm.Route (
     -- * The mount's router and fallback action
@@ -134,9 +99,7 @@ import Ecluse.Core.Server.Route (
 import Ecluse.Core.Server.RouteSpec (ParamSpec (ParamSpec), RouteSpec, catchAllSpecs, specsOf)
 import Ecluse.Core.Version (Version, mkVersion)
 
-{- | npm's mount router. The first route that claims the request decides it, and a request no
-route claims takes the deny-by-default @404@ ('npmNotFound').
--}
+-- | Match the first applicable route, otherwise answer 'npmNotFound'.
 npmRouter :: MountRouter
 npmRouter = routerOf npmNotFound npmRoutes
 
@@ -147,9 +110,7 @@ npmNotFound =
         unsupportedContract
         (AnswerLocally (responseValue [] (NpmError "not found")))
 
-{- | npm's routes, in matching order: the reserved literal meta-routes are tried first. The
-security-critical leaf parsing stays in 'takePackage' and 'tarballCoordinate'.
--}
+-- | Try reserved meta-routes before package captures.
 npmRoutes :: [Route NpmCap]
 npmRoutes =
     [ pingRoute
@@ -325,9 +286,7 @@ distTagContract = jsonContract status501 "Not implemented: dist-tags are not sup
 unsupportedContract :: ResponseContract (ResponseValue NpmError)
 unsupportedContract = jsonContract status404 "Unrecognised path; deny by default." npmErrorCodec
 
-{- | The closed packument response sum. 'npmPackumentReplies' is the only interface the pipeline
-receives for selecting one of its constructors.
--}
+-- | The closed packument response sum. 'npmPackumentReplies' is the only interface the pipeline receives for selecting one of its constructors.
 type NpmPackumentResponse =
     ResponseChoice
         (ResponseValue LByteString)
@@ -357,7 +316,7 @@ npmPackumentContract =
             ( chooseContract
                 (jsonContract status401 "Edge authentication failed." npmErrorCodec)
                 ( chooseContract
-                    (jsonContract status403 "Every version was withheld by policy or admission, and none survived the merge." npmErrorCodec)
+                    (jsonContract status403 "Private access was refused, or no version survived policy and admission." npmErrorCodec)
                     ( chooseContract
                         (jsonContract status404 "A first-party name the private upstream does not have. It is never fetched from the public upstream." npmErrorCodec)
                         ( chooseContract
@@ -385,10 +344,7 @@ npmPackumentReplies =
         , packumentUnavailable = \headers message -> SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (responseValue headers (NpmError (renderRefusal message)))))))))
         }
 
-{- | The tarball is deliberately an open relay: the route can forward any upstream
-status, headers, media type, and bytes. The one @default@ document is therefore more
-accurate than a closed list that the upstream can escape.
--}
+-- | The tarball is deliberately an open relay: the route can forward any upstream status, headers, media type, and bytes.
 npmTarballContract :: ResponseContract PassthroughResponse
 npmTarballContract =
     passthroughContract
@@ -458,10 +414,6 @@ buildPublish _method = \case
             )
     _ -> Nothing
 
-{- @GET \/{package}\/-\/{filename}@: an artifact read. 'tarballCoordinate' applies the
-__cross-capture__ path-confusion check and reads the version. A mismatched name yields
-'Nothing', so the route falls through to the @404@ instead of fabricating a
-coordinate. A @HEAD@ takes the head-mode handler, which probes the upstream bodiless. -}
 buildTarball :: Method -> [NpmCap] -> Maybe (ResponseAction PassthroughResponse)
 buildTarball method = \case
     [NpmPackage name, NpmFilename file] -> do
@@ -474,18 +426,13 @@ buildTarball method = \case
   where
     perimeterFallback = tarballError npmTarballReplies status500 [] (mkRefusal Nothing "internal server error")
 
-{- | The captured values npm's routes produce: a parsed package unit, or a raw
-safety-checked segment (an artifact file name, a dist-tag). Builders consume them positionally.
--}
+-- | Positional captures distinguish parsed package identities from checked path segments.
 data NpmCap
     = NpmPackage PackageName
     | NpmFilename Text
     | NpmTag Text
 
-{- | The package capture: one npm package unit, both scoped wire encodings handled by
-'takePackage'. It refuses a bare leading @"-"@ on every method, because @\/-\/…@ is the reserved
-meta-route prefix and a lone @"-"@ is never a package name.
--}
+-- | The package capture: one npm package unit, both scoped wire encodings handled by 'takePackage'.
 capPackage :: Capture NpmCap
 capPackage =
     Capture
@@ -497,9 +444,7 @@ capPackage =
         )
         renderPackage
 
-{- | The artifact-file capture. The coordinate parse (the @.tgz@ basename and the version) is
-'tarballCoordinate''s, applied in 'buildTarball'.
--}
+-- | The artifact-file capture. The coordinate parse (the @.tgz@ basename and the version) is 'tarballCoordinate''s, applied in 'buildTarball'.
 capFilename :: Capture NpmCap
 capFilename =
     Capture
@@ -508,9 +453,7 @@ capFilename =
         (safeSegment NpmFilename)
         renderSegment
 
-{- | The dist-tag capture: one segment, accepted only when 'safeSegment' admits it. Both tagged
-routes answer @501@, so nothing downstream reads the tag.
--}
+-- | Accept one checked dist-tag segment. Tag routes remain unsupported.
 capTag :: Capture NpmCap
 capTag =
     Capture
@@ -552,11 +495,7 @@ takeScoped seg rest
         (base : more) -> (,more) <$> rightToMaybe (projectName (seg <> "/" <> base))
         [] -> Nothing
 
-{- | Parse an npm tarball-slot @file@ into the 'Version' and verbatim 'Filename' it names for
-@name@. The npm convention is @{unscoped-name}-{version}.tgz@, and a basename that does not begin
-with @{unscoped-name}-@ is a path-confusion attempt, so it yields 'Nothing' and the route denies
-it.
--}
+-- | Parse an npm tarball-slot @file@ into the 'Version' and verbatim 'Filename' it names for @name@.
 tarballCoordinate :: PackageName -> Text -> Maybe (Version, Filename)
 tarballCoordinate name file =
     case T.stripSuffix ".tgz" file >>= T.stripPrefix (unscopedName name <> "-") of
@@ -564,15 +503,11 @@ tarballCoordinate name file =
             | not (T.null version) -> (mkVersion Npm version,) <$> mkFilename file
         _ -> Nothing
 
-{- | The mount-relative path the artifact route serves one package's file under, rendered from
-that same record so a served URL and the route that must claim it cannot drift.
--}
+-- | Render through the artifact route so generated URLs obey its capture rules.
 tarballPath :: PackageName -> Text -> Maybe Text
 tarballPath name file = T.intercalate "/" <$> renderRoute tarballRoute [NpmPackage name, NpmFilename file]
 
-{- | npm's routes as data for the __OpenAPI spec__: the 'specsOf' projection of the
-same 'npmRoutes' the router runs, plus the synthetic deny-by-default catch-all.
--}
+-- | Describe the live router and its deny-by-default catch-all for OpenAPI.
 npmRouteSpecs :: NonEmpty RouteSpec
 npmRouteSpecs =
     catchAllSpecs unsupportedContract unsupportedParam

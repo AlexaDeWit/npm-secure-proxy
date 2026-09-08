@@ -2,19 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Unit cover for the core serve handlers ("Ecluse.Core.Server.Pipeline") driven
-__directly__ over a 'ServeRuntime' of test doubles, with no application 'Env' and no
-OpenTelemetry SDK.
-
-This is the partition's proof that the request pipeline is genuinely core. It builds the
-request runtime from a recording metrics port, a pass-through tracing port, an in-memory
-queue, and a real cache and HTTP manager. It then runs the handlers through the core
-'runHandler' against a scribe-less @katip@ environment. The handlers serve a merged
-packument and a gated tarball, degrade to an unavailability when no upstream resolves,
-and stub an unwired mount. The recording port confirms the serve decision each path
-recorded through the interface. The integration suite's @Ecluse.Core.Server.PipelineIntegrationSpec@
-covers the exhaustive serve-path behaviour (every status, the credential split, the
-merge) through the real stack. These cases pin that the handlers run over the ports.
+{- | Exercise core serve handlers through their runtime ports.
+Responses and emitted metrics remain observable independently of application wiring.
 -}
 module Ecluse.Core.Server.PipelineSpec (spec) where
 
@@ -23,7 +12,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.List (lookup)
 import Data.Time (UTCTime (UTCTime), fromGregorian, nominalDay)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
-import Network.HTTP.Types (hContentType, status200, status404, statusCode)
+import Network.HTTP.Types (hContentType, status200, status304, status401, status403, status404, statusCode)
 
 import Ecluse.Core.Credential (ClientCredential (credSecret), bareCredential, mkSecret, unSecret)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm))
@@ -51,7 +40,7 @@ import Ecluse.Core.Server.Context (
     runHandler,
  )
 import Ecluse.Core.Server.Contract (ResponseContract, responseToWai)
-import Ecluse.Core.Server.Pipeline (servePackument, serveTarball)
+import Ecluse.Core.Server.Pipeline (headTarball, servePackument, serveTarball)
 import Ecluse.Core.Server.Pipeline.Publish ()
 import Ecluse.Core.Server.Pipeline.Shared (hRetryAfter)
 import Ecluse.Core.Server.Upstream (MirrorServePlan (MirrorOnAdmit))
@@ -71,10 +60,22 @@ import Network.Wai (Application, Request (rawPathInfo, requestHeaders), Response
 import Network.Wai.Handler.Warp (testWithApplication)
 import Network.Wai.Internal (ResponseReceived (ResponseReceived))
 import Test.Hspec
-import UnliftIO.Exception (throwString)
+import UnliftIO.Exception (throwIO)
 
 spec :: Spec
 spec = describe "Ecluse.Core.Server.Pipeline (core handlers over a ServeRuntime)" $ do
+    for_ [(status200, Admit), (status304, Admit), (status401, Deny), (status403, Deny)] $ \(upstreamStatus, expected) ->
+        it ("records private artifact HTTP " <> show (statusCode upstreamStatus) <> " as " <> show expected <> " for GET and HEAD") $
+            testWithApplication (pure (\_ respond -> respond (responseLBS upstreamStatus [] "private response"))) $ \port -> do
+                (metricsPort, decisions) <- recordingMetricsPort
+                rt <- mkRuntime metricsPort
+                base <- depsFor 1
+                let deps = withPrivateBaseUrl (Just (loopbackRegistryUrl ("http://localhost:" <> show port))) base
+                for_ [serveTarball, headTarball] $ \serve -> do
+                    response <- captureServe npmTarballContract rt (mountWith deps) (serve npmTarballReplies leftpad (mkVersion Npm "1.0.0") (unsafeFilename "leftpad-1.0.0.tgz") defaultRequest)
+                    statusCode (responseStatus response) `shouldBe` if expected == Deny then 403 else statusCode upstreamStatus
+                decisions `shouldReturn` [expected, expected]
+
     it "serves a merged packument and records an admit through the metrics port" $
         testWithApplication (pure upstreamApp) $ \port -> do
             (metricsPort, decisions) <- recordingMetricsPort
@@ -85,9 +86,6 @@ spec = describe "Ecluse.Core.Server.Pipeline (core handlers over a ServeRuntime)
             decisions >>= (`shouldBe` [Admit])
 
     it "logs and meters a cross-upstream integrity divergence, still serving the trusted copy (warn)" $
-        -- Both origins resolve leftpad 1.0.0 but contradict on the shared SHA-512 digest,
-        -- so the merge records a divergence (threat #11). Under the default warn policy the
-        -- pipeline serves the trusted copy (200) and the divergence counter fires once.
         testWithApplication (pure upstreamApp) $ \publicPort ->
             testWithApplication (pure divergentPrivateApp) $ \privatePort -> do
                 (metricsPort, divergences) <- recordingDivergenceMetricsPort
@@ -194,7 +192,7 @@ spec = describe "Ecluse.Core.Server.Pipeline (core handlers over a ServeRuntime)
         rt <- mkRuntimeWith admission metricsPort
         deps <- depsFor 1
         held <- withServeAdmission (srMetrics rt) admission (captureServe npmPackumentContract rt (mountWith deps) (servePackument npmPackumentReplies leftpad defaultRequest))
-        response <- maybe (expectationFailure "failed to acquire the test's outer admission slot" >> throwString "unreachable") pure held
+        response <- maybe (throwIO MissingFixtureResponse) pure held
         statusCode (responseStatus response) `shouldBe` 503
         (snd <$> find ((== hRetryAfter) . fst) (responseHeaders response)) `shouldBe` Just "1"
 
@@ -221,7 +219,7 @@ spec = describe "Ecluse.Core.Server.Pipeline (core handlers over a ServeRuntime)
                     rt
                     (mountWith deps)
                     (serveTarball npmTarballReplies leftpad (mkVersion Npm "1.0.0") (unsafeFilename "leftpad-1.0.0.tgz") defaultRequest)
-        response <- maybe (expectationFailure "failed to acquire the test's outer admission slot" >> throwString "unreachable") pure held
+        response <- maybe (throwIO MissingFixtureResponse) pure held
         statusCode (responseStatus response) `shouldBe` 503
         (snd <$> find ((== hRetryAfter) . fst) (responseHeaders response)) `shouldBe` Just "1"
 
@@ -241,21 +239,22 @@ spec = describe "Ecluse.Core.Server.Pipeline (core handlers over a ServeRuntime)
                         (serveTarball npmTarballReplies leftpad (mkVersion Npm "1.0.0") (unsafeFilename "leftpad-1.0.0.tgz") defaultRequest)
             (statusCode . responseStatus <$> held) `shouldBe` Just 200
 
-{- | Run a serve handler over a request runtime and mount, capturing the 'Response' it hands its
-continuation. The @katip@ environment has no scribe and no active span, so warnings go nowhere
-and no @dd@ object is attached.
--}
+-- | Run a serve handler over a request runtime and mount, capturing the 'Response' it hands its continuation.
 captureServe :: ResponseContract response -> ServeRuntime -> MountBinding -> ((response -> IO ResponseReceived) -> Handler ResponseReceived) -> IO Response
 captureServe contract rt binding mkHandler = do
     logEnv <- newTestLogEnv
     captured <- newIORef Nothing
     let respond value = writeIORef captured (Just (responseToWai contract value)) >> pure ResponseReceived
     _ <- runHandler logEnv mempty (RequestCtx rt binding) (mkHandler respond)
-    maybe (throwString "the handler produced no response") pure =<< readIORef captured
+    maybe (throwIO MissingFixtureResponse) pure =<< readIORef captured
 
-{- | A request runtime over the recording metrics port, sharing one no-TLS manager across both
-legs.
--}
+-- A missing callback result is a fixture failure, never an upstream outcome.
+data MissingFixtureResponse = MissingFixtureResponse
+    deriving stock (Show)
+
+instance Exception MissingFixtureResponse
+
+-- | A request runtime over the recording metrics port, sharing one no-TLS manager across both legs.
 mkRuntime :: MetricsPort -> IO ServeRuntime
 mkRuntime metricsPort = do
     -- Capacity high enough that this handle never gates. The admission cases wrap
@@ -288,9 +287,7 @@ mountUnder mapping deps =
         , bindingPublishDeps = Nothing
         }
 
-{- | A presentation that carries a raw token on @X-Api-Key@, a form npm does not present. A mount
-declaring it accepts what an npm mount refuses, and refuses what an npm mount accepts.
--}
+-- | A presentation that carries a raw token on @X-Api-Key@, a form npm does not present.
 apiKeyCredential :: CredentialMapping
 apiKeyCredential = credentialMapping recoverApiKey "X-Api-Key" (encodeUtf8 . unSecret . credSecret)
   where
@@ -300,9 +297,7 @@ apiKeyCredential = credentialMapping recoverApiKey "X-Api-Key" (encodeUtf8 . unS
 edgeToken :: (IsString s) => s
 edgeToken = "edge-token"
 
-{- | Serve dependencies whose edge requires 'edgeToken' and whose origins both point at a
-closed port, so an admitted request degrades rather than reaching an upstream.
--}
+-- | Require the edge token but leave both upstreams unreachable, distinguishing edge refusal from fetch failure.
 gatedDeps :: IO PackumentDeps
 gatedDeps = do
     base <- depsFor 1
@@ -312,10 +307,7 @@ gatedDeps = do
 requestWith :: RequestHeaders -> Request
 requestWith headers = defaultRequest{requestHeaders = headers}
 
-{- | Serve dependencies pointing the public origin at the in-process upstream on @publicPort@ and
-the private origin at a closed port. The stubs use the @localhost@ DNS name, because the
-internal-range block recognises only a literal address and must not fire on the artifact leg.
--}
+-- | Serve dependencies pointing the public origin at the in-process upstream on @publicPort@ and the private origin at a closed port.
 depsFor :: Int -> IO PackumentDeps
 depsFor publicPort = do
     prepared <- prepare inertRuleDeps allowPolicy
@@ -331,10 +323,7 @@ depsFor publicPort = do
             , pdEgressUrl = Right . loopbackRegistryUrl
             }
 
-{- | A pure rule policy that admits the fixture version. The engine is deny-by-default, so an
-empty policy denies everything, and this quarantine rule admits the 2019 fixture against a 2020
-@now@.
--}
+-- | A pure rule policy that admits the fixture version.
 allowPolicy :: [PrecededRule]
 allowPolicy = [atDefaultPrecedence (AllowIfOlderThan (7 * nominalDay))]
 
@@ -342,10 +331,7 @@ allowPolicy = [atDefaultPrecedence (AllowIfOlderThan (7 * nominalDay))]
 fixedNow :: UTCTime
 fixedNow = UTCTime (fromGregorian 2020 1 1) 0
 
-{- | A minimal npm upstream serving @leftpad@ and its self-hosted tarball. It takes the host from
-the request, so the tarball URL carries the ephemeral test port, and its @integrity@ is a real
-SHA-512 over the bytes it serves.
--}
+-- | A minimal npm upstream serving @leftpad@ and its self-hosted tarball.
 upstreamApp :: Application
 upstreamApp req respond =
     case rawPathInfo req of
@@ -357,9 +343,7 @@ upstreamApp req respond =
   where
     host = maybe "localhost" snd (find ((== hHost) . fst) (requestHeaders req))
 
-{- | An upstream that counts every request before delegating. A first-party serve that reached
-the public leg would leave a count behind.
--}
+-- | An upstream that counts every request before delegating.
 countingUpstream :: IORef Int -> Application -> Application
 countingUpstream hits app req respond = modifyIORef' hits (+ 1) >> app req respond
 
@@ -367,9 +351,7 @@ countingUpstream hits app req respond = modifyIORef' hits (+ 1) >> app req respo
 artifactBytes :: ByteString
 artifactBytes = "leftpad artifact bytes"
 
-{- | A one-version packument for @leftpad@, its tarball self-hosted on @host@, committing
-to the given @integrity@ string (so a divergent copy differs only in that digest).
--}
+-- | Keep artifact location and metadata fixed while varying the asserted integrity.
 packumentWithIntegrity :: ByteString -> Text -> Value
 packumentWithIntegrity host integrity =
     packumentValue
@@ -395,10 +377,7 @@ packumentFor host = packumentWithIntegrity host (sha512Integrity artifactBytes)
 sha512Integrity :: ByteString -> Text
 sha512Integrity = sriSha512Of
 
-{- | A private (trusted) upstream whose @leftpad@ 1.0.0 integrity contradicts the public copy on
-the shared SHA-512 algorithm. It serves only the packument route, because the merge decides the
-divergence on metadata and never fetches a tarball.
--}
+-- | A private (trusted) upstream whose @leftpad@ 1.0.0 integrity contradicts the public copy on the shared SHA-512 algorithm.
 divergentPrivateApp :: Application
 divergentPrivateApp req respond =
     case rawPathInfo req of
@@ -408,8 +387,6 @@ divergentPrivateApp req respond =
   where
     host = maybe "localhost" snd (find ((== hHost) . fst) (requestHeaders req))
 
-{- | The private copy's packument: a well-formed SHA-512 digest over /different/ bytes, so
-it contradicts 'packumentFor' on the shared algorithm while still meeting the floor.
--}
+-- | Use a different SHA-512 digest that still meets the integrity floor.
 packumentForDivergent :: ByteString -> Value
 packumentForDivergent host = packumentWithIntegrity host (sha512Integrity "leftpad artifact bytes (privately tampered)")

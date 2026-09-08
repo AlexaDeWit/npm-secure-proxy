@@ -2,13 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The shared bounded registry exchange: run one formed request and read its response
-under a response-bound budget. One implementation serves every whole-buffered exchange the
-proxy runs, so callers differ only in what they project out of the answered status and the
-bounded body. Every failure, a bound breach and a transport fault included, comes back as a
-typed 'FetchFault' __value__, and this is the one place a registry path classifies an
-@http-client@ exception. 'formThen' folds a caller's own 'UrlFormationError' into that same
-channel. Ecosystem-agnostic: this forms no request and speaks no registry protocol.
+{- | Bounded registry exchanges and their transport-fault classification.
+Read exchanges retain explicit access refusals before reading an error body.
 -}
 module Ecluse.Core.Registry.Exchange (
     -- * The bounded exchange
@@ -39,23 +34,30 @@ import Ecluse.Core.Registry (
     PublishRelayResponse (..),
     RegistryResponse (RegistryResponse),
     UrlFormationError,
+    isAuthorisationFailure,
  )
 import Ecluse.Core.Security (LimitError, Limits, boundedRead)
 
-{- | Run a formed request and project its status and bounded body onto the caller's result.
-The transport wrap covers the body read, so a connection lost mid-body is a typed fault.
--}
+-- | Project a bounded response. Connection failures during the body read remain typed transport faults.
 boundedExchange :: (Int -> ByteString -> a) -> Manager -> Limits -> Request -> IO (Either FetchFault a)
 boundedExchange project manager limits request =
-    try (withResponse request manager (readBounded project limits))
+    runExchange manager request (readBounded project limits)
+
+runExchange :: Manager -> Request -> (Response BodyReader -> IO (Either LimitError a)) -> IO (Either FetchFault a)
+runExchange manager request readResponse =
+    try (withResponse request manager readResponse)
         <&> \case
             Left httpErr -> Left (FetchTransport (classifyTransport httpErr))
             Right (Left limitErr) -> Left (FetchBoundExceeded limitErr)
             Right (Right projected) -> Right projected
 
--- | The exchange keeping the body alone, as a 'RegistryResponse'.
+-- | Preserve explicit auth refusals without reading their untrusted error bodies.
 boundedFetch :: Manager -> Limits -> Request -> IO (Either FetchFault RegistryResponse)
-boundedFetch = boundedExchange (\_status body -> RegistryResponse body)
+boundedFetch manager limits request = runExchange manager request $ \response ->
+    let code = statusCode (responseStatus response)
+     in if isAuthorisationFailure code
+            then pure (Right (RegistryResponse code ""))
+            else readBounded RegistryResponse limits response
 
 -- | The exchange keeping the answered status alongside the body, for the first-party relay.
 boundedRelay :: Manager -> Limits -> Request -> IO (Either FetchFault PublishRelayResponse)
@@ -63,9 +65,7 @@ boundedRelay =
     boundedExchange $ \status body ->
         PublishRelayResponse{relayStatus = status, relayBody = LBS.fromStrict body}
 
-{- | Run an exchange over a formed request, or fold the formation failure into the same
-channel, so formation and exchange reach the caller as one 'Either'.
--}
+-- | Report request-formation and exchange failures through the same error channel.
 formThen ::
     (UrlFormationError -> fault) ->
     (Request -> IO (Either fault a)) ->

@@ -11,21 +11,74 @@ import Ecluse.Core.Ecosystem (Ecosystem (Npm))
 import Ecluse.Core.Package (mkPackageName)
 import Ecluse.Core.Security.Egress (registryUrlText)
 import Ecluse.Core.Security.Egress.DevHttp (loopbackRegistryUrl)
+import Ecluse.Core.Server.Context (PackumentDeps (..))
 import Ecluse.Core.Server.Upstream (MirrorServePlan (NoMirrorWrite))
 import Ecluse.Core.Version (mkVersion)
 import Ecluse.Server.Pipeline.TestSupport
 import Ecluse.Test.Queue (newTestMemoryQueue)
 import Ecluse.Test.Server.Mount (overPrivateBaseUrl, withMirrorPlan, withPrivateBaseUrl)
 import Ecluse.Test.Wai
-import Network.HTTP.Types (methodGet, methodHead, status200, status404)
+import Network.HTTP.Types (methodGet, methodHead, status200, status401, status403, status404, status503, statusCode)
 import Network.HTTP.Types.Header (hIfNoneMatch)
-import Network.Wai (responseLBS)
+import Network.Wai (defaultRequest, requestHeaders, responseLBS)
 import Network.Wai.Test (SResponse (..), simpleBody)
 import Test.Hspec
 
 spec :: Spec
 spec = do
     tarballSpec
+    privateAuthorisationSpec
+
+privateAuthorisationSpec :: Spec
+privateAuthorisationSpec = describe "private artifact authorisation" $ do
+    for_ [status401, status403] $ \upstreamStatus -> do
+        for_ [False, True] $ \firstParty ->
+            it ("refuses HTTP " <> show (statusCode upstreamStatus) <> ", firstParty=" <> show firstParty) $ do
+                privateUp <- recordingUpstream $ \req ->
+                    if lookupAuth (requestHeaders req) == Just "Bearer valid"
+                        then responseLBS status200 [] privateTarballBytes
+                        else responseLBS upstreamStatus [("WWW-Authenticate", "private-secret"), ("Set-Cookie", "private-secret")] "private-secret"
+                publicUp <- artifactUpstream "1.0.0" publicTarballBytes
+                queue <- newTestMemoryQueue
+                withProxyEnvQueueDeps queue privateUp publicUp Nothing (\d -> d{pdFirstParty = const firstParty}) $ \app env _ -> do
+                    patched <- getTarball "1.0.0" (Just "valid") app
+                    simpleBody patched `shouldBe` privateTarballBytes
+                    for_ [methodGet, methodHead] $ \method ->
+                        for_ [[], [(hIfNoneMatch, "*")]] $ \validators -> do
+                            let req = defaultRequest{requestHeaders = ("Authorization", "Bearer invalid") : validators}
+                            response <- requestAt method "/npm/thing/-/thing-1.0.0.tgz" req app
+                            status response `shouldBe` 403
+                            simpleBody response `shouldNotBe` privateTarballBytes
+                            simpleBody response `shouldNotBe` publicTarballBytes
+                            decodeUtf8 (toStrict (simpleBody response)) `shouldSatisfy` (not . T.isInfixOf "private-secret")
+                            header "WWW-Authenticate" response `shouldBe` Nothing
+                            header "Set-Cookie" response `shouldBe` Nothing
+                            header "Retry-After" response `shouldBe` Nothing
+                            when (method == methodHead) (simpleBody response `shouldBe` "")
+                    seenAuth publicUp `shouldReturn` []
+                    drainJobs env `shouldReturn` []
+
+        it ("retains artifact HTTP " <> show (statusCode upstreamStatus) <> " with a truncated error body") $ do
+            privateUp <- upstreamRespondingWith (truncatedResponse upstreamStatus "short")
+            publicUp <- artifactUpstream "1.0.0" publicTarballBytes
+            withProxyEnv privateUp publicUp Nothing $ \app env -> do
+                response <- getTarball "1.0.0" Nothing app
+                status response `shouldBe` 403
+                seenAuth publicUp `shouldReturn` []
+                drainJobs env `shouldReturn` []
+
+    for_ [status404, status503] $ \upstreamStatus ->
+        for_ [False, True] $ \firstParty ->
+            it ("preserves artifact HTTP " <> show (statusCode upstreamStatus) <> " policy, firstParty=" <> show firstParty) $ do
+                privateUp <- upstreamRespondingWith (responseLBS upstreamStatus [] "unavailable")
+                publicUp <- artifactUpstream "1.0.0" publicTarballBytes
+                queue <- newTestMemoryQueue
+                withProxyEnvQueueDeps queue privateUp publicUp Nothing (\d -> d{pdFirstParty = const firstParty}) $ \app _ _ -> do
+                    response <- getTarball "1.0.0" Nothing app
+                    status response `shouldBe` if firstParty then 404 else 200
+                    if firstParty
+                        then seenAuth publicUp `shouldReturn` []
+                        else simpleBody response `shouldBe` publicTarballBytes
 
 tarballSpec :: Spec
 tarballSpec = describe "artifact (tarball) path" $ do

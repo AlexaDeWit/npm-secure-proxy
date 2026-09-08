@@ -2,26 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Resolving a packument's upstream origins:
-
-* the per-origin fetch with its credential posture
-* the read-handle construction over the mount's dependencies
-* the typed outcome the merge consumes
-
-The credential-authority invariant lives here (see
-@docs\/architecture\/registry-model.md@ → "Credential flow and authority"). The private (trusted) origin is fetched
-__uncached__ with the client's own forwarded credential, so the upstream re-authorises
-every client itself. The public origin is fetched __anonymous__: the client's credential
-is stripped before any public-upstream fetch. It resolves through the shared metadata
-cache, one shared document serving every client. A fetch that fails degrades to no
-contribution rather than an error. A self-reported /different/ package name stays distinct
-('OriginNameMismatch'), so the no-valid-origin terminal can render a @502@ apart from a
-transient outage.
-
-"Ecluse.Core.Server.Pipeline.Packument" gates, merges, and serves what resolves here.
-"Ecluse.Core.Server.Pipeline.Tarball" shares the public read handle
-('withPublicMetadataClient'), so its single-version gate and the packument fetch collapse
-onto one cache entry.
+{- | Resolve metadata origins with their credential posture and typed outcomes.
+Private reads forward the caller's credential without caching. Public reads are anonymous.
+Explicit access refusals remain distinct for the packument pipeline.
 -}
 module Ecluse.Core.Server.Pipeline.Origin (
     -- * A resolved contribution
@@ -58,7 +41,7 @@ import Ecluse.Core.Registry.Metadata (
     ContentDigest,
     Manifest,
     MetadataClient (fetchFullManifest),
-    MetadataError (MetadataNameMismatch),
+    MetadataError (MetadataAuthorisationFailure, MetadataNameMismatch),
  )
 import Ecluse.Core.Registry.Origin (OriginClient (ocBaseUrl), originClient)
 import Ecluse.Core.Security.Egress (RegistryUrl, registryUrlText)
@@ -74,11 +57,7 @@ import Ecluse.Core.Server.Metadata (ManifestCaching (Cached, Uncached))
 import Ecluse.Core.Server.Pipeline.Diagnostics (logInvalidEntries, logMetadataFailure)
 import Ecluse.Core.Telemetry.Metrics qualified as Metric
 
-{- | A resolved upstream contribution: the parsed packument the pipeline decides over, the
-raw document its served body is rebuilt from, and the origin body's digest for the derived
-validator. The raw document travels opaquely, so the pipeline never reads it and only hands
-it to the injected adapter capabilities.
--}
+-- | A parsed contribution with opaque source bytes and a digest for the derived validator.
 data Contribution = Contribution
     { srcProvenance :: Provenance
     , srcInfo :: PackageInfo
@@ -86,72 +65,50 @@ data Contribution = Contribution
     , srcDigest :: ContentDigest
     }
 
-{- | One source's slice of the derived validator. With the mount base URL and the package
-name, these are exactly the inputs the assembled document is a deterministic function of.
--}
+-- | Include provenance, source digest, and surviving versions in the assembled document's validator.
 fingerprintPiece :: Contribution -> (Provenance, ContentDigest, [Text])
 fingerprintPiece s = (srcProvenance s, srcDigest s, Map.keys (infoVersions (srcInfo s)))
 
-{- | The outcome of resolving one upstream origin for a packument. A name mismatch stays
-distinct, so the no-valid-origin terminal status can render a @502@ instead of treating a
-wrong-package answer as a transient outage.
--}
+-- | One origin's contribution, access refusal, identity mismatch, or absence.
 data OriginResult
     = -- | A packument that decoded and whose self-reported name matched the request.
       OriginResolved Manifest
-    | {- | The origin answered, but its packument self-reported a name for a /different/
-      package. It is dropped as untrusted for this request, and it is the @502@ signal
-      when no origin is valid.
-      -}
+    | -- | An explicit upstream access refusal, retaining its 401 or 403.
+      OriginAuthorisationFailure Int
+    | -- | An invalid package identity, contributing a 502 when no valid origin remains.
       OriginNameMismatch
-    | {- | The origin did not yield a usable packument: unreachable, undecodable, or a
-      genuine absence. It degrades to no contribution.
-      -}
+    | -- | The origin did not yield a usable packument: unreachable, undecodable, or a genuine absence. It degrades to no contribution.
       OriginUnresolved
-    | {- | The origin is not configured on this mount (a serve-only mount with no private
-      upstream). Structurally absent, kept distinct from 'OriginUnresolved' so an
-      unconfigured leg never contributes the degraded-availability signal a __failed__
-      fetch rightly does.
-      -}
+    | -- | An unconfigured origin contributes neither metadata nor an availability failure.
       OriginAbsent
 
 -- | The resolved manifest an origin contributed, if any.
 originManifest :: OriginResult -> Maybe Manifest
 originManifest = \case
+    OriginAuthorisationFailure _ -> Nothing
     OriginResolved manifest -> Just manifest
     OriginNameMismatch -> Nothing
     OriginUnresolved -> Nothing
     OriginAbsent -> Nothing
 
-{- | Whether an origin yielded no document and claimed nothing about a different package. An
-unreachable upstream lands here too: nothing else may answer for a single-authority name.
--}
+-- | Whether an origin yielded neither a document nor an explicit access or identity refusal.
 originMissed :: OriginResult -> Bool
 originMissed = \case
+    OriginAuthorisationFailure _ -> False
     OriginResolved{} -> False
     OriginNameMismatch -> False
     OriginUnresolved -> True
     OriginAbsent -> True
 
-{- Every fetch outcome arrives typed in the 'MetadataError' channel, so the exception arm
-catches an invariant break only. A handle that escapes its contract costs one origin's
-contribution, never the whole merge. -}
 originResultOf :: Either SomeException (Either MetadataError Manifest) -> OriginResult
 originResultOf = \case
     Left _ -> OriginUnresolved
+    Right (Left (MetadataAuthorisationFailure code)) -> OriginAuthorisationFailure code
     Right (Left (MetadataNameMismatch _)) -> OriginNameMismatch
     Right (Left _) -> OriginUnresolved
     Right (Right manifest) -> OriginResolved manifest
 
-{- | Resolve the private (trusted) upstream origin, __uncached__, forwarding the client's own
-credential (the @passthrough@ posture). A failed fetch degrades to no contribution
-rather than an error.
-
-Under @passthrough@ the private upstream is the per-client authority for who may read what.
-The metadata cache keys on the base URL alone, with no credential dimension, so a cached
-private document would let one client's hit serve another client's document and bypass that
-authorisation.
--}
+-- | Resolve the private origin uncached with the caller's credential, retaining explicit access refusals.
 fetchPrivateOrigin :: PackumentDeps -> ServeRuntime -> Maybe ClientCredential -> PackageName -> Handler OriginResult
 fetchPrivateOrigin deps rt token name = case pdPrivateBaseUrl deps of
     -- No private upstream on this mount (a serve-only pure public gate): the leg is
@@ -165,11 +122,7 @@ fetchPrivateOrigin deps rt token name = case pdPrivateBaseUrl deps of
                     fetchFullManifest client name
         pure (originResultOf resolved)
 
-{- | Resolve the public (gated, anonymous) upstream origin through the metadata cache, keyed
-by the origin's base URL as its 'Source'. The origin carries no client credential, so one
-entry serves every client without crossing a trust boundary, and a hit keeps the typed view
-coherent with the bytes it decoded from.
--}
+-- | Resolve the public (gated, anonymous) upstream origin through the metadata cache, keyed by the origin's base URL as its 'Source'.
 fetchPublicOrigin :: PackumentDeps -> ServeRuntime -> PackageName -> Handler OriginResult
 fetchPublicOrigin deps rt name = do
     logFM DebugS (ls ("fetching public origin for " <> renderPackageName name))
@@ -206,25 +159,18 @@ withMetadataClient rt deps upstream caching origin k =
     -- The log lines name the origin, and a diagnostic reads characters, not a witness.
     baseUrl = registryUrlText (ocBaseUrl origin)
 
-{- | The private origin's read handle: uncached, carrying the client's own credential, because
-the cache keys on the base URL alone and one client's entry must never serve another's.
--}
+-- | Bypass shared caching so the private upstream authorises each caller's credential.
 withPrivateMetadataClient :: ServeRuntime -> PackumentDeps -> RegistryUrl -> Maybe ClientCredential -> (MetadataClient -> IO a) -> Handler a
 withPrivateMetadataClient rt deps baseUrl token =
     withMetadataClient rt deps Metric.Private Uncached (mountOrigin deps (srPrivateManager rt) baseUrl token)
 
-{- | The public origin's read handle: anonymous, resolved through the shared metadata cache
-under the base URL's 'Source'. Both 'fetchFullManifest' and the tarball gate's
-'fetchVersionMetadata' go through it, so they share one cache entry.
--}
+-- | An anonymous read handle sharing the metadata cache across listing and artifact requests.
 withPublicMetadataClient :: ServeRuntime -> PackumentDeps -> RegistryUrl -> (MetadataClient -> IO a) -> Handler a
 withPublicMetadataClient rt deps baseUrl =
     withMetadataClient rt deps Metric.Public caching (mountOrigin deps (srPublicManager rt) baseUrl Nothing)
   where
     caching = Cached (srMetadataCache rt) (Source (registryUrlText baseUrl))
 
-{- | One origin's coordinates for this mount: its own response bound, the leg's manager, and
-the credential posture the caller decided. The artifact path forms its request through it too.
--}
+-- | Build an origin with the mount's response bound and the caller-selected manager and credential.
 mountOrigin :: PackumentDeps -> Manager -> RegistryUrl -> Maybe ClientCredential -> OriginClient
 mountOrigin deps = originClient (pdLimits deps)

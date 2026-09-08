@@ -2,13 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The effectful doubles the worker unit specs run against: a recording publish capability,
-the queues that fault or record, the stub upstream, and the builders that assemble a
-'WorkerRuntime' over them.
-
-Driving the core worker directly over these doubles, with no application @Env@ and no
-OpenTelemetry SDK, is the partition's proof that the worker is genuinely core.
-"Ecluse.Worker.Support.Fixtures" holds the values they carry.
+{- | Runtime fixtures for worker unit tests.
+Queue receipts, publications, and typed failures expose the worker's decisions.
 -}
 module Ecluse.Worker.Support.Runtime (
     -- * A recording publish capability
@@ -89,72 +84,56 @@ import Ecluse.Test.Stub (stubBaseUrl, withStub)
 import Ecluse.Test.Support (TestContractEscape (TestContractEscape))
 import Ecluse.Worker.Support.Fixtures (admitPolicies, tarballBytes, withPublish)
 
-{- | What a publish captured: the raw verified bytes it received, and the artifact descriptor whose
-digests the real codec assembles its publish document from.
--}
+-- | Capture verified bytes and the descriptor passed to publication.
 data PublishLog = PublishLog
     { plDocuments :: [ByteString]
     , plArtifacts :: [MirrorArtifact]
     }
 
-{- | A publish double that records each call and returns the given fixed outcome. Its
-mirror-presence probe answers absent, so a test drives the full pipeline.
--}
+-- | Record publications with a fixed outcome, always reporting the mirror version absent.
 recordingPublish :: IORef PublishLog -> Either PublishFault () -> MirrorPublish
 recordingPublish logRef outcome =
     MirrorPublish
-        { mpProbeMetadata = const (pure (Right (RegistryResponse "")))
+        { mpProbeMetadata = const (pure (Right (RegistryResponse 200 "")))
         , mpParseVersionList = const (Left (ParseError "absent: nothing mirrored yet"))
         , mpPublishArtifact = \_ _ artifact document -> do
             atomicModifyIORef' logRef (\l -> (l{plDocuments = document : plDocuments l, plArtifacts = artifact : plArtifacts l}, ()))
             pure outcome
         }
 
-{- | 'recordingPublish' whose mirror-presence probe __confirms__ the given versions
-present at the mirror target, for the dedup short-circuit tests.
--}
+-- | 'recordingPublish' whose mirror-presence probe __confirms__ the given versions present at the mirror target, for the dedup short-circuit tests.
 mirrorListingPublish :: IORef PublishLog -> Either PublishFault () -> [Version] -> MirrorPublish
 mirrorListingPublish logRef outcome versions =
     (recordingPublish logRef outcome)
         { mpParseVersionList = const (Right versions)
         }
 
-{- | 'recordingPublish' whose mirror-presence probe reports a mirror outage as the typed
-'FetchTransport' value, for the probe-cannot-tell fall-through tests.
--}
+-- | 'recordingPublish' whose mirror-presence probe reports a mirror outage as the typed 'FetchTransport' value, for the probe-cannot-tell fall-through tests.
 probeUnreachablePublish :: IORef PublishLog -> Either PublishFault () -> MirrorPublish
 probeUnreachablePublish logRef outcome =
     (recordingPublish logRef outcome)
         { mpProbeMetadata = const (pure (Left (FetchTransport (transportFault TransportUnreachable "simulated mirror outage"))))
         }
 
-{- | Build a 'WorkerRuntime' over the caller's publish double and run the body against it. It hands
-back the queue and the publish log, so a test can drive and inspect them.
--}
+-- | Expose the worker's queue and captured publications to the test callback.
 withRuntimeRegistry :: (IORef PublishLog -> MirrorPublish) -> WorkerPolicies -> WorkerMetricsPort -> (WorkerRuntime -> MirrorQueue -> IORef PublishLog -> IO a) -> IO a
 withRuntimeRegistry mkPublish policies metricsPort body = do
     queue <- newTestMemoryQueue
     withRuntimeQueue queue mkPublish policies metricsPort (`body` queue)
 
-{- | 'withRuntimeRegistry' over a __caller-supplied__ queue, so a test observes the worker's
-queue-side decisions or drives the loop against a misbehaving queue.
--}
+-- | Use a supplied queue to observe or perturb the worker's queue decisions.
 withRuntimeQueue :: MirrorQueue -> (IORef PublishLog -> MirrorPublish) -> WorkerPolicies -> WorkerMetricsPort -> (WorkerRuntime -> IORef PublishLog -> IO a) -> IO a
 withRuntimeQueue queue mkPublish policies metricsPort body = do
     logRef <- newIORef (PublishLog [] [])
     withWiredRuntime queue (withPublish (mkPublish logRef) policies) metricsPort (`body` logRef)
 
-{- | The base runtime builder over bundles that already carry their own publish capabilities, with
-nothing injected, so a test observes exactly what it wired.
--}
+-- | Run the supplied worker policies without replacing their publish capabilities.
 withWiredRuntime :: MirrorQueue -> WorkerPolicies -> WorkerMetricsPort -> (WorkerRuntime -> IO a) -> IO a
 withWiredRuntime queue policies metricsPort body = do
     heartbeat <- newWorkerHeartbeat
     withWiredRuntimeHeartbeat heartbeat queue policies metricsPort body
 
-{- | 'withWiredRuntime' over a __caller-supplied__ heartbeat, so a test observes the heartbeat a
-mid-batch step reads while the loop runs.
--}
+-- | 'withWiredRuntime' over a __caller-supplied__ heartbeat, so a test observes the heartbeat a mid-batch step reads while the loop runs.
 withWiredRuntimeHeartbeat :: WorkerHeartbeat -> MirrorQueue -> WorkerPolicies -> WorkerMetricsPort -> (WorkerRuntime -> IO a) -> IO a
 withWiredRuntimeHeartbeat heartbeat queue policies metricsPort body = do
     manager <- newManager defaultManagerSettings
@@ -174,9 +153,7 @@ withRuntimePolicies :: WorkerPolicies -> WorkerMetricsPort -> Either PublishFaul
 withRuntimePolicies policies metricsPort outcome =
     withRuntimeRegistry (`recordingPublish` outcome) policies metricsPort
 
-{- | 'withRuntimePolicies' with the default admitting policy ('admitPolicies'), so ingest
-re-evaluation always admits.
--}
+-- | 'withRuntimePolicies' with the default admitting policy ('admitPolicies'), so ingest re-evaluation always admits.
 withRuntimeWith :: WorkerMetricsPort -> Either PublishFault () -> (WorkerRuntime -> MirrorQueue -> IORef PublishLog -> IO a) -> IO a
 withRuntimeWith = withRuntimePolicies admitPolicies
 
@@ -184,16 +161,12 @@ withRuntimeWith = withRuntimePolicies admitPolicies
 withRuntime :: Either PublishFault () -> (WorkerRuntime -> MirrorQueue -> IORef PublishLog -> IO a) -> IO a
 withRuntime = withRuntimeWith noopWorkerMetricsPort
 
-{- | Build a 'WorkerRuntime' over a caller-supplied queue, so a test drives the supervised loop
-against a queue whose @receive@ misbehaves.
--}
+-- | Build a 'WorkerRuntime' over a caller-supplied queue, so a test drives the supervised loop against a queue whose @receive@ misbehaves.
 withQueueRuntime :: MirrorQueue -> (WorkerRuntime -> IO a) -> IO a
 withQueueRuntime queue body =
     withRuntimeQueue queue (`recordingPublish` Right ()) admitPolicies noopWorkerMetricsPort (\runtime _logRef -> body runtime)
 
-{- | Discharge a 'WorkerM' to 'IO' over the worker runtime. The @katip@ environment has no
-scribe, so log lines are discarded.
--}
+-- | Discharge a 'WorkerM' to 'IO' over the worker runtime. The @katip@ environment has no scribe, so log lines are discarded.
 runWM :: WorkerRuntime -> WorkerM a -> IO a
 runWM runtime action = newTestLogEnv >>= \logEnv -> runWMWith logEnv runtime action
 
@@ -201,9 +174,7 @@ runWM runtime action = newTestLogEnv >>= \logEnv -> runWMWith logEnv runtime act
 runWMWith :: LogEnv -> WorkerRuntime -> WorkerM a -> IO a
 runWMWith logEnv = runWorkerM logEnv mempty
 
-{- | A 'MetadataClient' double whose single-version op returns a fixed result (the
-full-manifest op is unused here and refuses loudly).
--}
+-- | A 'MetadataClient' double whose single-version op returns a fixed result (the full-manifest op is unused here and refuses loudly).
 versionClient :: Either MetadataError (Maybe PackageDetails) -> MetadataClient
 versionClient result =
     MetadataClient
@@ -211,9 +182,7 @@ versionClient result =
         , fetchVersionMetadata = \_ _ -> pure result
         }
 
-{- | A 'MetadataClient' double whose single-version op __escapes its total contract__, so the
-classification boundary must propagate the throw rather than absorb it.
--}
+-- | Break the metadata handle's value-error contract to test exception propagation.
 throwingVersionClient :: MetadataClient
 throwingVersionClient =
     MetadataClient
@@ -221,9 +190,7 @@ throwingVersionClient =
         , fetchVersionMetadata = \_ _ -> throwIO (TestContractEscape "simulated contract escape")
         }
 
-{- | A queue whose @receive@ always reports the handle's typed fault, counting each call. The
-loop must survive a faulted poll and poll again, not die.
--}
+-- | Count typed receive failures so tests can verify that polling continues.
 faultingReceiveQueue :: IORef Int -> IO MirrorQueue
 faultingReceiveQueue calls = do
     base <- newTestMemoryQueue
@@ -234,9 +201,7 @@ faultingReceiveQueue calls = do
                 pure (Left (transportFault TransportUnreachable "receive: simulated queue outage"))
             }
 
-{- | A queue whose @receive@ always throws, counting each call. The throw breaks the handle's
-typed contract, so it drives the loop's residual catch-log-backoff arm.
--}
+-- | Count exceptions from receive to exercise supervision outside the queue's value-error contract.
 throwingReceiveQueue :: IORef Int -> IO MirrorQueue
 throwingReceiveQueue calls = do
     base <- newTestMemoryQueue
@@ -247,9 +212,7 @@ throwingReceiveQueue calls = do
                 throwIO (TestContractEscape "receive: simulated queue outage")
             }
 
-{- | The test queue with 'ack' wrapped to record each acked receipt. The memory backend never
-redelivers, so its own state does not show the worker's retire-vs-retry decision.
--}
+-- | Observe acknowledgements explicitly because the memory queue cannot demonstrate redelivery behaviour.
 recordingAckQueue :: IO (MirrorQueue, IO [ReceiptHandle])
 recordingAckQueue = do
     base <- newTestMemoryQueue
@@ -257,9 +220,7 @@ recordingAckQueue = do
     let recording = base{ack = \receipt -> atomicModifyIORef' acked (\rs -> (receipt : rs, ())) >> ack base receipt}
     pure (recording, reverse <$> readIORef acked)
 
-{- | The test queue with 'deadLetter' wrapped to record each dead-lettered receipt. That record
-is the only signal a terminal fault went to the terminus rather than 'ack'.
--}
+-- | Observe dead-lettering separately from acknowledgement.
 recordingDeadLetterQueue :: IO (MirrorQueue, IO [ReceiptHandle])
 recordingDeadLetterQueue = do
     base <- newTestMemoryQueue

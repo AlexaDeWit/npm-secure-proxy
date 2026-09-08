@@ -39,7 +39,7 @@ import Ecluse.Core.Registry.Maintenance (
     wholeNameSpace,
  )
 import Ecluse.Core.Registry.Metadata (
-    MetadataError (MetadataBoundExceeded, MetadataFetch, MetadataNameMismatch, MetadataUndecodable),
+    MetadataError (MetadataAuthorisationFailure, MetadataBoundExceeded, MetadataFetch, MetadataNameMismatch, MetadataUndecodable),
  )
 import Ecluse.Core.Security (LimitError (TooManyVersions))
 import Ecluse.Core.Version (Version, mkVersion, renderVersion)
@@ -134,6 +134,12 @@ readFaultSpec = do
                 `shouldBe` RetryFutile
 
     describe "storeFaultOfMetadata" $ do
+        for_ [401, 403] $ \code ->
+            it ("does not retry explicit metadata access refusal " <> show code) $ do
+                let fault = storeFaultOfMetadata (MetadataAuthorisationFailure code)
+                faultRetry fault `shouldBe` RetryFutile
+                tfDetail (faultTransport fault) `shouldBe` "the store refused metadata access"
+
         it "carries the transport half's own advice through" $
             faultRetry (storeFaultOfMetadata (MetadataFetch (FetchTransport (transportFault TransportTimeout "no answer"))))
                 `shouldBe` RetryWorthwhile

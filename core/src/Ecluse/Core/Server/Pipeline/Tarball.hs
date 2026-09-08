@@ -1,88 +1,11 @@
 -- SPDX-FileCopyrightText: 2026 Alexandra de Wit
 --
 -- SPDX-License-Identifier: MIT
+{-# LANGUAGE TupleSections #-}
 
-{- | The serve paths behind the package routes: the artifact relay behind @GET \/{pkg}\/-\/{file}.tgz@.
-
-This is the data-plane handler module for artifacts. It composes the slices that decide
-/what/ to serve into one action in the 'Ecluse.Core.Server.Context.Handler' reader. It
-reads its mount's serve dependencies and the request runtime
-'Ecluse.Core.Server.Context.ServeRuntime' from the request's
-'Ecluse.Core.Server.Context.RequestCtx'.
-
-== Artifact path
-
-The tarball handler ('serveTarball') is the demand-driven artifact relay. Its two legs
-locate the tarball differently, by the trust of their origin.
-
-The __private__ leg is a __conventional stable read__. It fetches the tarball at
-@{pdPrivateBaseUrl}\/{pkg}\/-\/{file}@ ('artifactRequestByFile'), addressed by the
-client's requested filename, __without a private-packument fetch__. That is the stable,
-cacheable shape an @npm ci@ install issues. A worst-case lockfile fan-out therefore pays
-one artifact round-trip per tarball, not a packument fetch and decode per tarball it would
-only discard. The request __forwards the client's credential__ over the __trusted__
-manager, attached under the mount's ecosystem presentation. The shared redirect pin
-finalises it ('Ecluse.Core.Registry.Request.finaliseRequest', @redirectCount = 0@). This
-credential-bearing read __never follows a redirect__: a private CDN @302@ is returned to
-the serve path, not chased with the credential. The constructed URL is on the private base
-host, so the 'Ecluse.Core.Security.TrustedOrigin' tarball-host gate is satisfied
-__same-host__. The trusted origin is also exempt from the internal-range block, so a
-private registry on an internal address still serves. A @2xx@ streams the artifact through
-with __bounded memory__ (the @withResponse@\/@responseStream@ relay, never a buffering
-fetch) and __answers the request__. A non-@2xx@ status or a connection failure is a
-__clean miss__ that falls through to the public leg.
-
-The private leg applies __no serve-time integrity floor__. An established version pinned
-in a consumer's lockfile and served from an operator-__trusted__ private registry is
-fast-tracked. Its bytes are still verified __client-side by @npm@__, against the
-@dist.integrity@ it resolved over the packument route, and by the __mirror worker__ on
-ingestion. Fast-tracking gives up only the proactive "refuse weak-integrity" stance, not
-tamper-evidence. This leg does not reach a private upstream that serves its tarball __off
-the conventional @\/-\/@ path__. That means a separate files host, or a signed CDN URL the
-convention cannot rebuild. That case is a private miss, and it falls through to the public
-origin.
-
-The __public__ leg honours the __authoritative upstream location__, not a reconstructed
-conventional path. That location is the @Artifact.artUrl@ the projection preserved from
-the gated version's @dist.tarball@, selected by the requested filename. The proxy can
-therefore front a public registry that serves its artifacts from a separate host or an
-off-convention path. That covers a CDN or files host, and a signed URL. The location is
-gated, not trusted. It is fetched only when the tarball-host policy
-('Ecluse.Core.Security.tarballHostAllowed')
-admits its @host:port@ authority. The default refuses a cross-authority @dist.tarball@, a
-different host or a different port alike. The untrusted egress is https-only with
-certificate validation.
-
-The public leg is anonymous. It gates __that one version__ against the rules, the same
-machinery the packument path gates the whole set with, and selects the artifact. On an
-admit it __streams the public bytes from @artUrl@ and enqueues a
-'Ecluse.Core.Queue.MirrorJob'__. The job names that authoritative URL, so the worker can
-back-fill the mirror target. On a reject, including a host the tarball-host policy
-refuses, it selects the serve error model (@403@\/@503@\/@500@\/@404@) through the
-route's injected reply factories. The enqueue is __serve-then-enqueue, best-effort and
-non-blocking__. The artifact reaches the client first, and an enqueue failure is swallowed
-rather than failing or delaying the response. The public relay is additionally __judged__
-at relay time ('RelayVerdict', status and headers only, the body always verbatim). An
-anomalous relay is logged and counted: a non-success passed through, or a success that is
-visibly not an artifact. Only a clean artifact relay enqueues the mirror job.
-
-Mirroring is __demand-driven__: a job is enqueued only here, on a tarball-path admit,
-never when a packument is filtered. The two legs are not peers over time. The back-fill
-retires each artifact from the public leg. At steady state the private conventional read
-serves the vast majority of tarball traffic. The public leg is then the transient
-onboarding and fail-over ramp (see @docs\/architecture\/registry-model.md@ → "Traffic
-shape over time"). The serve path does __not__ verify @dist.integrity@. The client checks
-the artifact's own hash, and the worker re-verifies before publishing.
-
-An artifact is a __pass-through__ body, served byte-identical to upstream's. Its
-conditional-GET handling therefore __relays__ rather than computing an own ETag (see
-@docs\/architecture\/web-layer.md@ → "Middleware and helper libraries", and contrast the
-merged-packument own-ETag path). The client's @If-None-Match@\/@If-Modified-Since@ are
-forwarded onto the upstream artifact request on __both__ legs ('forwardValidators'). An
-upstream @304 Not Modified@ is relayed straight back to the client as a bodiless @304@,
-through 'Ecluse.Core.Server.Conditional.isNotModified' in the relay's accept predicate, so
-the proxy does not re-download the tarball: the cheap freshness check on the hot artifact
-path.
+{- | Serve artifacts from the private origin or an admitted public fallback.
+Private access refusals stop fallback. Other private misses keep the first-party restriction.
+GET and HEAD share policy, and private refusals never relay upstream error bodies.
 -}
 module Ecluse.Core.Server.Pipeline.Tarball (
     TarballReplies (..),
@@ -98,7 +21,7 @@ module Ecluse.Core.Server.Pipeline.Tarball (
 ) where
 
 import Network.HTTP.Client qualified as HTTP
-import Network.HTTP.Types (RequestHeaders, ResponseHeaders, Status, status401, status403, status500)
+import Network.HTTP.Types (RequestHeaders, ResponseHeaders, Status, status401, status403, status500, statusCode)
 import Network.Wai (Request, ResponseReceived, StreamingBody, requestHeaders)
 
 import Ecluse.Core.Credential (ClientCredential)
@@ -126,6 +49,8 @@ import Ecluse.Core.Queue (
     enqueue,
  )
 import Ecluse.Core.Registry.Metadata (
+    MetadataClient (fetchVersionMetadata),
+    MetadataError (MetadataAuthorisationFailure),
     VersionEvaluation (VersionMetadataUnavailable, VersionMissing, VersionPresent),
     fetchVersionDetails,
     versionTransience,
@@ -142,6 +67,7 @@ import Ecluse.Core.Security (
  )
 import UnliftIO (tryAny, withRunInIO)
 
+import Ecluse.Core.Registry (isAuthorisationFailure)
 import Ecluse.Core.Registry.Adapter.Capability (AdapterArtifact (artifactByFile, artifactByUrl, artifactHosts))
 import Ecluse.Core.Server.Conditional (forwardValidators)
 import Ecluse.Core.Server.Context (
@@ -197,10 +123,7 @@ import Ecluse.Core.Telemetry.Record (MetricsPort (..), timedSeconds)
 import Ecluse.Core.Telemetry.Span (spanMirrorEnqueue, spanRuleEval)
 import Ecluse.Core.Version (Version, renderVersion)
 
-{- | The route-owned ways the tarball pipeline may answer. The route's explicit
-pass-through contract fixes the response type, and the pipeline never receives WAI's
-unrestricted responder.
--}
+-- | The route-owned ways the tarball pipeline may answer.
 data TarballReplies response = TarballReplies
     { tarballError :: Status -> ResponseHeaders -> Refusal -> response
     -- ^ An ecosystem-shaped local error.
@@ -210,10 +133,7 @@ data TarballReplies response = TarballReplies
     -- ^ A transparent bodiless upstream response (@304@ or @HEAD@).
     }
 
-{- | Serve a @GET \/{pkg}\/-\/{file}.tgz@ artifact request end to end, over the request's
-'RequestCtx'. The private leg forwards the client credential, while the public leg fetches
-anonymously, so the credential never reaches the public upstream.
--}
+-- | Serve an artifact with the caller's credential confined to the private origin.
 serveTarball ::
     TarballReplies response ->
     PackageName ->
@@ -224,11 +144,7 @@ serveTarball ::
     Handler ResponseReceived
 serveTarball = tarballWith ServeFull
 
-{- | Serve a @HEAD \/{pkg}\/-\/{file}.tgz@ artifact request end to end, over the request's
-'RequestCtx'. It runs the identical pipeline as 'serveTarball' but probes the upstream
-bodiless, because pumping a whole artifact body only to discard it would waste upstream
-egress and hand a cheap HEAD a DoS-amplification lever.
--}
+-- | Probe an artifact with HEAD through the same policy as GET, without pumping upstream bytes.
 headTarball ::
     TarballReplies response ->
     PackageName ->
@@ -277,10 +193,8 @@ serveTarballWithDeps mode replies deps clientToken name version file request res
         let validators = forwardValidators (requestHeaders request)
         privateHit <- streamPrivateArtifact mode replies rt deps clientToken validators name version file respond
         case privateHit of
-            Just received -> do
-                -- A private hit is an admit from the trusted upstream, and no rule
-                -- gate runs. The public path records its own decision on a miss.
-                liftIO (mpServeDecision (srMetrics rt) Metric.Admit)
+            Just (decision, received) -> do
+                liftIO (mpServeDecision (srMetrics rt) decision)
                 pure received
             -- A first-party name has one authority, so a private miss ends here rather than
             -- falling through to the public leg.
@@ -290,8 +204,7 @@ serveTarballWithDeps mode replies deps clientToken name version file request res
                     liftIO (respond (artifactError replies deps firstPartyAbsent))
                 | otherwise -> servePublicArtifact mode replies rt deps validators name version file respond
 
--- A 2xx or an upstream 304 answers the request, and anything else is the clean miss the caller
--- falls through on. A private CDN 302 comes back rather than being chased with the credential.
+-- An access refusal commits only the local error response, without reading upstream's body.
 streamPrivateArtifact ::
     ArtifactServe ->
     TarballReplies response ->
@@ -303,19 +216,26 @@ streamPrivateArtifact ::
     Version ->
     Filename ->
     (response -> IO ResponseReceived) ->
-    Handler (Maybe ResponseReceived)
+    Handler (Maybe (Metric.Decision, ResponseReceived))
 streamPrivateArtifact mode replies rt deps token validators name version file respond =
     privateArtifactRequest rt deps token name version file >>= \case
-        Just req ->
+        Left _ -> Just . (Metric.Deny,) <$> liftIO refuse
+        Right (Just req) ->
             liftIO $
                 fmap snd
-                    <$> relayUpstreamWhen mode (srPrivateManager rt) (withValidators validators (withMethod mode req)) acceptArtifact relayUnjudged (relayResponder replies respond)
-        Nothing -> pure Nothing
+                    <$> relayUpstreamWhen mode (srPrivateManager rt) (withValidators validators (withMethod mode req)) acceptPrivate relayUnjudged privateResponder
+        Right Nothing -> pure Nothing
+  where
+    refuse = respond (tarballError replies status403 [] (privateAuthorisationRefusal (pdHelp deps)))
+    acceptPrivate status = acceptArtifact status || isAuthorisationFailure (statusCode status)
+    privateResponder =
+        RelayResponder
+            (\status headers body -> answerPrivate status (respond (tarballStream replies status headers body)))
+            (\status headers -> answerPrivate status (respond (tarballEmpty replies status headers)))
+    answerPrivate status admitted
+        | isAuthorisationFailure (statusCode status) = (Metric.Deny,) <$> refuse
+        | otherwise = (Metric.Admit,) <$> admitted
 
-{- Which arm runs is the ecosystem's own fact. A registry that serves its own artifact bytes
-declares no artifact host, so a blind probe of the conventional path costs no metadata read on a
-private hit. One that declares artifact hosts cannot spell that path, because its index names
-each file's location, so the file resolves through the index and is fetched where it said. -}
 privateArtifactRequest ::
     ServeRuntime ->
     PackumentDeps ->
@@ -323,12 +243,12 @@ privateArtifactRequest ::
     PackageName ->
     Version ->
     Filename ->
-    Handler (Maybe HTTP.Request)
+    Handler (Either MetadataError (Maybe HTTP.Request))
 privateArtifactRequest rt deps token name version file = case pdPrivateBaseUrl deps of
-    Nothing -> pure Nothing
+    Nothing -> pure (Right Nothing)
     Just privateBase
-        | not (tarballHostHonoured TrustedOrigin deps privateHostPort privateHostPort) -> pure Nothing
-        | null (artifactHosts (pdArtifact deps)) -> pure (byConventionalPath privateBase)
+        | not (tarballHostHonoured TrustedOrigin deps privateHostPort privateHostPort) -> pure (Right Nothing)
+        | null (artifactHosts (pdArtifact deps)) -> pure (Right (byConventionalPath privateBase))
         | otherwise -> byIndexedLocation privateBase
   where
     -- The precomputed private authority. A conventionally-built URL is on the private base, so
@@ -341,18 +261,19 @@ privateArtifactRequest rt deps token name version file = case pdPrivateBaseUrl d
     -- The location is gated from the same definition the download gate reads, and the credential
     -- rides only when it is the private upstream itself.
     byIndexedLocation privateBase = do
-        resolved <- tryAny (withPrivateMetadataClient rt deps privateBase token (\client -> fetchVersionDetails client name version))
-        pure $ do
-            VersionPresent details <- rightToMaybe resolved
+        resolved <- tryAny (withPrivateMetadataClient rt deps privateBase token (\client -> fetchVersionMetadata client name version))
+        pure $ case resolved of
+            Right (Left refusal@MetadataAuthorisationFailure{}) -> Left refusal
+            Right (Right details) -> Right (details >>= requestForDetails)
+            _ -> Right Nothing
+      where
+        requestForDetails details = do
             artifact <- find ((== unFilename file) . artFilename) (pkgArtifacts details)
             let target = hostPortAddress (artUrl artifact)
             guard (artifactAuthorityHonoured (thgEcosystemHosts (pdTarballHostGate deps)) privateHostPort target)
             let carried = if target == privateHostPort then token else Nothing
             rightToMaybe (artifactByUrl (pdArtifact deps) carried (artUrl artifact))
 
-{- Serve the artifact from the public upstream after a private miss: gate the single
-requested version against the rules. An admit streams the bytes anonymously and enqueues a
-mirror job, a reject renders the serve error model. -}
 servePublicArtifact ::
     ArtifactServe ->
     TarballReplies response ->
@@ -385,9 +306,7 @@ servePublicArtifact mode replies rt deps validators name version file respond = 
                 liftIO (recordDenials metrics [decision])
                 liftIO (respond (artifactError replies deps decision))
 
-{- | The outcome of gating a single requested artifact on the public path. The admit carries the
-artifact, so the stream step honours its 'artUrl' rather than reconstructing the location.
--}
+-- | Preserve the admitted artifact's authoritative location through the public gate.
 data PublicArtifactGate
     = -- | The gate admitted the version. Carries the artifact selected by filename.
       Admitted Artifact
@@ -406,9 +325,6 @@ gatePublicVersion rt deps name version file advisoryEtag = do
         VersionMetadataUnavailable -> pure (Refused upstreamUnavailable)
         VersionMissing -> pure (Refused versionAbsent)
         VersionPresent details ->
-            -- The rule-eval span wraps the decision and records its verdict, so a denial
-            -- is explainable from the trace. The outage and version-absent branches above
-            -- are not rule evaluations and carry no span.
             liftIO $
                 spanRuleEval (srTracing rt) name version $ do
                     (gate, seconds) <- timedSeconds (gateVersion evalCtx deps file details)
@@ -467,13 +383,6 @@ is the shared projection's, the one the worker's retry-versus-drop reads. -}
 versionUnresolved :: VersionEvaluation -> Text -> ServeDecision
 versionUnresolved eval = rejectUnavailable (fromMaybe WontResolve (versionTransience eval))
 
-{- Stream the artifact from the public upstream at the 'Artifact''s own 'artUrl', and
-anonymously, so the client credential never reaches the public upstream. A host the
-tarball-host policy refuses takes the @403@ path and an unformable URL the @500@ path. A
-failure while opening the connection, a TLS handshake included, commits no response and
-renders the transient @503@. Only a failure after the stream is committed propagates, so a
-half-sent artifact is never followed by a second response. An upstream @304@ goes back to
-the client bodiless, and the best-effort mirror enqueue runs after the response is begun. -}
 streamPublicArtifact ::
     ArtifactServe ->
     TarballReplies response ->
@@ -496,9 +405,6 @@ streamPublicArtifact mode replies rt deps validators name version file artifact 
             relayUpstreamWhen mode (srPublicManager rt) req (const True) relayJudged (relayResponder replies respond) >>= \case
                 Just (verdict, received) -> do
                     observeVerdict verdict
-                    -- Only a clean artifact relay back-fills: a relayed miss would enqueue a
-                    -- doomed job, an oddly-shaped 2xx a misleading one. A serve-only mount
-                    -- ('NoMirrorWrite') enqueues nothing, so no span or metric fires either.
                     case (verdict, pdMirror deps) of
                         (RelayedArtifact, MirrorOnAdmit _) -> enqueueOnFull mode (enqueueMirror rt deps name version file artifact)
                         (RelayedArtifact, NoMirrorWrite) -> pass
@@ -526,12 +432,6 @@ enqueueOnFull mode act = case mode of
     ServeFull -> act
     ServeHead -> pass
 
-{- Enqueue a demand-driven mirror job for an admitted artifact, best-effort. It runs after
-the client response is begun and swallows any failure, so a queue outage never fails or
-delays the serve. The job carries the artifact's authoritative URL and the serve-time
-admitted filename, and nothing else: no credential, no mirror target, no digest and no
-size. The queue payload is a trust boundary the worker grants no authority, so the worker
-mints its own token and derives its own descriptor from the artifact it re-admits. -}
 enqueueMirror :: ServeRuntime -> PackumentDeps -> PackageName -> Version -> Filename -> Artifact -> IO ()
 enqueueMirror rt deps name version file artifact =
     case pdEgressUrl deps (artUrl artifact) of
@@ -568,16 +468,11 @@ enqueueMirror rt deps name version file artifact =
     enqueueFailureDetail :: TransportFault -> Text
     enqueueFailureDetail fault = "mirror enqueue failed: " <> tfDetail fault
 
-{- A @403@ for an artifact whose authoritative @url@ the tarball-host gate refuses. This is
-a gate denial rather than a rule outcome, and it renders on the same @403@ surface with a
-fixed reason. -}
 crossHostRefused :: TarballReplies response -> response
 crossHostRefused replies =
     tarballError replies status403 [] (mkRefusal Nothing "the upstream artifact host is not permitted by the tarball-host policy")
 
-{- | The status a refused artifact request renders. A version-absent miss and a first-party miss
-are the @404@s: every other inability keeps the @503@ or @500@ its transience earns.
--}
+-- | Missing versions and first-party misses map to 404. Other outcomes use 'artifactStatus'.
 artifactOutcomeStatus :: ServeDecision -> ArtifactStatus
 artifactOutcomeStatus decision
     | decision `elem` [versionAbsent, firstPartyAbsent] = NotFound
@@ -602,9 +497,6 @@ artifactError replies deps decision =
         Admit -> "the artifact is available"
         Reject rej -> rejectionMessage rej
 
-{- A @500@ for an unformable upstream artifact URL: a configuration fault, not a serve
-decision. The package segment and filename are already known-safe, so only a misconfigured
-base URL reaches here. -}
 internalArtifactError :: TarballReplies response -> response
 internalArtifactError replies =
     tarballError replies status500 [] (mkRefusal Nothing "could not form the upstream artifact URL")

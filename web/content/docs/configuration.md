@@ -205,6 +205,18 @@ cannot read leaves nothing that may answer for it.
 This is a privilege over names, not authentication. It says which names are yours, never who may
 use them, so the private upstream stays the authority on every caller.
 
+A private upstream's explicit `401` or `403` stops the read with a local `403`, for metadata and
+artifacts, including HEAD and conditional requests. Public content cannot replace the private
+copy, even if it has the same name and version or passes public admission and integrity checks.
+This protects a private patch from substitution when the caller's private credential fails.
+Écluse forwards no upstream error body or headers. npm receives a fixed explanation.
+PyPI keeps its local refusal format: an empty body, or the configured operator help message.
+
+Check the caller's private credential and access when this refusal appears. Ordinary private
+`404` responses and other transient or transport failures keep their existing fallback policy.
+First-party names remain private-only. A backend that masks an access refusal as `404` supplies
+no proof that authentication succeeded.
+
 ## Secrets
 
 Secrets never live in the config document: client and registry tokens are always env vars. A
