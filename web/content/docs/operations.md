@@ -98,6 +98,9 @@ protection: Pilot records its source URLs in advisory metadata, and sync logs th
 configured endpoint values. Use the dedicated [secret settings](@/docs/configuration.md#secrets)
 rather than putting secrets into URLs.
 
+The advisory metadata/logging defect is tracked in
+[#1248](https://github.com/AlexaDeWit/Ecluse/issues/1248).
+
 ## Alerting on `ERROR`
 
 **Point a monitor at `status: error` and page on it.** These failures need operator attention,

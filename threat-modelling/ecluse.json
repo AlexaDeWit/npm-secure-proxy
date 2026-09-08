@@ -2682,7 +2682,7 @@
               "outOfScope": false,
               "isTrustBoundary": false,
               "reasonOutOfScope": "",
-              "hasOpenThreats": false,
+              "hasOpenThreats": true,
               "handlesCardPayment": false,
               "handlesGoodsOrServices": false,
               "isWebApplication": false,
@@ -2731,6 +2731,17 @@
                   "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07 in #1238, following the separate-entry requirement in #539. Rely on the configured EPSS source without adding independent verification of score truth. HTTPS, bounded fetching, parsing, and score validation constrain transport and malformed-input failures, not plausible source errors. This acceptance does not waive completeness, availability, or freshness handling. #1224 specifies unconditional enrichment attempts with configuration-dependent failure. #1225 restores abstention for an individual absent EPSS score, rather than a positive denial. #1234 guards empty or shrinking compiled output. #1221 addresses advisory age. Those runtime changes remain unimplemented. Keep the OSV source assumption in threat 101 separate and preserve all existing admission and deletion guards. See https://github.com/AlexaDeWit/Ecluse/issues/1238 .",
                   "modelType": "STRIDE",
                   "id": "4d309275-cc3c-43d0-a1a2-f024789e9f17"
+                },
+                {
+                  "number": 113,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "title": "Advisory source URL credentials enter artifacts and sync logs",
+                  "type": "Information disclosure",
+                  "description": "An operator can supply a custom advisory source URL containing query credentials. Pilot stores its original OSV and EPSS source strings in SQLite metadata, and consumer sync includes that metadata in an INFO log. This copies source credentials into the artifact and the consumers' log systems. The default public feed URLs carry no such credentials. A local fixture probe confirmed both fake query tokens survived compilation, acceptance, and sync logging.",
+                  "mitigation": "Required fix, not implemented: #1248 keeps credentials out of ordinary source provenance and replaces raw metadata logging with a bounded non-secret projection. Reuse existing authority rendering and preserve useful source-snapshot identity/time without authentication material. Consumer logging must also handle older artifacts that already contain unsafe values. Until fixed, do not embed credentials in Pilot source URLs. The probe used local fixtures and fake query tokens, not live credentials or a production deployment. CLI parsing and userinfo were traced but not executed in that probe. See https://github.com/AlexaDeWit/Ecluse/issues/1248 .",
+                  "modelType": "STRIDE",
+                  "id": "9d92a448-e04d-46b6-8b8d-bc353dacdb97"
                 },
                 {
                   "number": 20,
@@ -3494,6 +3505,6 @@
     ],
     "diagramTop": 1,
     "reviewer": "",
-    "threatTop": 112
+    "threatTop": 113
   }
 }
