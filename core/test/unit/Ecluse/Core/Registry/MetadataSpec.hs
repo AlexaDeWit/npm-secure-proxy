@@ -16,12 +16,23 @@ import Ecluse.Core.Registry.Metadata (
     fetchThenProject,
  )
 import Ecluse.Core.Security (LimitError (BodyTooLarge))
+import Ecluse.Core.Telemetry.Span (TracingPort (spanMetadataDecode, spanMetadataFetch))
 import Ecluse.Test.Package (unscopedNpm)
 import Ecluse.Test.Port (passthroughTracingPort)
 
 -- | The fetch-then-project step every mount's read operations share. A mount supplies the fetch action and the projection, so this pins the fold between them.
 spec :: Spec
 spec = describe "fetchThenProject" $ do
+    for_ [200, 401, 403] $ \code ->
+        it ("traces the requested package and skips decode after access refusal " <> show code) $ do
+            events <- newIORef ([] :: [(Text, PackageName)])
+            let name = unscopedNpm "left-pad"
+                record phase who action = modifyIORef' events (<> [(phase, who)]) >> action
+                tracing = passthroughTracingPort{spanMetadataFetch = record "fetch", spanMetadataDecode = record "decode"}
+            outcome <- fetchThenProject tracing (const (pure (Right (RegistryResponse code "body")))) name Right
+            outcome `shouldBe` if code == 200 then Right "body" else Left (MetadataAuthorisationFailure code)
+            readIORef events `shouldReturn` ([("fetch", name)] <> [("decode", name) | code == 200])
+
     for_ [401, 403] $ \code ->
         it ("retains HTTP " <> show code <> " before projecting a usable body") $
             runStep (Right (RegistryResponse code "usable")) Right

@@ -28,7 +28,7 @@ import Ecluse.Core.Registry.CachedDocument (npmCached)
 import Ecluse.Core.Registry.Metadata (
     Manifest (Manifest, manifestDigest, manifestInfo, manifestRaw),
     MetadataClient (fetchFullManifest, fetchVersionMetadata),
-    MetadataError (MetadataFetch, MetadataUndecodable),
+    MetadataError (MetadataAuthorisationFailure, MetadataFetch, MetadataUndecodable),
     digestOf,
  )
 import Ecluse.Core.Server.Cache (MetadataCache, Source (Source), cachedMetadata, newMetadataCache)
@@ -40,11 +40,7 @@ import Ecluse.Test.Package (unscopedNpm)
 import Ecluse.Test.Port (noopMetricsPort)
 import Ecluse.Test.Server.Cache (defaultCacheConfig)
 
-{- | Tests for the serve-path read handle, whose single-version op is hybrid. It reads the
-@(package, version)@ cache, then the warm full-packument cache read-only, then leads a cold
-selective fetch that never writes the whole packument back. The injected full and version fetches
-share one call counter, so an assertion on it is the total upstream calls across both legs.
--}
+-- | Tests for the serve-path read handle, whose single-version op is hybrid.
 spec :: Spec
 spec = do
     describe "newMetadataClient -- single-version hybrid topology" $ do
@@ -105,6 +101,22 @@ spec = do
             readIORef calls `shouldReturn` 2
 
     describe "newMetadataClient -- failure propagation" $ do
+        for_ [401, 403] $ \code ->
+            it ("records and preserves private access refusal " <> show code <> " on every read") $ do
+                causes <- newIORef []
+                failures <- newIORef []
+                let refusal = MetadataAuthorisationFailure code
+                    port = noopMetricsPort{mpUpstreamFetchError = \upstream cause -> modifyIORef' causes ((upstream, cause) :)}
+                    recordFailure who err = modifyIORef' failures ((who, err) :)
+                    client = newMetadataClient port Metric.Private Uncached recordFailure noInvalidLog noFetchLog (const (pure (Left refusal))) (\_ _ -> pure (Left refusal))
+                replicateM_ 2 $ do
+                    full <- fetchFullManifest client name
+                    void full `shouldBe` Left refusal
+                    single <- fetchVersionMetadata client name (ver "1.0.0")
+                    void single `shouldBe` Left refusal
+                readIORef causes `shouldReturn` replicate 4 (Metric.Private, Metric.OtherCause)
+                readIORef failures `shouldReturn` replicate 4 (name, refusal)
+
         it "propagates a MetadataError from both operations and caches nothing on failure" $ do
             calls <- newIORef (0 :: Int)
             cache <- newMetadataCache defaultCacheConfig
@@ -194,9 +206,7 @@ noInvalidLog _ _ = pure ()
 noFetchLog :: PackageName -> IO ()
 noFetchLog _ = pure ()
 
-{- | A public (cached, anonymous) read handle over an injected full and single-version
-fetch.
--}
+-- | A public (cached, anonymous) read handle over an injected full and single-version fetch.
 publicClient ::
     MetadataCache ->
     (PackageName -> IO (Either MetadataError Manifest)) ->
@@ -205,17 +215,13 @@ publicClient ::
 publicClient cache =
     newMetadataClient noopMetricsPort Metric.Public (Cached cache source) noLog noInvalidLog noFetchLog
 
-{- | A counting full-manifest fetch: bumps the call counter, then yields the given manifest
-paired with a marker raw 'Value'. A test then confirms that a hit returned the cached pair.
--}
+-- | A counting full-manifest fetch: bumps the call counter, then yields the given manifest paired with a marker raw 'Value'.
 countingFull :: IORef Int -> PackageInfo -> PackageName -> IO (Either MetadataError Manifest)
 countingFull calls info _name = do
     atomicModifyIORef' calls (\n -> (n + 1, ()))
     pure (Right Manifest{manifestInfo = info, manifestRaw = fst npmCached (String "raw"), manifestDigest = digestOf "raw-bytes"})
 
-{- | A counting single-version fetch: bumps the call counter, then selects the version from
-the given manifest, as the npm selective fetch does. An absent version is a 'Nothing'.
--}
+-- | A counting single-version fetch: bumps the call counter, then selects the version from the given manifest, as the npm selective fetch does.
 countingVersion :: IORef Int -> PackageInfo -> PackageName -> Version -> IO (Either MetadataError (Maybe PackageDetails))
 countingVersion calls info _name version = do
     atomicModifyIORef' calls (\n -> (n + 1, ()))

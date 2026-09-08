@@ -49,7 +49,7 @@
 - functions:
     - {name: System.IO.Error.userError, within: [], message: "Stringly IOError: throw a typed Exception (e.g. a nullary type with an Exception instance), or return a domain value. See STYLE.md section 11."}
     - {name: UnliftIO.Exception.stringException, within: [], message: "Stringly exception: throw a typed Exception or return a domain value. See STYLE.md section 11."}
-    - {name: UnliftIO.Exception.throwString, within: [Ecluse.Core.Credential.Refresh.InternalSpec, Ecluse.Core.InFlightSpec, Ecluse.Core.Registry.NpmSmokeSpec, Ecluse.Core.Rules.EffectfulSpec, Ecluse.Core.Server.Pipeline.PackumentIntegrationSpec, Ecluse.Core.Server.Pipeline.SharedIntegrationSpec, Ecluse.Core.Server.PipelineSpec, Ecluse.Runtime.EnvSpec], message: "Stringly exception: in production, throw a typed Exception or return a domain value (docs/style.md section 11). Permitted in tests to simulate an upstream failure."}
+    - {name: UnliftIO.Exception.throwString, within: [Ecluse.Core.Credential.Refresh.InternalSpec, Ecluse.Core.InFlightSpec, Ecluse.Core.Registry.NpmSmokeSpec, Ecluse.Core.Rules.EffectfulSpec, Ecluse.Core.Server.Pipeline.PackumentIntegrationSpec, Ecluse.Core.Server.Pipeline.SharedIntegrationSpec, Ecluse.Runtime.EnvSpec], message: "Stringly exception: in production, throw a typed Exception or return a domain value (docs/style.md section 11). Permitted in tests to simulate an upstream failure."}
     - {name: UnliftIO.throwString, within: [], message: "Stringly exception: import throwString from UnliftIO.Exception, which the test allowlist names."}
 
 # --- Debugging leftovers: banned in committed code --------------------------

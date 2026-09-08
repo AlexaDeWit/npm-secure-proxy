@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Exercise the PyPI adapter through its metadata and artifact routes using local upstreams.
+{- | Exercise PyPI metadata and artifact routes using local upstreams.
+Private index failures retain their access-refusal or fallback policy.
+-}
 module Ecluse.Core.Registry.PyPI.AdapterIntegrationSpec (spec) where
 
 import Data.Aeson (Value (Array, Object, String), decode, encode, object, (.=))
@@ -12,7 +14,7 @@ import Data.List (dropWhileEnd, lookup)
 import Data.Text qualified as T
 import Data.Time (UTCTime (UTCTime), fromGregorian)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
-import Network.HTTP.Types (Header, methodGet, methodHead, status200, status401, status403, status404, statusCode)
+import Network.HTTP.Types (Header, methodGet, methodHead, status200, status401, status403, status404, status503, statusCode)
 import Network.Wai (Application, responseLBS)
 import Network.Wai qualified as Wai
 import Network.Wai.Handler.Warp (testWithApplication)
@@ -148,6 +150,16 @@ refusalBodySpec = describe "the operator help message on a refusal the route tab
 
 privateLegSpec :: Spec
 privateLegSpec = describe "the private artifact leg, addressed by the index's own location" $ do
+    for_ [status404, status503] $ \upstreamStatus ->
+        it ("keeps public artifact fallback after private index HTTP " <> show (statusCode upstreamStatus)) $
+            testWithApplication (pure (\_ respond -> respond (responseLBS upstreamStatus [] "private index unavailable"))) $ \privatePort ->
+                withPyPIProxyOver publicIndex (pypiDeps (Just (loopbackRegistryUrl (localhost privatePort))) . loopbackRegistryUrl . localhost) $ \proxy -> do
+                    response <- getPathWith [clientCredential] sdistPath (proxyApp proxy)
+                    statusOf response `shouldBe` 200
+                    simpleBody response `shouldBe` artifactBytes
+                    hits <- privateHits proxy
+                    map snd hits `shouldSatisfy` all isNothing
+
     for_ [status401, status403] $ \upstreamStatus ->
         it ("refuses an index HTTP " <> show (statusCode upstreamStatus) <> " on metadata and indexed artifacts") $
             withPyPIProxyResponding (const (\_ respond -> respond (responseLBS upstreamStatus [("WWW-Authenticate", "private-secret")] "private-secret"))) publicIndex privatePypiDeps $ \proxy ->
