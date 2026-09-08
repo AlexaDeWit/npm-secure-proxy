@@ -146,8 +146,6 @@ deleteSequenceSpec = describe "the version delete verb" $ do
         refusalOf (encoded twoVersions) (version "9.9.9") `shouldReturn` Just "VERSION_ABSENT"
 
     it "ignores a dist.tarball segment that is a traversal, addressing the conventional name" $ do
-        -- The store chose this string. A bare @..@ would address the package itself once a
-        -- normalising hop in front of the store collapsed the path.
         (_, tarball) <- deletePair (tarballAt "http://store.test/leftpad/-/..") leftpad (version "1.0.0")
         Client.path tarball `shouldBe` "/leftpad/-/leftpad-1.0.0.tgz/-rev/3-abc"
 
@@ -156,10 +154,13 @@ deleteSequenceSpec = describe "the version delete verb" $ do
         Client.path tarball `shouldBe` "/leftpad/-/leftpad-1.0.0.tgz/-rev/3-abc"
 
     it "neutralises a percent-encoded separator on the way out rather than at the gate" $ do
-        -- The gate is structural, so a live escape survives it. Encode-on-build is what makes
-        -- the segment inert, and this pins that the two together leave nothing addressable.
         (_, tarball) <- deletePair (tarballAt "http://store.test/leftpad/-/..%2Fx") leftpad (version "1.0.0")
         Client.path tarball `shouldBe` "/leftpad/-/..%252Fx/-rev/3-abc"
+
+    for_ [("%2e", "%252e"), ("%2e%2e", "%252e%252e"), ("a%5cb", "a%255cb"), ("a%00b", "a%2500b"), ("name+tag.tgz", "name%2Btag.tgz")] $ \(filename, encodedFilename) ->
+        it ("targets the stored literal filename after encoding " <> toString filename) $ do
+            (_, tarball) <- deletePair (tarballAt ("http://store.test/leftpad/-/" <> filename <> "?sig=/other#hash")) leftpad (version "1.0.0")
+            Client.path tarball `shouldBe` "/leftpad/-/" <> encodedFilename <> "/-rev/3-abc"
 
     it "reads the filename off a tarball URL carrying a query or fragment" $ do
         (_, tarball) <- deletePair (tarballAt "http://store.test/leftpad/-/leftpad-1.0.0.tgz?sig=abc") leftpad (version "1.0.0")

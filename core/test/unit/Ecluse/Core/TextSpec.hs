@@ -13,7 +13,7 @@ import Hedgehog.Range qualified as Range
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
-import Ecluse.Core.Text (afterFirst, joinUrlPath, nonBlank, readDecimalText, readHexText, renderIso8601Utc, stripTrailingSlash, urlFilename)
+import Ecluse.Core.Text (afterFirst, joinUrlPath, nonBlank, readDecimalText, readHexText, renderIso8601Utc, stripTrailingSlash, urlFilename, urlFilenameComponent)
 
 -- | Text parsing contracts and ISO-8601 rendering parity.
 spec :: Spec
@@ -22,6 +22,7 @@ spec = do
     trailingSlashSpec
     joinUrlPathSpec
     urlFilenameSpec
+    urlFilenameComponentSpec
     afterFirstSpec
     readDecimalTextSpec
     readHexTextSpec
@@ -174,6 +175,18 @@ urlFilenameSpec = describe "urlFilename" $ do
 
     it "is absent when the path ends in a slash before the query" $
         urlFilename "https://cdn.host/f/?sig=abc" `shouldBe` Nothing
+
+urlFilenameComponentSpec :: Spec
+urlFilenameComponentSpec = describe "urlFilenameComponent" $ do
+    for_ ["", ".", "..", "a\\b", "a\nb", "%2e", "..%2Fx", "name+tag.tgz"] $ \filename ->
+        it ("extracts the raw component without validation: " <> show filename) $
+            urlFilenameComponent ("https://host/a/" <> filename <> "?redirect=/other#hash") `shouldBe` filename
+
+    it "extracts a bare filename without a URL prefix" $
+        urlFilenameComponent "..%2Fx" `shouldBe` "..%2Fx"
+
+    it "returns an empty component for an empty URL" $
+        urlFilenameComponent "" `shouldBe` ""
 
 renderIso8601Spec :: Spec
 renderIso8601Spec = describe "renderIso8601Utc" $ do

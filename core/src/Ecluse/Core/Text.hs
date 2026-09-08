@@ -10,6 +10,7 @@ module Ecluse.Core.Text (
     stripTrailingSlash,
     joinUrlPath,
     urlFilename,
+    urlFilenameComponent,
     isSafeComponent,
     afterFirst,
     registryPath,
@@ -53,11 +54,17 @@ Both the raw and once-decoded component must pass 'isSafeComponent', with valid 
 -}
 urlFilename :: Text -> Maybe Text
 urlFilename url = do
-    let filename = T.takeWhileEnd (/= '/') (T.takeWhile inPath url)
+    let filename = urlFilenameComponent url
     guard (isSafeComponent filename)
     decoded <- rightToMaybe (TE.decodeUtf8' (urlDecode False (encodeUtf8 filename)))
     guard (isSafeComponent decoded)
     pure filename
+
+{- | The raw final URL path component without query or fragment, possibly empty.
+No decoding or validation occurs. Callers must validate and encode it before URL construction.
+-}
+urlFilenameComponent :: Text -> Text
+urlFilenameComponent = T.takeWhileEnd (/= '/') . T.takeWhile inPath
   where
     inPath ch = ch /= '?' && ch /= '#'
 
