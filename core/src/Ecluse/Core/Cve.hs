@@ -2,30 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The advisory lookup capability: answer CVE questions about a package version
-from a local, already-synced @osv.db@ artifact, never from the network.
-
-The handle is deliberately dumb data access over one artifact file. Rule semantics
-live in pure predicates over what it returns ('insideAffectedRange'), because
-SQLite's text collation cannot order versions. Only
-'Ecluse.Core.Version.compareVersions' can. The one deliberate exception is
-'cveRemediationProbe'. A fixed bound in the artifact is a single canonical version
-string. Exact-fix matching is therefore plain string equality, and it rides the
-@(package_name, fixed_version)@ index in one traversal. A fix published under a
-non-canonical version string misses the probe and waits out the ordinary quarantine.
-The operator workaround is an explicit 'Ecluse.Core.Rules.Types.AllowByIdentity'
-rule.
-
-'openCveDb' accepts or rejects an artifact on its epoch stamp, integrity,
-strict-schema conformance, and ecosystem. Rejection is a value: the caller keeps its
-last known-good handle and alarms. See "Ecluse.Core.Cve.Internal" for the hardening
-detail.
-
-__Ownership is split at the type level__: 'openCveDb' yields a 'CveDb', the owning
-resource whose holder alone may 'cveDbClose'. A consumer gets only its 'CveLookup'
-view, so nothing that evaluates rules can release a shared connection. The owner
-holds the 'CveDb' and closes it explicitly. That owner is the background sync's
-shadow-swap, which retires an artifact only when no evaluation still reads it.
+{- | Read one synced advisory artifact through a pinned lookup capability.
+Package keys are canonical per ecosystem. Fix versions match raw text exactly.
 -}
 module Ecluse.Core.Cve (
     -- * The owning resource
@@ -67,8 +45,8 @@ Two objects with equal ETags carry equal bytes, so an unchanged ETag means nothi
 newtype DbEtag = DbEtag Text
     deriving stock (Eq, Show)
 
-{- | The read-only advisory view a rule evaluation gets, keyed by the OSV wire
-vocabulary: package name with scope inline (@\@scope\/name@) and verbatim version text.
+{- | Query canonical package keys, with npm scopes inline, and raw version strings.
+Display names must not be used as query keys.
 -}
 data CveLookup = CveLookup
     { cveRemediationProbe :: Text -> Text -> IO Bool
@@ -85,10 +63,7 @@ data CveLookup = CveLookup
     -}
     }
 
-{- | A query the accepted advisory database could not answer. Acceptance made every row
-decode total, so it marks an infrastructural fault. Only 'Ecluse.Core.Rules.runEffectfulRule'
-catches it, resolving it to an @Unavailable@ evaluation that advances the rule's breaker.
--}
+-- | A database query fault for the rule's resilience policy to classify.
 data CveQueryFault = CveQueryFault
     { cqfQuery :: Text
     -- ^ Which handle field was asked (@remediation-probe@ or @advisories-for@).
@@ -115,10 +90,7 @@ data CveDb = CveDb
     -}
     }
 
-{- | Open an @osv.db@ artifact and build the owning handle over it, or reject it
-('CveDbRejected'). Nothing an artifact carries can make this throw, and a rejection or a
-throw below the artifact contract, such as an unopenable file, leaves the connection closed.
--}
+-- | Reject incompatible artifacts as values. Opening faults leave no connection behind.
 openCveDb :: Ecosystem -> FilePath -> IO (Either CveDbRejected CveDb)
 openCveDb eco dbFile =
     openHardenedConnection eco dbFile >>= \case
@@ -191,9 +163,6 @@ unorderablePoint eco ar = case (arIntroduced ar, arUpperBound ar) of
             Just introduced
     _ -> Nothing
 
-{- | Does this segment's score, a CVSS base score or an EPSS probability, meet the deny
-threshold? __Fail-closed:__ an absent score ('Nothing') meets every threshold, because an
-unprovable score must not open a deny gate.
--}
+-- | Missing scores satisfy every deny threshold, so absent evidence cannot open the gate.
 scoreAtLeast :: Double -> Maybe Double -> Bool
 scoreAtLeast threshold = maybe True (>= threshold)

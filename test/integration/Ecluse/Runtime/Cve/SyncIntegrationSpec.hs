@@ -2,21 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The advisory fast lane, proven end to end in two phases against one booted proxy:
-
-1. __Control__: the bucket is empty, so the gate denies the young security fix (@403@).
-   The audit body carries both the fast lane's abstain reason (no advisory database
-   is loaded) and the quarantine's. That proves the CVE rule ran, abstained for the
-   stated cause, and left the ordinary policy to govern.
-2. Pilot's real one-shot pipeline (@runPilotCompile@ with @--upload@) compiles the
-   shared advisory corpus into an @osv.db@. It then uploads the database to the
-   ministack S3 bucket through @exportToS3@. The running sync task's next poll
-   detects, verifies, and shadow-swaps it, with no restart and no configuration
-   change.
-3. The identical request then returns @200@ with the version served: the fast
-   lane opened because a synced advisory names it as the exact fix.
-
-Hermetic and gating, but requires a Docker daemon (for @ministack@'s S3).
+{- | Exercise the remediation fast lane before and after Pilot publishes an artifact.
+The running proxy loads it through the Docker-backed S3 fixture.
 -}
 module Ecluse.Runtime.Cve.SyncIntegrationSpec (spec) where
 
@@ -100,9 +87,9 @@ spec =
                                         }
                                 syncEnv =
                                     SyncEnv
-                                        { syncFetch = s3CveFetchFor cveSource bucket "npm-osv-schema3.db" (512 * 1024 * 1024)
+                                        { syncFetch = s3CveFetchFor cveSource bucket "npm-osv-schema4.db" (512 * 1024 * 1024)
                                         , syncEcosystem = Npm
-                                        , syncDbPath = dataDir <> "/npm-osv-schema3.db"
+                                        , syncDbPath = dataDir <> "/npm-osv-schema4.db"
                                         , syncSlot = slot
                                         }
                                 schedule = SyncSchedule{schedBootBackoff = [50_000, 50_000], schedPollDelay = 100_000}
@@ -127,7 +114,7 @@ spec =
 
                                 -- The fetch fails fast on the declared length, before any bytes
                                 -- sink to disk.
-                                let cappedFetch = s3CveFetchFor cveSource bucket "npm-osv-schema3.db" 16
+                                let cappedFetch = s3CveFetchFor cveSource bucket "npm-osv-schema4.db" 16
                                 fetchDownload cappedFetch (dataDir <> "/capped.db.tmp")
                                     `shouldReturn` Left (OsvDbTooLarge 16)
   where
@@ -203,10 +190,7 @@ proxyApp ruleDeps privateUrl publicUrl = do
                 }
     pure (application (mkServerConfig (maybeToList (mountBindingFor Npm deps Nothing))) env)
 
-{- A single-version packument for @corpus-vuln\@1.2.0@, the fixed version GHSA-corpus-0001 names.
-Its publish time is one day before the fixed clock, so only the fast lane can admit it, and its
-artifact location is re-pointed at the port the stub came up on so the projection keeps it.
--}
+-- A young fixed version whose artifact URL resolves against the local stub.
 withPublicUpstream :: (Text -> IO a) -> IO a
 withPublicUpstream k = withRoutedStub selfHosted (k . stubLocalhostUrl)
   where

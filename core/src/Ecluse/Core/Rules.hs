@@ -2,47 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The policy rules engine.
-
-A rule set evaluates one 'PackageDetails' snapshot and produces a 'Decision'. The
-model is __deny by default, and the boot order decides__. 'bootOrder' arranges the
-configured rules once, at boot, into one total order: highest precedence first, then
-rule name ascending. Evaluation walks that order and takes the __first decisive
-result__. If no rule is decisive the package is 'BlockedByDefault'.
-
-A result is decisive in exactly two cases. The first is a decisive verdict from the
-rule: 'Allow', 'Deny', or a fail-closed 'CannotVet'. The second is a faulted evaluation
-the harness resolved fail-closed (@'Unavailable' _ 'FailDeny' _@). Everything else is a
-non-decisive no-op: a 'NoDecision' verdict, a fail-open 'CannotVet', or a fail-open
-fault (@'Unavailable' _ 'FailNoDecision' _@). The engine collects a no-op's reason, in
-boot order, for the deny-by-default audit trail.
-
-__A rule is evaluation-agnostic data. Evaluating a rule is a separate concern.__ The
-closed built-in vocabulary ('Ecluse.Core.Rules.Types.Rule') says /what/ a rule is.
-'evalRule' is the single dispatch that says /how/ each built-in rule decides, closing
-over the boot-bound capabilities in 'RuleDeps'.
-
-The engine's one runtime structure is the 'PreparedRule'. It pairs a rule's boot-order
-identity (precedence and name) with the raw per-version evaluator and an optional
-'Resilience' policy. 'prepare' builds one per configured rule. The pure built-ins carry
-no 'Resilience' and run directly. The effectful CVE rules carry a 'Resilience' that the
-harness 'runEffectfulRule' applies: a per-attempt timeout, bounded retry with backoff,
-and a per-source 'Ecluse.Core.Breaker.Breaker'. The order /is/ the tiebreak, and nothing
-compares results at runtime.
-
-Config cannot reach the evaluator on a 'PreparedRule'. 'prepare' only ever binds
-'evalRule' over closed 'Rule' data, so untrusted config expresses only the built-in
-vocabulary. Supplying an arbitrary evaluator is a code-layer capability, never a config
-surface. The engine's own tests use it.
-
-'evalRules' may evaluate effectful rules speculatively in parallel, but the result is
-always __as-if sequential by boot order__. The winner is the earliest-in-order decisive
-rule, never the first to return in wall-clock time. Once the winner is known, the engine
-cancels every still-running strictly-later evaluation. The engine evaluates the cheap
-pure prefix directly, so it never launches IO that an earlier decisive result would
-moot. Evaluation is 'IO'-typed, because a rule's evaluator may do IO, so there is no
-pure entry point. The rule data types live in "Ecluse.Core.Rules.Types", and the
-resilience harness lives in "Ecluse.Core.Rules.Effectful".
+{- | The policy engine denies by default and decides in boot order.
+Effectful evaluation may overlap, but precedence governs the result.
 -}
 module Ecluse.Core.Rules (
     -- * The boot-bound rule capabilities
@@ -72,6 +33,7 @@ module Ecluse.Core.Rules (
 ) where
 
 import Data.Text qualified as T
+import Data.Text.Short qualified as TS
 import Data.Time (NominalDiffTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import UnliftIO (tryAny)
 import UnliftIO.Async (Async, async, cancel, uninterruptibleCancel, wait)
@@ -93,14 +55,7 @@ import Ecluse.Core.Rules.Types
 import Ecluse.Core.Text (displayExceptionT)
 import Ecluse.Core.Version (renderVersion)
 
-{- | The boot-bound capabilities a rule's evaluation may consult, closed into the prepared
-rules by 'prepare'.
-
-'rdWithCveLookup' brackets its acquisition so the provider can pin the advisory database
-generation for one rule evaluation, which keeps the background sync's shadow-swap from
-pruning an artifact an evaluation still holds. 'Nothing' means no advisory database is
-loaded: the operator configured none, or the first sync is still pending.
--}
+-- | Pin one advisory generation for an evaluation, or supply 'Nothing' before the first sync.
 data RuleDeps = RuleDeps
     { rdWithCveLookup :: forall a. (Maybe CveLookup -> IO a) -> IO a
     -- ^ Bracketed access to the current advisory database view, if one is loaded.
@@ -113,18 +68,10 @@ data RuleDeps = RuleDeps
     @ecluse.rule.breaker.state@. 'Ecluse.Core.Breaker.noBreakerReporter' when unobserved.
     -}
     , rdFaultReporter :: FaultReporter
-    {- ^ The observer that effectful rules report an exhausted evaluation's fault detail to,
-    or an inert reporter when unobserved. The detail stays in the operator log and never
-    reaches the client-facing message.
-    -}
+    -- ^ Reports exhausted faults to the operator log without exposing them to clients.
     }
 
-{- | Evaluate one built-in rule against one package version.
-
-A rule returns only a verdict and never manufactures an 'Unavailable': a genuine lookup
-fault surfaces as an exception, which the 'Resilience' harness that 'prepare' attaches
-resolves. The pure arms are total, so hostile metadata cannot crash the gate.
--}
+-- | Lookup faults escape to the resilience policy attached by 'prepare'.
 evalRule :: RuleDeps -> EvalContext -> Rule -> PackageDetails -> IO RuleVerdict
 evalRule _ _ (AllowScope scope) pd =
     pure $ case pkgNamespace (pkgName pd) of
@@ -204,14 +151,10 @@ advisoryDenyVerdict metric threshold scoreOf cve pd = do
         ids -> Deny ("affected by " <> T.intercalate ", " ids <> " (" <> metric <> " >= " <> show threshold <> ")")
   where
     eco = pkgEcosystem (pkgName pd)
-    name = renderPackageName (pkgName pd)
+    name = TS.toText (pkgCanonical (pkgName pd))
     version = renderVersion (pkgVersion pd)
 
-{- | Recover the advisory ids an advisory-deny reason named, reading them back out of what
-'advisoryDenyVerdict' rendered, between @"affected by "@ and the threshold parenthesis. A
-message with no such segment yields @[]@. 'Ecluse.Core.RulesSpec' round-trips this against
-'advisoryDenyVerdict', so rewording either one fails the build.
--}
+-- | Read the advisory identifiers from a scored denial reason, or return none.
 cveIdsInReason :: Text -> [Text]
 cveIdsInReason message
     | T.null afterThreshold = []
@@ -234,7 +177,7 @@ remediationVerdict cve pd = do
             ranges <- cveAdvisoriesFor cve name
             pure (classifyRanges (pkgEcosystem (pkgName pd)) version ranges)
   where
-    name = renderPackageName (pkgName pd)
+    name = TS.toText (pkgCanonical (pkgName pd))
     version = renderVersion (pkgVersion pd)
 
 -- A version still inside any advisory's affected range, an unfixed one included, must not
@@ -262,12 +205,7 @@ matchesIdentity ident pd =
         pkgAtVer = pkgStr <> "@" <> renderVersion (pkgVersion pd)
      in ident == pkgStr || ident == pkgAtVer
 
-{- | A rule prepared for the engine to evaluate, and the engine's one runtime structure.
-
-'prepEval' is a plain function field rather than a closed 'Rule', so code such as the
-engine's own tests can supply an arbitrary evaluator. Config reaches this only through
-'prepare', so config can never supply one.
--}
+-- | Config obtains evaluators only through 'prepare', never from arbitrary code.
 data PreparedRule = PreparedRule
     { prepName :: Text
     {- ^ The stable, human-facing name. It is the boot-order tiebreak and the credited
@@ -283,13 +221,7 @@ data PreparedRule = PreparedRule
     -}
     }
 
-{- | Prepare a resolved policy into the engine's runtime rules, closing each evaluator over
-the boot-bound 'RuleDeps'.
-
-'AllowIfRemediatesCve' gets a __fail-open__ 'Resilience' ('FailNoDecision'), so a lookup
-that fails or hangs abstains and the rule never admits on an unconfirmable claim.
-'IO'-typed because a resilient rule allocates its per-source breaker here, once.
--}
+-- | Allocate each effectful rule's breaker once. Unconfirmed remediation claims abstain.
 prepare :: RuleDeps -> [PrecededRule] -> IO [PreparedRule]
 prepare deps = traverse (prepareRule deps)
 
@@ -328,10 +260,7 @@ resilienceFor deps = \case
                     , resClock = getCurrentTime
                     }
 
-{- | Arrange a rule set into the one total order evaluation walks: highest precedence
-first, then rule name ascending as the deterministic tiebreak. The configured order never
-enters, so shuffling the set yields the same 'Decision'.
--}
+-- | Sort by descending precedence, then ascending rule name, independently of configuration order.
 bootOrder :: [PreparedRule] -> [PreparedRule]
 bootOrder = sortOn (\r -> bootKey (prepPrecedence r) (prepName r))
 
@@ -355,17 +284,7 @@ renderBootOrder rules = zipWith line [1 :: Int ..] (bootOrder rules)
             <> show (prepPrecedence r)
             <> ")"
 
-{- | Evaluate a package version against a rule set. Take the first decisive result in boot
-order, or 'BlockedByDefault' with every non-decisive reason in boot order.
-
-The engine speculates on resilient rules in parallel, but decides as-if sequentially by
-boot order: the earliest decisive rule wins, never the first to return in wall-clock time.
-It never launches IO an earlier decisive result would moot.
-
-__Never throws.__ A direct rule that throws breaks its no-effects declaration, and this
-absorbs the break fail-closed as an 'Undecidable' naming the rule, so no rule can turn one
-request's evaluation into a serve-path escape.
--}
+-- | Decide in boot order despite concurrent lookups. Unexpected direct-rule faults refuse admission.
 evalRules :: EvalContext -> [PreparedRule] -> PackageDetails -> IO Decision
 evalRules ctx rules pd = step (bootOrder rules) []
   where
@@ -380,9 +299,7 @@ evalRules ctx rules pd = step (bootOrder rules) []
             evaluated <- tryAny (prepEval r ctx pd)
             case evaluated of
                 Left escape ->
-                    -- A direct rule declares no effects, so a throw here is an invariant break.
-                    -- Absorb it fail-closed as 'Undecidable' (the retryable 503) so no rule reaches
-                    -- the serve path.
+                    -- A direct-rule exception breaks its contract and must refuse admission.
                     pure (Undecidable (WillResolve Nothing) (prepName r <> ": the rule threw: " <> displayExceptionT escape))
                 Right verdict -> do
                     let res = Decided verdict
@@ -418,9 +335,7 @@ awaitInOrder ((r, a) : rest) reasons = do
             pure (Left d)
         Nothing -> awaitInOrder rest (reasonOf res : reasons)
 
--- Map a rule result to the 'Decision' it credits, or 'Nothing' if it is a no-op. Nothing
--- compares competing results, the boot order having already settled who wins. A
--- 'CannotVet' carries no transience of its own, so it credits a plain retryable 503.
+-- 'CannotVet' has no transience evidence, so it produces a plain retryable refusal.
 decisive :: Text -> RuleEvaluation -> Maybe Decision
 decisive name = \case
     Decided (Allow reason) -> Just (Admitted name reason)
@@ -440,15 +355,7 @@ reasonOf (Decided verdict) = case verdict of
     NoDecision reason -> reason
     CannotVet _ reason -> reason
 
-{- | Run one prepared rule through its resilience policy. A rule with no 'Resilience' runs
-directly and comes back 'Decided'.
-
-A resilient rule runs under its breaker gate, a per-attempt timeout, and bounded retry.
-Any 'RuleVerdict' it returns, a deterministic 'CannotVet' included, resets the breaker and
-is never retried. Only a fault the harness observes advances the breaker: a timeout, an
-exception, or an already-open breaker. Total: a rule failure becomes a result, never a
-throw.
--}
+-- | Apply resilience to effectful rules. Direct-rule exceptions remain the caller's responsibility.
 runEffectfulRule :: EvalContext -> PreparedRule -> PackageDetails -> IO RuleEvaluation
 runEffectfulRule ctx rule pd = case prepResilience rule of
     Nothing -> Decided <$> prepEval rule ctx pd
@@ -474,17 +381,7 @@ renderDecision pd decision =
             Undecidable _ reason ->
                 subject <> " could not be evaluated: " <> reason
 
-{- | Render a duration for a decision message as its two most-significant non-zero units.
-Two units keep a near-threshold value from reading like the threshold, so @89s@ is
-@"1 minute 29 seconds"@ and not the @"1 minute"@ a @90s@ minimum also renders to. Always
-non-negative.
-
->>> renderDuration 604800
-"7 days"
-
->>> renderDuration 90
-"1 minute 30 seconds"
--}
+-- | Keep two non-zero units to distinguish near-threshold durations. Negative values render as zero.
 renderDuration :: NominalDiffTime -> Text
 renderDuration d = case take 2 (durationComponents secs) of
     [] -> "0 seconds"
@@ -492,10 +389,6 @@ renderDuration d = case take 2 (durationComponents secs) of
   where
     secs = max 0 (round (nominalDiffTimeToSeconds d)) :: Integer
 
-{- | The unit ladder 'durationComponents' decomposes a second count against, the largest
-unit first. The floor is @second@ (size 1), so nothing remains below it and the smallest
-component is always whole seconds.
--}
 durationLadder :: [(Text, Integer)]
 durationLadder =
     [ ("day", 86400)
@@ -504,9 +397,6 @@ durationLadder =
     , ("second", 1)
     ]
 
-{- | The non-zero @(unit, count)@ components of a non-negative second count, the largest
-unit first. Zero components drop out, so @604800@ is @[("day", 7)]@ alone.
--}
 durationComponents :: Integer -> [(Text, Integer)]
 durationComponents = go durationLadder
   where

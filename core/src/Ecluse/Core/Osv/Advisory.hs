@@ -3,6 +3,9 @@
 -- SPDX-License-Identifier: MIT
 {-# LANGUAGE OverloadedStrings #-}
 
+{- | Decode advisory evidence for the compiled artifact.
+Package keys use the same ecosystem identity as policy queries.
+-}
 module Ecluse.Core.Osv.Advisory (
     OsvAdvisory (..),
     OsvAffected (..),
@@ -21,21 +24,18 @@ module Ecluse.Core.Osv.Advisory (
 
 import Data.Aeson (FromJSON (..), withObject, (.:), (.:?))
 import Data.Text qualified as T
+import Data.Universe.Class (Universe (universe))
 import Security.CVSS (cvssScore, parseCVSS)
 
 import Ecluse.Core.Ecosystem (Ecosystem)
+import Ecluse.Core.Osv.Ecosystem (osvEcosystemFor, osvExportDirectory)
 import Ecluse.Core.Osv.Epss (EpssScores, epssForIds)
 import Ecluse.Core.Osv.Types (UpperBound (..))
+import Ecluse.Core.Package (canonicalise)
 import Ecluse.Core.Text (joinUrlPath)
 import Ecluse.Core.Version (parseVersionKey)
 
-{- | An ecosystem's advisory export under an OSV-layout base URL
-(@\<base\>\/\<ecosystem\>\/all.zip@). The base comes from configuration
-(@osvExportBaseUrl@), so a moved or mirrored upstream never needs a new binary.
-
->>> osvExportUrl "https://osv-vulnerabilities.storage.googleapis.com/" "npm"
-"https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip"
--}
+-- | Build the ecosystem archive URL under a configured OSV export base.
 osvExportUrl :: Text -> Text -> String
 osvExportUrl baseUrl ecosystem = toString (joinUrlPath baseUrl (ecosystem <> "/all.zip"))
 
@@ -148,9 +148,8 @@ instance FromJSON OsvEvent where
             <*> v .:? "fixed"
             <*> v .:? "last_affected"
 
-{- | One affected segment of one package, one row of the artifact's ranges table.
-'extIntroduced' is the inclusive lower bound and 'Nothing' means from the beginning.
-'extUpperBound' closes the interval.
+{- | An artifact segment keyed by the ecosystem's canonical package name.
+A missing introduced bound means affected from the beginning.
 -}
 data ExtractedOsv = ExtractedOsv
     { extPackage :: Text
@@ -169,10 +168,7 @@ data ExtractedOsv = ExtractedOsv
     }
     deriving stock (Show, Eq)
 
-{- | The advisory's CVSS base score, normalised at ingest so the stored artifact holds one
-comparable form. The highest parsing vector wins, then @ghsaSeverityCeiling@ on the
-qualitative label, and 'Nothing' when the advisory offers neither.
--}
+-- | Prefer the highest parsing CVSS vector, then the qualitative label's ceiling, or no score.
 advisorySeverity :: OsvAdvisory -> Maybe Double
 advisorySeverity adv = vectorScore <|> labelScore
   where
@@ -191,9 +187,7 @@ parseVectorScore = either (const Nothing) (Just . oneDecimal . snd . cvssScore) 
 oneDecimal :: Float -> Double
 oneDecimal f = fromIntegral (round (realToFrac f * 10 :: Double) :: Integer) / 10
 
--- GitHub's qualitative severity label mapped to the ceiling of its CVSS v3 band. The
--- ceiling is the highest score the label could denote, so a coarse label is never
--- under-counted past a downstream deny threshold.
+-- Use the band's ceiling so a qualitative score cannot fall below its possible deny threshold.
 ghsaSeverityCeiling :: Text -> Maybe Double
 ghsaSeverityCeiling label = case T.toUpper (T.strip label) of
     "NONE" -> Just 0.0
@@ -204,18 +198,19 @@ ghsaSeverityCeiling label = case T.toUpper (T.strip label) of
     "CRITICAL" -> Just 10.0
     _ -> Nothing
 
-{- | Flatten an advisory into one 'ExtractedOsv' per affected segment: every
-range segment of every affected package, plus each exactly-enumerated version as
-a point. An advisory with neither ranges nor versions yields nothing.
+{- | Canonicalise package keys and retain raw version bounds for every affected segment.
+Unknown ecosystems keep their package spelling.
 -}
 extractFromAdvisory :: EpssScores -> OsvAdvisory -> [ExtractedOsv]
 extractFromAdvisory scores adv = do
     aff <- fromMaybe [] (osvAffected adv)
     let pkg = affectedPackage aff
+        eco = find ((== packageEcosystem pkg) . osvExportDirectory . osvEcosystemFor) universe
+        name = maybe id canonicalise eco (packageName pkg)
     Segment intro upper <- affectedSegments aff
     pure $
         ExtractedOsv
-            { extPackage = packageName pkg
+            { extPackage = name
             , extEcosystem = packageEcosystem pkg
             , extCveId = osvId adv
             , extIntroduced = intro
@@ -265,16 +260,11 @@ affectedSegments aff =
   where
     exactVersion v = Segment (Just v) (LastAffected v)
 
-    -- Only @SEMVER@ and @ECOSYSTEM@ ranges carry version bounds. A @GIT@ range's events are
-    -- commit identifiers, and 'insideAffectedRange' fails an unparseable bound closed to
-    -- affected, so carving a @GIT@ range would quarantine every version of a healthy package.
+    -- Git commits are not version bounds. Treating them as unorderable versions would deny every release.
     versionTyped :: OsvRange -> Bool
     versionTyped r = T.toUpper (T.strip (rangeType r)) `elem` ["SEMVER", "ECOSYSTEM"]
 
-{- | Carve a range's ordered events into affected segments. An @introduced@ arriving while a
-segment is open closes that one as unbounded above, and a segment still open at the end of
-the list is unbounded above too.
--}
+-- An introduced event closes an already-open interval as unbounded.
 extractRange :: [OsvEvent] -> [Segment]
 extractRange = go Nothing
   where

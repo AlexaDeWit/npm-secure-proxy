@@ -3,6 +3,9 @@
 -- SPDX-License-Identifier: MIT
 {-# LANGUAGE OverloadedStrings #-}
 
+{- | Pilot compilation and publication planning regressions.
+Object keys retain their configured prefix and schema epoch.
+-}
 module Ecluse.Pilot.PlanSpec (spec) where
 
 import Test.Hspec
@@ -155,10 +158,10 @@ spec = do
     describe "uploadTarget -- where one artifact lands in the store" $ do
         it "keys the artifact on its own file name, dropping the local directory" $ do
             store <- storeAt "s3://advisories"
-            uploadTarget store "/var/lib/ecluse/advisories/npm-osv-schema3.db"
-                `shouldBe` ("advisories", "npm-osv-schema3.db")
+            uploadTarget store "/var/lib/ecluse/advisories/npm-osv-schema4.db"
+                `shouldBe` ("advisories", "npm-osv-schema4.db")
 
         it "writes the store's prefix ahead of that name, which is where the sync reads" $ do
             store <- storeAt "s3://advisories/ecluse"
-            uploadTarget store "/var/lib/ecluse/advisories/npm-osv-schema3.db"
-                `shouldBe` ("advisories", "ecluse/npm-osv-schema3.db")
+            uploadTarget store "/var/lib/ecluse/advisories/npm-osv-schema4.db"
+                `shouldBe` ("advisories", "ecluse/npm-osv-schema4.db")

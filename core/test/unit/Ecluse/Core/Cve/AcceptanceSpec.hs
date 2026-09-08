@@ -2,6 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
+{- | Artifact acceptance and lookup conformance.
+Hostile files must fail before any policy query.
+-}
 module Ecluse.Core.Cve.AcceptanceSpec (spec) where
 
 import Data.List (isSuffixOf)
@@ -21,11 +24,7 @@ import Ecluse.Test.Cve (fakeCveLookup)
 import Ecluse.Test.Osv (CorpusVersion (CorpusV1), mkDbWithCorruptPage, mkDbWithLaxSchema, mkDbWithMalformedProvenance, mkDbWithMaliciousTrigger, mkDbWithViewShadowingRanges, mkDbWithWrongEpoch, mkDbWithoutEpssColumn)
 import Ecluse.Test.OsvDb (withFixtureOsvDb)
 
--- CorpusV1's rows in the fake's vocabulary. Keep them in lockstep with the corpus pins in
--- Ecluse.Test.OsvSpec. Each severity is the CVSS band ceiling for the fixture's GHSA label
--- (LOW 3.9, MODERATE 6.9, HIGH 8.9, CRITICAL 10.0), each EPSS score comes from the fixture
--- feed's row for the advisory's CVE alias, and no fixture carries a last_affected bound. A
--- fixture spelling its lower bound "0" compiles to no lower bound, the OSV sentinel decoded.
+-- Keep these fake rows aligned with the committed corpus pins in Ecluse.Test.OsvSpec.
 corpusRows :: [(Text, AdvisoryRange)]
 corpusRows =
     [ ("@corpus/scoped", AdvisoryRange "GHSA-corpus-0005" (Just 3.9) Nothing (FixedBefore "3.0.0") (Just 0.25))
@@ -107,6 +106,11 @@ spec = do
         describe "SQLite handle over the compiled corpus" (lookupContract withRealLookup)
 
     describe "openCveDb acceptance" $ do
+        it "rejects epoch 3 even when its tables conform to the current shape" $
+            withFixtureOsvDb CorpusV1 $ \path -> do
+                bracket (open path) close $ \conn -> execute_ conn "PRAGMA user_version = 3"
+                openCveDb Npm path >>= rejectionShouldBe (CveDbWrongEpoch 3)
+
         it "rejects an artifact stamped with the wrong schema epoch" $
             withSystemTempDirectory "ecluse-cve-hostile" $ \dir -> do
                 let path = dir </> "wrong-epoch.db"
@@ -141,9 +145,7 @@ spec = do
         it "rejects an artifact with no meta table as a value, without leaking the connection" $
             withSystemTempDirectory "ecluse-cve-hostile" $ \dir -> do
                 let path = dir </> "no-meta.db"
-                -- A structurally-sound artifact with no @meta@ table. An uncaught throw would re-
-                -- download the artifact every poll and leak the just-opened connection, so refusal
-                -- must be a value.
+                -- Missing metadata must reject the artifact without leaking a connection.
                 bracket (open path) close $ \conn -> do
                     execute_ conn ("PRAGMA user_version = " <> show osvSchemaEpoch)
                     execute_ conn (Query rangesTableDdl)
@@ -204,9 +206,7 @@ spec = do
         it "rejects a non-SQLite artifact as a value, without leaking the connection" $
             withSystemTempDirectory "ecluse-cve-hostile" $ \dir -> do
                 let path = dir </> "not-a-database.db"
-                -- Arbitrary non-SQLite bytes make SQLite raise SQLITE_NOTADB. Refusal must be a
-                -- value, or the connection leaks and the sync task re-downloads the same hostile
-                -- object every poll.
+                -- SQLITE_NOTADB must become a rejection value without leaking a connection.
                 writeFileBS path "this is not an SQLite database, not even close"
                 openCveDb Npm path >>= \case
                     Left (CveDbIntegrityFailed problems) -> problems `shouldSatisfy` not . null
@@ -222,9 +222,7 @@ spec = do
     describe "the confined query-fault channel" $ do
         it "re-raises a mid-query SQLite fault as CveQueryFault, tagged with the field asked" $
             withAcceptedDb $ \dbFile db -> do
-                -- A second, unhardened connection breaks the schema under the open handle. The next
-                -- query through the view raises the infrastructural fault the confined channel
-                -- carries.
+                -- Break the schema after acceptance to force a query fault through the confined channel.
                 saboteur <- open dbFile
                 execute_ saboteur "DROP TABLE package_vulnerability_ranges"
                 close saboteur

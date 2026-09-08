@@ -2,23 +2,33 @@
 --
 -- SPDX-License-Identifier: MIT
 
+{- | Candidate selection across advisory and operator identities.
+Selected names must also match the shared policy query.
+-}
 module Ecluse.Core.Registry.Sweep.CandidatesSpec (spec) where
 
+import Data.Time (UTCTime (UTCTime), fromGregorian)
 import Test.Hspec
 
 import Ecluse.Core.Cve (AdvisoryRange (..), CveLookup)
-import Ecluse.Core.Ecosystem (Ecosystem (Npm))
+import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI))
 import Ecluse.Core.Osv.Types (UpperBound (FixedBefore))
 import Ecluse.Core.Package (PackageName, mkPackageName, mkScope)
 import Ecluse.Core.Registry.Adapter (ProjectName, adapterProjectName)
 import Ecluse.Core.Registry.Npm.Adapter (npmAdapter)
+import Ecluse.Core.Registry.PyPI.Adapter (pypiAdapter)
 import Ecluse.Core.Registry.Sweep.Candidates (candidateSet, identityDenyNames, inCandidates)
+import Ecluse.Core.Rules (RuleDeps (rdWithCveLookup), evalRule)
 import Ecluse.Core.Rules.Types (
     DenyIfCveParams (DenyIfCveParams, dicMinCvss, dicOnUnavailable),
+    EvalContext (EvalContext),
     FailureAlignment (FailDeny),
     Rule (AllowByIdentity, DenyByIdentity, DenyIfCve, DenyInstallTimeExecution),
+    RuleVerdict (Deny),
  )
 import Ecluse.Test.Cve (fakeCveLookup)
+import Ecluse.Test.Package (sampleDetails, v1_0_0)
+import Ecluse.Test.Rules (inertRuleDeps)
 
 spec :: Spec
 spec = do
@@ -47,10 +57,19 @@ identitySpec = describe "identityDenyNames" $ do
     it "reads only the denies, never an allow or a rule that names no identity" $
         denied [AllowByIdentity "left-pad", DenyInstallTimeExecution] `shouldBe` []
 
-{- The advisory database records OSV's spelling and a store lists the backend's, so both sides go
-through the ecosystem's own parser before they are compared. -}
+-- Advisory keys and store display names must denote the same package identity.
 intersectionSpec :: Spec
 intersectionSpec = describe "candidateSet" $ do
+    it "selects Flask_Thing and obtains a shared denial from its flask-thing advisory" $ do
+        let name = mkPackageName PyPI Nothing "Flask_Thing"
+            cve = coveringLookup ["flask-thing"]
+            deps = inertRuleDeps{rdWithCveLookup = \use -> use (Just cve)}
+            ctx = EvalContext (UTCTime (fromGregorian 2026 1 1) 0) Nothing
+        candidates <- candidateSet (adapterProjectName pypiAdapter) [] (Just cve)
+        inCandidates candidates name `shouldBe` True
+        evalRule deps ctx advisoryRule (sampleDetails name v1_0_0)
+            `shouldReturn` Deny "affected by CVE-2026-0001 (CVSS >= 7.0)"
+
     it "carries every name the loaded generation covers" $ do
         candidates <- candidateSet project [] (Just (coveringLookup ["left-pad", "@babel/core"]))
         map (inCandidates candidates) [unscoped "left-pad", scoped "babel" "core"] `shouldBe` [True, True]

@@ -645,6 +645,17 @@
                   "mitigation": "The S3 bucket is private, and the proxy's IAM role holds GetObject only. An atomic shadow-swap prevents a partial read. The proxy binds the SQLite connection to read-only mode and disables trusted schema (PRAGMA trusted_schema = OFF;) as it opens the connection. An attacker-controlled trigger or view therefore never runs. Acceptance then verifies the artifact before the proxy serves it: the schema epoch stamp, a PRAGMA quick_check integrity walk, the required tables, and the ecosystem. The quick_check walk also verifies stored values against each STRICT table's declared column types. The required tables must be real STRICT tables carrying the required columns. Acceptance refuses a failing artifact as a rejection value, remembers its ETag, and keeps the last-good database serving.",
                   "modelType": "STRIDE",
                   "id": "32d813d8-6bee-4fa3-acb2-d62efe5aff18"
+                },
+                {
+                  "number": 114,
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "title": "Advisory package identity mismatch bypasses policy",
+                  "type": "Tampering",
+                  "description": "Advisory rules previously queried a package's display spelling while identity comparisons used its canonical name. A PyPI package displayed as Flask_Thing could miss an advisory stored as flask-thing, bypassing CVSS and EPSS denials and missing remediation evidence. Dredger selected the canonical identity but its shared rule query could then miss the same advisory. This is a producer and consumer contract defect, independent of advisory truth or source-score trust.",
+                  "mitigation": "Pilot canonicalises supported ecosystem package names before storing advisory segments. Denial and remediation consumers query the PackageName canonical key. PyPI uses PEP 503, while npm and RubyGems preserve their spelling. Dredger's candidate selection and shared rules therefore use the same identity. The OSV schema requires normalised PyPI names, but configured exports still receive local canonicalisation rather than assumed conformance. Epoch 4 identifies the new stored meaning and refuses epoch 3 artifacts despite their matching columns. Operators must publish rebuilt epoch 4 artifacts before switching consumers, retain old objects for old consumers during rollout, and update exact-key IAM policies. There is no automatic migration or compatibility fallback. Display spelling and raw fix-version matching remain unchanged.",
+                  "modelType": "STRIDE",
+                  "id": "36f3684d-f2b4-4cd4-a017-6b390bc77a46"
                 }
               ]
             }
@@ -3505,6 +3516,6 @@
     ],
     "diagramTop": 1,
     "reviewer": "",
-    "threatTop": 113
+    "threatTop": 114
   }
 }
