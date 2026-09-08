@@ -2,13 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Endpoint disjointness: which registry roles may share one store, and what each boot role
-does when two of them land on the same one.
-
-Each rule names the endpoints it compares and its severity per role, and one 'Vet' pass over all
-of them yields both the boot refusals and the boot advisories, so no rule can be fatal on one
-path and missing on the other. The vetted 'PublicationTarget' issues only from a pass that
-refused nothing, so a publish relay cannot reach a refused endpoint.
+{- | Shared endpoint policy for boot refusals, advisories,
+and publication targets.
 -}
 module Ecluse.Composition.Endpoints (
     -- * The endpoint pass
@@ -26,6 +21,7 @@ import Ecluse.Composition.BootError (
     BootError (
         MirrorTargetOnMountEndpoint,
         MirrorTargetOnPublicUpstream,
+        PrivateUpstreamOnPublicUpstream,
         PublicationTargetOnMountEndpoint,
         PublicationTargetOnPublicUpstream,
         StoreTagConflict
@@ -120,11 +116,8 @@ mirrorOffOwnPublicationTarget =
 
 privateOffPublicUpstream :: Map Ecosystem MountConfig -> Vet ()
 privateOffPublicUpstream =
-    vetCollisions (const (advise mergeTrustsPrivate)) $
+    vetCollisions (const (Refuse privateOnPublicUpstream)) $
         EndpointComparison KeyPrivateUpstream [KeyPublicUpstream] SameMount ByRegistry
-  where
-    mergeTrustsPrivate =
-        "the merge trusts the private leg, so this registry's versions are admitted unfiltered"
 
 {- One store cannot be two backends. It sits outside the comparison table because it puts every
 declared endpoint against every other, and each unordered pair is read once. -}
@@ -178,6 +171,10 @@ mirrorOnPublicUpstream :: EndpointPair -> BootError
 mirrorOnPublicUpstream pair =
     MirrorTargetOnPublicUpstream (epMount pair) (epOtherMount pair) (pairRegistry pair)
 
+privateOnPublicUpstream :: EndpointPair -> BootError
+privateOnPublicUpstream pair =
+    PrivateUpstreamOnPublicUpstream (epMount pair) (pairRegistry pair)
+
 -- A sweep deletes from the mirror target, so a store another role holds loses that role's data.
 mirrorOnMountEndpoint :: EndpointPair -> BootError
 mirrorOnMountEndpoint pair =
@@ -187,7 +184,6 @@ mirrorOnMountEndpoint pair =
         (endpointKeyName (epOtherKey pair))
         (pairRegistry pair)
 
--- The registry a colliding pair shares, as every refusal above quotes it.
 pairRegistry :: EndpointPair -> Text
 pairRegistry = registryUrlText . tgtUrl . epTarget
 
@@ -227,12 +223,10 @@ data EndpointPair = EndpointPair
     , epOtherTarget :: Target
     }
 
--- One severity applied to every pair a comparison reads, one 'rule' per pair.
 vetCollisions :: (RegistryRole -> Severity EndpointPair) -> EndpointComparison -> Map Ecosystem MountConfig -> Vet ()
 vetCollisions severity cmp mounts =
     traverse_ (rule severity (collidingPair (cmpMatch cmp))) (comparedPairs cmp mounts)
 
--- Every pair of declared endpoints a comparison reads, mounts in ascending key order.
 comparedPairs :: EndpointComparison -> Map Ecosystem MountConfig -> [EndpointPair]
 comparedPairs cmp mounts =
     [ EndpointPair eco (cmpSubject cmp) target other otherKey otherTarget
@@ -252,7 +246,6 @@ distinctPairs mounts =
     , (other, otherKey, otherTarget) <- rest
     ]
 
--- Every endpoint every mount declares, mounts in ascending key order.
 declaredEndpoints :: Map Ecosystem MountConfig -> [(Ecosystem, EndpointKey, Target)]
 declaredEndpoints mounts =
     [ (eco, key, target)
@@ -275,14 +268,12 @@ endpointOf key mcfg = case key of
     KeyMirrorTarget -> meTarget <$> mntMirrorTarget mcfg
     KeyPublicationTarget -> peTarget <$> mntPublicationTarget mcfg
 
--- Whether a rule compares this pair of mounts.
 withinScope :: MountScope -> Ecosystem -> Ecosystem -> Bool
 withinScope scope eco other = case scope of
     SameMount -> eco == other
     OtherMount -> eco /= other
     AnyMount -> True
 
--- Whether two endpoints name one store under a rule's comparison.
 sameStore :: RegistryMatch -> RegistryUrl -> RegistryUrl -> Bool
 sameStore = \case
     ByHost -> sameHost
@@ -295,7 +286,6 @@ sameHost a b = hostOf a == hostOf b
   where
     hostOf = hostAddress . registryUrlText
 
--- The configuration key a mount declares an endpoint under.
 endpointKeyName :: EndpointKey -> Text
 endpointKeyName = \case
     KeyPublicUpstream -> "publicUpstream"

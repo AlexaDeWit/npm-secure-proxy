@@ -62,13 +62,15 @@ when more than one row applies.
 | Mirror target and private upstream | Any mount pair | Registry | Warn | Refuse |
 | Mirror target and publication target | Same mount | Registry | Warn | Refuse |
 | Publication target and another mount's private, mirror, or publication target | Other mounts | Registry | Refuse | Refuse |
-| Private and public upstream | Same mount | Registry | Warn | Warn |
+| Private and public upstream | Same mount | Registry | Refuse | Refuse |
 | One registry declared under different backend tags | Any endpoints | Registry | Refuse | Refuse |
 
 A publication target may equal its own mount's private upstream unless another refusal applies.
 Distinct repositories sharing a CodeArtifact host are not otherwise collapsed by the registry
-comparison. The private/public warning is planned to become a refusal in
-[#1243](https://github.com/AlexaDeWit/Ecluse/issues/1243), but that change is not implemented.
+comparison. A mount's private and public upstreams must name distinct repositories, because
+the private leg forwards caller credentials and admits versions without the public rules.
+Boot and `check-config` refuse this collision, naming both configuration keys and the repository.
+Configurations that previously logged the private/public warning now refuse to start.
 
 ## The configuration reference
 

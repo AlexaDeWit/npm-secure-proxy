@@ -209,9 +209,12 @@ error, not a silent skip:
 - Endpoints that hold different registry roles must not name one registry. Every role refuses a
   `publicationTarget` on any mount's `publicUpstream` host, a `publicationTarget` equal to another
   mount's `privateUpstream`, `mirrorTarget`, or `publicationTarget`, and a `mirrorTarget` on any
-  mount's `publicUpstream` host. `ecluse dredger` deletes from each mount's `mirrorTarget`, so it
+  mount's `publicUpstream` host. Each role also refuses a private upstream equal to its own mount's
+  public repository: the private leg forwards caller credentials and bypasses the public rules.
+  Distinct repositories on one host remain valid for this private/public comparison.
+  `ecluse dredger` deletes from each mount's `mirrorTarget`, so it
   also refuses a `mirrorTarget` equal to any mount's `privateUpstream` or to its own mount's
-  `publicationTarget`. `ecluse proxy` and `ecluse mirror` boot on those three and warn once per
+  `publicationTarget`. `ecluse proxy` and `ecluse mirror` boot on those mirror collisions and warn once per
   collapsed pair, and the operator prunes that mirror by hand. One combinator turns each detected
   collision into the outcome the booting role earns, so a refusal on one path and a warning on
   another always come from the same rule. The comparison is by full registry URL, not by host,
