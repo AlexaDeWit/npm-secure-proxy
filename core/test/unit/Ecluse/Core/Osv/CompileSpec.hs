@@ -3,7 +3,9 @@
 -- SPDX-License-Identifier: MIT
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Compiler regressions over committed feeds and local HTTP stubs.
+{- | Compiler regressions over committed feeds
+and local HTTP stubs.
+-}
 module Ecluse.Core.Osv.CompileSpec (spec) where
 
 import Data.ByteString qualified as BS

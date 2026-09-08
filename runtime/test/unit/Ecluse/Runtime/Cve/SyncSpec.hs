@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Sync acceptance, scheduling, and logging regressions over local artifact fixtures.
+{- | Sync acceptance, scheduling, and logging regressions
+over local artifact fixtures.
+-}
 module Ecluse.Runtime.Cve.SyncSpec (spec) where
 
 import Conduit (runConduit, yieldMany, (.|))

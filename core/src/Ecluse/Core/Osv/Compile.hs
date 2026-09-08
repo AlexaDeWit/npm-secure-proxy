@@ -3,7 +3,9 @@
 -- SPDX-License-Identifier: MIT
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Compile OSV advisories and EPSS scores into the artifact consumed by CVE sync.
+{- | Compile OSV advisories and EPSS scores into the artifact
+consumed by CVE sync.
+-}
 module Ecluse.Core.Osv.Compile (
     CompileSources (..),
     compileOsvToSqlite,
