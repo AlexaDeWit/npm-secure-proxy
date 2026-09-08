@@ -41,7 +41,7 @@ spec = do
 
 droppedArtifactSpec :: Spec
 droppedArtifactSpec = describe "served artifact filename refusals" $
-    for_ ["a\\..\\..\\x", ".", "..", ""] $ \filename -> do
+    for_ ["a\\..\\..\\x", ".", "..", "", ".. ", ". ", " "] $ \filename -> do
         it ("drops and records an npm version whose URL ends in " <> show filename) $ do
             let version = Npm.versionValue (Npm.versionSpec "lodash" "1.0.0" ("https://registry.npmjs.org/" <> filename))
                 source = Npm.packumentValue "lodash" "1.0.0" [("1.0.0", version)] [] []

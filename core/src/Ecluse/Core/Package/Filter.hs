@@ -155,14 +155,18 @@ versionDrop rawVersion refusal =
 -- authority check still applies, because the download gate applies it whatever the scheme.
 resolveArtifact :: AllowedHostPorts -> Text -> Artifact -> Either ArtifactRefusal Artifact
 resolveArtifact ecosystemHosts upstreamBaseUrl art = do
-    when (isNothing (urlFilename (artUrl art))) $
-        Left (refusal "artifact URL has no safe filename" (artUrl art))
+    checkFilename art
     normalised <- normaliseScheme
+    checkFilename normalised
     if artifactAuthorityHonoured ecosystemHosts originAuthority (hostPortAddress (artUrl normalised))
         then Right normalised
         else Left (refusal "artifact authority is neither the serving upstream nor a declared artifact host" (artUrl normalised))
   where
     originAuthority = hostPortAddress upstreamBaseUrl
+
+    checkFilename candidate =
+        when (isNothing (urlFilename (artUrl candidate))) $
+            Left (refusal "artifact URL has no safe filename" (artUrl candidate))
 
     normaliseScheme = case httpsUpstreamHost upstreamBaseUrl of
         Nothing -> Right art

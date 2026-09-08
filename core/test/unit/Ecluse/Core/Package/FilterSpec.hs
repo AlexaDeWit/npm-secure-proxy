@@ -232,6 +232,14 @@ enforceArtifactLocationsSpec = describe "enforceArtifactLocations (served artifa
         urlOf (enforce httpsUpstream (infoWithArtifact "https://registry.npmjs.org/thing/-/thing-1.0.0.tgz"))
             `shouldBe` Just "https://registry.npmjs.org/thing/-/thing-1.0.0.tgz"
 
+    for_ ["https://", "http://"] $ \scheme ->
+        for_ [".. ", ". ", " "] $ \filename ->
+            it ("drops and records a filename made unsafe by normalising " <> show (scheme <> filename)) $ do
+                let enforced = enforce httpsUpstream (infoWithArtifact (scheme <> "registry.npmjs.org/" <> filename))
+                Map.lookup "1.0.0" (infoVersions enforced) `shouldBe` Nothing
+                map invalidKind (infoInvalidEntries enforced) `shouldBe` [InvalidVersionManifest]
+                map invalidReason (infoInvalidEntries enforced) `shouldBe` ["artifact URL has no safe filename"]
+
     it "drops an https artifact URL on a foreign authority for an ecosystem declaring no artifact hosts" $ do
         let enforced = enforce httpsUpstream (infoWithArtifact "https://cdn.example.net/thing-1.0.0.tgz")
         Map.lookup "1.0.0" (infoVersions enforced) `shouldBe` Nothing
@@ -299,6 +307,12 @@ enforceArtifactLocationsOfSpec = describe "enforceArtifactLocationsOf (single-ve
         it ("drops the sole artifact with refused filename " <> show filename) $
             enforce httpsUpstream (detailsWithArtifact (httpsUpstream <> "/" <> filename))
                 `shouldBe` Nothing
+
+    for_ ["https://", "http://"] $ \scheme ->
+        for_ [".. ", ". ", " "] $ \filename ->
+            it ("drops a selective artifact made unsafe by normalising " <> show (scheme <> filename)) $
+                enforce httpsUpstream (detailsWithArtifact (scheme <> "registry.npmjs.org/" <> filename))
+                    `shouldBe` Nothing
 
     it "records a filename refusal without exposing a signed query" $ do
         let kept = enforceArtifactLocations noArtifactHosts httpsUpstream (infoWithArtifact (httpsUpstream <> "/..?sig=secret"))
