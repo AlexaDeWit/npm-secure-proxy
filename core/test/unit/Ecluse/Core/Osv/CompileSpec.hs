@@ -14,11 +14,12 @@ import Data.List (lookup)
 import Data.Map.Strict qualified as Map
 import Data.Text (unpack)
 import Data.Text qualified as T
+import Data.Time (UTCTime (UTCTime), fromGregorian)
 import Data.Version (showVersion)
 import Database.SQLite.Simple
 import Katip (LogEnv, closeScribes)
 import Paths_ecluse (version)
-import System.Directory (doesFileExist, listDirectory, removeFile)
+import System.Directory (doesFileExist, getModificationTime, listDirectory, removeFile, setModificationTime)
 import System.FilePath (takeFileName, (</>))
 import System.IO.Error (catchIOError)
 import System.IO.Temp (withSystemTempDirectory)
@@ -210,6 +211,7 @@ spec = describe "SQLite OSV Compilation" $ do
                     badZip <- rejectedZip
                     (metrics, readRecorded) <- recordingAdvisoryCompileMetricsPort
                     let dbFile = outDir </> osvDbFileName "pypi"
+                        previousModified = UTCTime (fromGregorian 2020 1 1) 0
                         compile logEnv zipData = withStub status200 zipData $ \stub ->
                             withStub status200 epssData $ \epssStub ->
                                 runOsvTestMWith logEnv (compileOsvToSqlite metrics Nothing outDir (osvEcosystemFor PyPI) (sourcesOf stub epssStub "/all.zip"))
@@ -217,6 +219,8 @@ spec = describe "SQLite OSV Compilation" $ do
                         if hasPrevious
                             then do
                                 (path, _) <- captureStdout' (`compile` goodZip)
+                                setModificationTime path previousModified
+                                getModificationTime path >>= (`shouldBe` previousModified)
                                 Just <$> readFileBS path
                             else pure Nothing
                     (_, logged) <- captureStdout' $ \logEnv ->
@@ -232,6 +236,7 @@ spec = describe "SQLite OSV Compilation" $ do
                             listDirectory outDir >>= (`shouldBe` [])
                         Just bytes -> do
                             readFileBS dbFile >>= (`shouldBe` bytes)
+                            getModificationTime dbFile >>= (`shouldBe` previousModified)
                             listDirectory outDir >>= (`shouldBe` [takeFileName dbFile])
 
     describe "osvToRow" $ do

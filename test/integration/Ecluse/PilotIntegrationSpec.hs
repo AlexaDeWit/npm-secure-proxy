@@ -18,6 +18,7 @@ import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec (Spec, aroundAll, describe, it, shouldBe, shouldSatisfy, shouldThrow)
 
 import Ecluse.Config (Config (configApp), loadConfig)
+import Ecluse.Config.Ambient (parseEndpointUrl)
 import Ecluse.Core.Osv.Stream (PilotIngestAborted (..))
 import Ecluse.Integration.Ministack (endpointFor, quietLogEnv, withMinistack)
 import Ecluse.Pilot (PilotCompileOptions (..), runPilotCompile)
@@ -26,7 +27,7 @@ import Ecluse.Runtime.Telemetry (telemetryDisabled)
 import Ecluse.Test.Osv (CorpusVersion (CorpusV1), osvCorpusZip, osvZipOf)
 import Ecluse.Test.OsvDb (epssFixtureFile)
 import Ecluse.Test.Poll (retryingIO)
-import Ecluse.Test.Stub (stubBaseUrl, withStub)
+import Ecluse.Test.Stub (Captured (capMethod), allCaptured, stubBaseUrl, withStub)
 
 spec :: Spec
 spec = describe "Pilot refuses zero relevant rows before S3 publication" $
@@ -45,12 +46,12 @@ spec = describe "Pilot refuses zero relevant rows before S3 publication" $
                         epssData <- LBS.readFile epssFixtureFile
                         goodZip <- osvCorpusZip CorpusV1
                         badZip <- rejectedZip
-                        let compile zipData = withStub status200 zipData $ \stub ->
+                        let compile target zipData = withStub status200 zipData $ \stub ->
                                 withStub status200 epssData $ \epssStub ->
                                     runPilotCompile
                                         logEnv
                                         telemetryDisabled
-                                        (Just endpoint)
+                                        (Just target)
                                         appCfg
                                         PilotCompileOptions
                                             { pcoEcosystem = "pypi"
@@ -62,12 +63,18 @@ spec = describe "Pilot refuses zero relevant rows before S3 publication" $
                             snapshot = do
                                 response <- runResourceT (AWS.send aws (S3.newListObjectsV2 (S3.BucketName bucket)))
                                 pure [(S3Object.key object, S3Object.eTag object, S3Object.lastModified object, S3Object.size object) | object <- fromMaybe [] (S3.contents response)]
-                        when hasPrevious (void (compile goodZip))
+                        when hasPrevious (void (compile endpoint goodZip))
                         before <- snapshot
                         length before `shouldBe` if hasPrevious then 1 else 0
                         for_ before $ \(_, etag, modified, _) -> do
                             etag `shouldSatisfy` isJust
                             modified `shouldSatisfy` isJust
-                        compile badZip `shouldThrow` (\(PilotIngestAborted _) -> True)
-                        after <- snapshot
-                        after `shouldBe` before
+                        withStub status200 LBS.empty $ \observer -> do
+                            target <- either (fail . show) pure (parseEndpointUrl (stubBaseUrl observer))
+                            compile target badZip `shouldThrow` (\(PilotIngestAborted _) -> True)
+                            allCaptured observer >>= (`shouldBe` [])
+                            after <- snapshot
+                            after `shouldBe` before
+                            void (compile target goodZip)
+                            requests <- allCaptured observer
+                            map capMethod requests `shouldBe` ["PUT"]
