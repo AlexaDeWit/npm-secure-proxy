@@ -2,19 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Work-per-request benches for the npm metadata read path: decoding a packument
-through the live wire decoder ("Ecluse.Core.Registry.Npm.Project") and projecting it
-into the agnostic 'PackageInfo' through the live serve projection
-'Ecluse.Core.Registry.Npm.Metadata.projectNpmManifest' (decode, nesting-bound,
-project-and-validate, version-count-bound). That is the sequence the serve path runs per
-request.
-
-These run over the curated real-world corpus, from small @is-odd@ to heavy
-@\@types\/node@. They therefore report the decode and projection cost across the real
-distribution of package sizes and shapes rather than one anchor. The heterogeneous
-per-version manifests are where a decode regression on a heavy packument shows. Each
-result summarises to a forced 'Int' spanning every version, so the bench evaluates the
-whole decoded\/projected structure rather than its outermost constructor alone.
+{- | Measure npm metadata decoding and projection over the captured package corpus.
+Each result forces every version through its decoded or projected fields.
 -}
 module Ecluse.Core.WireBench (
     benchmarks,
@@ -46,11 +35,9 @@ benchmarks loaded =
         | le@(cp, raw, _) <- loaded
         ]
 
-{- | Decode bytes through 'parseVersionList', forcing every version. That forces the
-per-version manifest decode, the read path's GC-dominant cost.
--}
+-- | Decode bytes through 'parseVersionList', forcing every version.
 decodeDepth :: ByteString -> Int
-decodeDepth raw = either (const (-1)) length (parseVersionList (RegistryResponse raw))
+decodeDepth raw = either (const (-1)) length (parseVersionList (RegistryResponse 200 raw))
 
 -- | Decode and project to 'PackageInfo' in one pass, forcing every version.
 projectDepth :: (ByteString, PackageName) -> Int
@@ -59,8 +46,6 @@ projectDepth (raw, name) = infoDepthE (projectNpmManifest defaultLimits name raw
 infoDepthE :: Either MetadataError (PackageInfo, Value) -> Int
 infoDepthE = either (const (-1)) (infoDepth . fst)
 
-{- | Force every projected version by folding a deep field (the artifact
-digests) across the version map.
--}
+-- | Force every projected version by folding a deep field (the artifact digests) across the version map.
 infoDepth :: PackageInfo -> Int
 infoDepth info = Map.foldr (\pd acc -> length (artHashes (NE.head (pkgArtifacts pd))) + acc) 0 (infoVersions info)

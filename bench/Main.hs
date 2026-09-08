@@ -2,17 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The Écluse benchmark entry point: the work-per-request micro-benches over the pure
-@ecluse-core@ hot paths, the version-count complexity assertions, and the
-synthetic-corpus generator's correctness tests, all in one @tasty@ tree.
-
-@tasty-bench@ reports time and allocated bytes for each bench. It reports the allocations
-under @+RTS -T@, baked into the component's RTS options. Allocations are the
-machine-independent signal the baseline tracks. Time is informational.
-
-The generator tests and the complexity assertions are ordinary @tasty@ test cases mixed
-into the same tree. A malformed corpus or an accidentally quadratic hot path therefore
-fails the run with a non-zero exit, the one red state this harness recognises.
+{- | Run work-per-request benchmarks and synthetic-corpus checks in one Tasty tree.
+Allocated bytes provide the machine-independent comparison. Timing remains informational.
 -}
 module Main (main) where
 
@@ -71,9 +62,7 @@ main = do
         , generatorTests
         ]
 
-{- | Correctness tests for the synthetic packument generator. They run inside the
-benchmark, so a broken corpus stops the run rather than benching a degenerate input.
--}
+-- | Correctness tests for the synthetic packument generator.
 generatorTests :: TestTree
 generatorTests =
     testGroup
@@ -81,7 +70,7 @@ generatorTests =
         [ testCase "yields the requested version count" $
             length (versionKeysOf (syntheticPackumentValue sampleCount)) @?= sampleCount
         , testCase "decodes with every version preserved" $
-            case parseVersionList (RegistryResponse (syntheticPackumentBytes sampleCount)) of
+            case parseVersionList (RegistryResponse 200 (syntheticPackumentBytes sampleCount)) of
                 Left err -> assertFailure ("synthetic packument did not decode: " <> show err)
                 Right versions -> length versions @?= sampleCount
         , testCase "projects with every version preserved" $
