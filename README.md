@@ -149,6 +149,7 @@ DCO sign-off. The [Code of Conduct](CODE_OF_CONDUCT.md) governs participation, a
 | Path        | Purpose                                                                                                                  |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `core/`     | `ecluse-core` library: the pure, ecosystem-agnostic capability core (`Ecluse.Core.*`)                                    |
+| `core/src/Ecluse/Core/Server/Cache/` | Bounded stores and conservative accounting for retained release fields |
 | `runtime/`  | `ecluse-runtime` library: the effectful edge (OTel SDK, warp, scribes, and cloud adapters, `Ecluse.Runtime.*`)           |
 | `src/`      | `ecluse` library: the composition shell that assembles and runs the tiers (`Ecluse.*`)                                  |
 | `app/`      | Executable entry point, thin wiring only                                                                                  |
