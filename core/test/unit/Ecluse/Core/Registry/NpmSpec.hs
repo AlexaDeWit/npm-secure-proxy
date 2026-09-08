@@ -165,12 +165,12 @@ configAndWiringSpec = describe "config wiring" $ do
 oversizedBody :: ByteString
 oversizedBody = "{\"name\":\"is-odd\",\"_padding\":\"" <> BS.replicate 256 0x78 <> "\"}"
 
--- | A gzip body that decompresses to about 64 KiB, far past the 1 KiB cap the gzip test sets, while its compressed size stays well under that cap.
+-- | Keep compressed bytes below the cap while their expanded body exceeds it.
 gzippedOversizedBody :: ByteString
 gzippedOversizedBody =
     toStrict (GZip.compress (toLazy ("{\"name\":\"is-odd\",\"_padding\":\"" <> BS.replicate 65536 0x78 <> "\"}")))
 
--- | A typed stand-in for a client library's wrapped inner exception. The classification must read the wrapper's type, TLS or not, never the inner rendering.
+-- | Classification must inspect the wrapped exception type rather than its rendered text.
 data FakeInnerFault = FakeInnerFault
     deriving stock (Show)
 

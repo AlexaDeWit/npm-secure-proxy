@@ -39,14 +39,14 @@ import Ecluse.Core.Telemetry.Metrics qualified as Metric
 import Ecluse.Core.Telemetry.Record (MetricsPort (..), timedSeconds)
 import Ecluse.Core.Version (Version, renderVersion)
 
--- | How a read handle resolves the full manifest for one origin. The private origin is the per-client authority and must never be shared, and the public origin is anonymous and shared.
+-- | Private reads require per-client authorisation. Only anonymous public metadata may use the shared cache.
 data ManifestCaching
-    = -- | Resolve directly, uncached: the per-client private origin. It is re-fetched every request, so the upstream re-authorises each client's own forwarded credential.
+    = -- | Re-authorise the caller at the private upstream on every request.
       Uncached
     | -- | Resolve through the shared metadata cache under the origin's 'Source' key: the anonymous public origin.
       Cached MetadataCache Source
 
--- | Build a per-request read handle from a registry's raw fetch primitives, wired with the caching policy, the upstream-fetch metrics, and a request-context failure log.
+-- | Apply caching, failure logging, and metrics to the adapter's metadata reads.
 newMetadataClient ::
     MetricsPort ->
     Metric.Upstream ->
@@ -106,7 +106,7 @@ newMetadataClient metrics upstream caching logFailure logInvalid logFetch rawFet
                 Right details -> pure (Right details)
                 Left err -> logFailure name err >> pure (Left err)
 
--- | Select one version's details out of a parsed packument, by its rendered form. The store sweep projects every version it decides out of one manifest through this.
+-- | Find a version by its ecosystem-rendered key in a package snapshot.
 selectVersion :: Version -> PackageInfo -> Maybe PackageDetails
 selectVersion version info = Map.lookup (renderVersion version) (infoVersions info)
 

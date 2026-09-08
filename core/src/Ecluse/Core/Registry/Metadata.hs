@@ -38,7 +38,7 @@ import Ecluse.Core.Security (LimitError)
 import Ecluse.Core.Telemetry.Span (TracingPort (spanMetadataDecode, spanMetadataFetch))
 import Ecluse.Core.Version (Version)
 
--- | A SHA-256 digest of one origin's wire body: the exact bytes the mount decoded a manifest from. Opaque: built only by 'digestOf', read only by 'digestBytes'.
+-- | Fingerprint the exact upstream bytes used to build a manifest.
 newtype ContentDigest = ContentDigest ByteString
     deriving stock (Eq, Show)
 
@@ -50,7 +50,7 @@ digestOf body = ContentDigest (BA.convert (hash body :: Digest SHA256))
 digestBytes :: ContentDigest -> ByteString
 digestBytes (ContentDigest bytes) = bytes
 
--- | A resolved full manifest. The serve path edits the raw document, re-serialises it, and builds its derived ETag over 'manifestDigest' ('Ecluse.Core.Server.Conditional').
+-- | A package snapshot with source bytes for assembly and a digest for validators.
 data Manifest = Manifest
     { manifestInfo :: PackageInfo
     -- ^ The typed packument view the rules and merge reason over.
@@ -60,15 +60,15 @@ data Manifest = Manifest
     -- ^ Digest of the wire bytes behind 'manifestInfo' and 'manifestRaw'.
     }
 
--- | The serve-path read handle over one registry mount. Its closures capture the per-origin fetch configuration and the shared cache, keeping a backend out of the core.
+-- | Per-origin metadata operations with typed failures and caller-selected caching.
 data MetadataClient = MetadataClient
     { fetchFullManifest :: PackageName -> IO (Either MetadataError Manifest)
-    -- ^ Fetch and project a package's full manifest, every version included. Every failure comes back as a 'MetadataError' value: fetch, transport, parse, or policy.
+    -- ^ Return the full manifest or a typed failure, including explicit access refusal.
     , fetchVersionMetadata :: PackageName -> Version -> IO (Either MetadataError (Maybe PackageDetails))
     -- ^ 'Nothing' means the package resolved without this version. Errors retain the upstream failure.
     }
 
--- | Fetch one package's metadata document under the fetch span, then project its wire bytes under the decode span. An exchange fault folds to 'MetadataFetch' before the projection runs.
+-- | Preserve access refusals before projection, with separate fetch and decode spans.
 fetchThenProject ::
     TracingPort ->
     (PackageName -> IO (Either FetchFault RegistryResponse)) ->
@@ -86,27 +86,27 @@ fetchThenProject tracing fetch name project =
 data MetadataError
     = -- | The upstream explicitly refused access. Carries the original 401 or 403.
       MetadataAuthorisationFailure Int
-    | -- | The upstream exchange never delivered a body, carried as the shared 'Ecluse.Core.Registry.FetchFault' so a config fault and an outage stay distinct.
+    | -- | A failed exchange, with request-formation, bound, and transport causes kept distinct.
       MetadataFetch FetchFault
-    | -- | The decoded document breached a structural bound (version count, nesting depth), distinct from the exchange's response-size bound, which arrives as 'MetadataFetch'.
+    | -- | The decoded structure crossed a limit, distinct from an exchange body-size failure.
       MetadataBoundExceeded LimitError
-    | -- | The upstream answered, but its body did not decode into a usable manifest (malformed JSON, or an absent\/undecodable top-level name).
+    | -- | Malformed bytes or a missing package identity prevented manifest decoding.
       MetadataUndecodable
     | -- | An invalid package identity, carried for diagnostics and excluded from the requested package.
       MetadataNameMismatch Text
     deriving stock (Eq, Show)
 
--- | The outcome of resolving one version's metadata for a policy decision. The serve-time gate and the mirror worker share it, so both reach the same outcome from one fetch.
+-- | A version lookup result shared by public admission and mirror workers.
 data VersionEvaluation
     = -- | The version resolved and projected. Its 'PackageDetails' is ready for the rules engine.
       VersionPresent PackageDetails
-    | -- | The package resolved but does not carry the requested version (a withdrawn or never-published version), a genuine absence distinct from unobtainable metadata.
+    | -- | The package exists but does not supply the requested version.
       VersionMissing
     | -- | Metadata was unavailable. Public admission and workers retain their retry policy.
       VersionMetadataUnavailable
     deriving stock (Eq, Show)
 
--- | Resolve a single version's metadata through a 'MetadataClient' and classify it. Both the serve-time tarball gate and the mirror worker run this step before the rules engine.
+-- | Classify a version lookup for public admission and workers, treating metadata failures as transient.
 fetchVersionDetails :: MetadataClient -> PackageName -> Version -> IO VersionEvaluation
 fetchVersionDetails client name version =
     fetchVersionMetadata client name version <&> \case
@@ -114,7 +114,7 @@ fetchVersionDetails client name version =
         Right Nothing -> VersionMissing
         Right (Just details) -> VersionPresent details
 
--- | The transience of a lookup that yielded no details, and 'Nothing' for a resolved one. The serve gate and the mirror worker both read it, so neither classifies a lookup on its own.
+-- | Classify unsuccessful lookups for retry. A resolved version has no transience.
 versionTransience :: VersionEvaluation -> Maybe Transience
 versionTransience = \case
     VersionMetadataUnavailable -> Just (WillResolve Nothing)

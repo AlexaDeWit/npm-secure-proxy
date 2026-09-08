@@ -5,7 +5,9 @@
 -- segments in 'takeProject' ((,rest)). See docs/style.md §2.
 {-# LANGUAGE TupleSections #-}
 
--- | The PyPI route table and response contracts for metadata, distributions, and refused uploads.
+{- | PyPI route contracts shared by serving and OpenAPI generation.
+Project names must be canonical, and distribution filenames must match their project.
+-}
 module Ecluse.Core.Registry.PyPI.Route (
     -- * The mount's router and fallback action
     pypiRouter,
@@ -92,11 +94,11 @@ import Ecluse.Core.Server.Route (
 import Ecluse.Core.Server.RouteSpec (ParamSpec (ParamSpec), RouteSpec, catchAllSpecs, specsOf)
 import Ecluse.Core.Version (Version, mkVersion)
 
--- | PyPI's mount router. The first route that claims the request decides it, and a request no route claims takes the deny-by-default @404@ ('pypiNotFound').
+-- | Match the first applicable route, otherwise answer 'pypiNotFound'.
 pypiRouter :: MountRouter
 pypiRouter = routerOf pypiNotFound pypiRoutes
 
--- | The deny-by-default @404@ action for a path no route claims: a bare status, matching what an unknown project gets from the index itself.
+-- | Refuse unmatched paths with 404.
 pypiNotFound :: RouteAction
 pypiNotFound = RouteAction unsupportedContract (AnswerRefusal (declaredRefusal "no route claims this path" []))
 
@@ -215,7 +217,7 @@ pypiIndexContract =
             )
         )
 
--- | Every refusal shares one shape: a bare status, or that status carrying the operator help message as @text\/plain@ when one is configured.
+-- | A refusal has no body unless operator help text is configured.
 refusalContract :: Status -> Text -> ResponseContract (ResponseValue (Maybe LByteString))
 refusalContract status description =
     optionalBodyContract status (description <> " The body is empty unless `server.helpMessage` is configured.") (SchemaText "text/plain")
@@ -238,7 +240,7 @@ notAcceptable :: ResponseHeaders -> Maybe HelpMessage -> PyPIIndexResponse
 notAcceptable headers help =
     SecondResponse (SecondResponse (SecondResponse (SecondResponse (SecondResponse (FirstResponse (declaredRefusal "no representation this index serves is acceptable" headers help))))))
 
--- | The artifact route is an open relay of any upstream status, headers, media type, and bytes, so one @default@ document is more accurate than a closed list.
+-- | Permit upstream-controlled artifact responses and local refusals through one open response contract.
 pypiArtifactContract :: ResponseContract PassthroughResponse
 pypiArtifactContract =
     passthroughContract
@@ -301,18 +303,18 @@ buildArtifact method = \case
   where
     perimeterFallback = tarballError pypiArtifactReplies status500 [] (mkRefusal Nothing "internal server error")
 
--- | The captured values PyPI's routes produce: a parsed project unit, or a raw safety-checked distribution file name. Builders consume them positionally.
+-- | Positional captures distinguish parsed projects from checked distribution filenames.
 data PyPICap
     = PyPIProject PackageName
     | PyPIFile Text
 
--- | The one segment a capture claims, written back out. A project renders as its canonical spelling, the only one 'takeProject' reads back.
+-- | Render project captures canonically so the parser can read them back.
 renderCapture :: PyPICap -> [Text]
 renderCapture = \case
     PyPIProject name -> [canonicalName name]
     PyPIFile file -> [file]
 
--- | The project capture: one PEP 503 canonical project name. A non-canonical spelling matches no route, so it takes the structural @404@ rather than a redirect.
+-- | Accept canonical projects only. Non-canonical spellings receive 404 rather than redirects.
 capProject :: Capture PyPICap
 capProject =
     Capture
@@ -330,23 +332,23 @@ capFile =
         (safeSegment PyPIFile)
         renderCapture
 
--- | Peel the leading project unit off a path. 'projectName' owns the grammar and 'isCanonicalName' keeps a spelling the index would redirect off this mount.
+-- | Reject project spellings that an index would redirect outside the matched route.
 takeProject :: [Text] -> Maybe (PackageName, [Text])
 takeProject = \case
     seg : rest | isCanonicalName seg -> (,rest) <$> rightToMaybe (projectName seg)
     _ -> Nothing
 
--- | Parse a distribution-file slot into the 'Version' and verbatim 'Filename' it names for @name@. A file naming another project is a path-confusion attempt and yields 'Nothing'.
+-- | Require the file's project identity to match the requested package.
 artifactCoordinate :: PackageName -> Text -> Maybe (Version, Filename)
 artifactCoordinate name file = do
     coordinate <- fileCoordinate name file
     (mkVersion PyPI (fcVersionKey coordinate),) <$> mkFilename file
 
--- | The mount-relative path the distribution route serves one project's file under, rendered from that same record so a served URL and the route that must claim it cannot drift.
+-- | Render through the distribution route so generated URLs obey its capture rules.
 distributionPath :: PackageName -> Text -> Maybe Text
 distributionPath name file = T.intercalate "/" <$> renderRoute artifactRoute [PyPIProject name, PyPIFile file]
 
--- | PyPI's routes as data for the __OpenAPI spec__: the 'specsOf' projection of the same 'pypiRoutes' the router runs, plus the synthetic deny-by-default catch-all.
+-- | Describe the live router and its deny-by-default catch-all for OpenAPI.
 pypiRouteSpecs :: NonEmpty RouteSpec
 pypiRouteSpecs =
     catchAllSpecs unsupportedContract unsupportedParam

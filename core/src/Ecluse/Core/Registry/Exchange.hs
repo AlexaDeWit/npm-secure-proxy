@@ -38,7 +38,7 @@ import Ecluse.Core.Registry (
  )
 import Ecluse.Core.Security (LimitError, Limits, boundedRead)
 
--- | Run a formed request and project its status and bounded body onto the caller's result. The transport wrap covers the body read, so a connection lost mid-body is a typed fault.
+-- | Project a bounded response. Connection failures during the body read remain typed transport faults.
 boundedExchange :: (Int -> ByteString -> a) -> Manager -> Limits -> Request -> IO (Either FetchFault a)
 boundedExchange project manager limits request =
     runExchange manager request (readBounded project limits)
@@ -65,7 +65,7 @@ boundedRelay =
     boundedExchange $ \status body ->
         PublishRelayResponse{relayStatus = status, relayBody = LBS.fromStrict body}
 
--- | Run an exchange over a formed request, or fold the formation failure into the same channel, so formation and exchange reach the caller as one 'Either'.
+-- | Report request-formation and exchange failures through the same error channel.
 formThen ::
     (UrlFormationError -> fault) ->
     (Request -> IO (Either fault a)) ->

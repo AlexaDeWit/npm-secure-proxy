@@ -20,7 +20,7 @@ import Ecluse.Core.Telemetry.Span (TracingPort (spanMetadataDecode, spanMetadata
 import Ecluse.Test.Package (unscopedNpm)
 import Ecluse.Test.Port (passthroughTracingPort)
 
--- | The fetch-then-project step every mount's read operations share. A mount supplies the fetch action and the projection, so this pins the fold between them.
+-- | Exercise error preservation and projection through the adapters' shared read step.
 spec :: Spec
 spec = describe "fetchThenProject" $ do
     for_ [200, 401, 403] $ \code ->

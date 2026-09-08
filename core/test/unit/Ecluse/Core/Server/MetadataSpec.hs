@@ -221,7 +221,7 @@ countingFull calls info _name = do
     atomicModifyIORef' calls (\n -> (n + 1, ()))
     pure (Right Manifest{manifestInfo = info, manifestRaw = fst npmCached (String "raw"), manifestDigest = digestOf "raw-bytes"})
 
--- | A counting single-version fetch: bumps the call counter, then selects the version from the given manifest, as the npm selective fetch does.
+-- | Count each selective fetch and resolve its version from the supplied snapshot.
 countingVersion :: IORef Int -> PackageInfo -> PackageName -> Version -> IO (Either MetadataError (Maybe PackageDetails))
 countingVersion calls info _name version = do
     atomicModifyIORef' calls (\n -> (n + 1, ()))

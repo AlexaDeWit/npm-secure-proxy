@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Request formation and refusal contracts for npm store maintenance.
+{- | Request formation and refusal tests for npm maintenance.
+Invalid package coordinates must not produce deletion requests.
+-}
 module Ecluse.Core.Registry.Npm.MaintenanceSpec (spec) where
 
 import Data.Aeson (Object, Value (Object, String), decodeStrict, encode, object, (.=))

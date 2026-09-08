@@ -18,6 +18,7 @@ import Network.HTTP.Types (status401, status403, status404, status503, statusCod
 import Network.Wai (requestHeaders, responseLBS)
 import Network.Wai.Test (simpleBody)
 import Test.Hspec
+import UnliftIO (bracket)
 
 spec :: Spec
 spec = do
@@ -37,12 +38,15 @@ privateAuthorisationSpec = describe "private authorisation refusal" $ do
             privateUp <- upstreamRespondingWith (responseLBS upstreamStatus [("WWW-Authenticate", "secret-realm")] "secret-upstream-body")
             publicUp <- servingUpstream (encodePackument (admittingPublic "1.0.0"))
             queue <- newTestMemoryQueue
-            logged <- captureStdout $ do
-                logEnv <- newLogEnv JsonLog InfoLevel (DdContext "ecluse" Nothing Nothing Nothing) (Environment "test")
-                withProxyOver logEnv queue privateUp publicUp Nothing id $ \app _ _ -> do
-                    response <- getThing (Just "secret-client-token") app
-                    status response `shouldBe` 403
-                void (closeScribes logEnv)
+            logged <-
+                captureStdout $
+                    bracket
+                        (newLogEnv JsonLog InfoLevel (DdContext "ecluse" Nothing Nothing Nothing) (Environment "test"))
+                        (void . closeScribes)
+                        ( \logEnv -> withProxyOver logEnv queue privateUp publicUp Nothing id $ \app _ _ -> do
+                            response <- getThing (Just "secret-client-token") app
+                            status response `shouldBe` 403
+                        )
             let refusals = filter ((== Just "the upstream refused metadata access") . lineMessage) (T.lines logged)
             length refusals `shouldBe` 1
             for_ refusals $ \line -> line `shouldSatisfy` T.isInfixOf "\"status\":\"warn\""

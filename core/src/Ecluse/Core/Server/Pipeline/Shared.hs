@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Authentication, admission shedding, and refusals shared by the data-plane handlers.
+{- | Shared authentication, admission shedding, and refusal handling.
+Route handlers keep their own response formats while sharing these policy decisions.
+-}
 module Ecluse.Core.Server.Pipeline.Shared (
     -- * Edge authentication
     edgeTokenMatches,
@@ -53,7 +55,7 @@ privateAuthorisationRefusal help = mkRefusal help "the private upstream refused 
 hRetryAfter :: HeaderName
 hRetryAfter = "Retry-After"
 
--- | The status a brief-wait admission shed renders on the read and publish paths: @503 Service Unavailable@, the server-capacity signal, not a @429@ rate limit.
+-- | Use 503 to report server admission capacity, without implying a client rate limit.
 shedStatus :: Status
 shedStatus = status503
 
@@ -65,11 +67,11 @@ shedRetryAfter = (hRetryAfter, show (admissionWaitMicros `div` 1_000_000))
 shedMessage :: Text
 shedMessage = "server is busy; retry later"
 
--- | Render a serve decision's suggested delay as a @Retry-After@ header. 'Nothing' carries no header, because a transience with no suggested delay has nothing to promise.
+-- | Emit Retry-After only when a decision supplies a delay.
 retryAfterHeaders :: Maybe RetryAfter -> ResponseHeaders
 retryAfterHeaders = maybe [] (\(RetryAfter secs) -> [(hRetryAfter, show secs)])
 
--- | Run the gated work under the serve admission bound, counting one unavailable serve decision when it sheds. @answer@ runs __outside__ the slot, so committing a response never holds one.
+-- | Hold admission only during gated work. Respond outside the slot and record shedding as unavailable.
 withAdmissionOrShed ::
     (MonadUnliftIO m) =>
     MetricsPort ->
@@ -94,7 +96,7 @@ edgeTokenMatches expected forwarded = case expected of
     Nothing -> True
     Just want -> fmap credSecret forwarded == Just want
 
--- | The body every handler answers a failed edge gate with. It names no configured token and no presented one, so a probe learns only that the edge is closed.
+-- | Report edge authentication failure without disclosing either token.
 unauthorisedMessage :: Text
 unauthorisedMessage = "authentication required"
 

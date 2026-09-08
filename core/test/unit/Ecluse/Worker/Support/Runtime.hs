@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Effectful doubles and runtime builders for worker unit tests.
+{- | Runtime fixtures for worker unit tests.
+Queue receipts, publications, and typed failures expose the worker's decisions.
+-}
 module Ecluse.Worker.Support.Runtime (
     -- * A recording publish capability
     PublishLog (..),
@@ -82,13 +84,13 @@ import Ecluse.Test.Stub (stubBaseUrl, withStub)
 import Ecluse.Test.Support (TestContractEscape (TestContractEscape))
 import Ecluse.Worker.Support.Fixtures (admitPolicies, tarballBytes, withPublish)
 
--- | What a publish captured: the raw verified bytes it received, and the artifact descriptor whose digests the real codec assembles its publish document from.
+-- | Capture verified bytes and the descriptor passed to publication.
 data PublishLog = PublishLog
     { plDocuments :: [ByteString]
     , plArtifacts :: [MirrorArtifact]
     }
 
--- | A publish double that records each call and returns the given fixed outcome. Its mirror-presence probe answers absent, so a test drives the full pipeline.
+-- | Record publications with a fixed outcome, always reporting the mirror version absent.
 recordingPublish :: IORef PublishLog -> Either PublishFault () -> MirrorPublish
 recordingPublish logRef outcome =
     MirrorPublish
@@ -113,19 +115,19 @@ probeUnreachablePublish logRef outcome =
         { mpProbeMetadata = const (pure (Left (FetchTransport (transportFault TransportUnreachable "simulated mirror outage"))))
         }
 
--- | Build a 'WorkerRuntime' over the caller's publish double and run the body against it. It hands back the queue and the publish log, so a test can drive and inspect them.
+-- | Expose the worker's queue and captured publications to the test callback.
 withRuntimeRegistry :: (IORef PublishLog -> MirrorPublish) -> WorkerPolicies -> WorkerMetricsPort -> (WorkerRuntime -> MirrorQueue -> IORef PublishLog -> IO a) -> IO a
 withRuntimeRegistry mkPublish policies metricsPort body = do
     queue <- newTestMemoryQueue
     withRuntimeQueue queue mkPublish policies metricsPort (`body` queue)
 
--- | 'withRuntimeRegistry' over a __caller-supplied__ queue, so a test observes the worker's queue-side decisions or drives the loop against a misbehaving queue.
+-- | Use a supplied queue to observe or perturb the worker's queue decisions.
 withRuntimeQueue :: MirrorQueue -> (IORef PublishLog -> MirrorPublish) -> WorkerPolicies -> WorkerMetricsPort -> (WorkerRuntime -> IORef PublishLog -> IO a) -> IO a
 withRuntimeQueue queue mkPublish policies metricsPort body = do
     logRef <- newIORef (PublishLog [] [])
     withWiredRuntime queue (withPublish (mkPublish logRef) policies) metricsPort (`body` logRef)
 
--- | The base runtime builder over bundles that already carry their own publish capabilities, with nothing injected, so a test observes exactly what it wired.
+-- | Run the supplied worker policies without replacing their publish capabilities.
 withWiredRuntime :: MirrorQueue -> WorkerPolicies -> WorkerMetricsPort -> (WorkerRuntime -> IO a) -> IO a
 withWiredRuntime queue policies metricsPort body = do
     heartbeat <- newWorkerHeartbeat
@@ -180,7 +182,7 @@ versionClient result =
         , fetchVersionMetadata = \_ _ -> pure result
         }
 
--- | A 'MetadataClient' double whose single-version op __escapes its total contract__, so the classification boundary must propagate the throw rather than absorb it.
+-- | Break the metadata handle's value-error contract to test exception propagation.
 throwingVersionClient :: MetadataClient
 throwingVersionClient =
     MetadataClient
@@ -188,7 +190,7 @@ throwingVersionClient =
         , fetchVersionMetadata = \_ _ -> throwIO (TestContractEscape "simulated contract escape")
         }
 
--- | A queue whose @receive@ always reports the handle's typed fault, counting each call. The loop must survive a faulted poll and poll again, not die.
+-- | Count typed receive failures so tests can verify that polling continues.
 faultingReceiveQueue :: IORef Int -> IO MirrorQueue
 faultingReceiveQueue calls = do
     base <- newTestMemoryQueue
@@ -199,7 +201,7 @@ faultingReceiveQueue calls = do
                 pure (Left (transportFault TransportUnreachable "receive: simulated queue outage"))
             }
 
--- | A queue whose @receive@ always throws, counting each call. The throw breaks the handle's typed contract, so it drives the loop's residual catch-log-backoff arm.
+-- | Count exceptions from receive to exercise supervision outside the queue's value-error contract.
 throwingReceiveQueue :: IORef Int -> IO MirrorQueue
 throwingReceiveQueue calls = do
     base <- newTestMemoryQueue
@@ -210,7 +212,7 @@ throwingReceiveQueue calls = do
                 throwIO (TestContractEscape "receive: simulated queue outage")
             }
 
--- | The test queue with 'ack' wrapped to record each acked receipt. The memory backend never redelivers, so its own state does not show the worker's retire-vs-retry decision.
+-- | Observe acknowledgements explicitly because the memory queue cannot demonstrate redelivery behaviour.
 recordingAckQueue :: IO (MirrorQueue, IO [ReceiptHandle])
 recordingAckQueue = do
     base <- newTestMemoryQueue
@@ -218,7 +220,7 @@ recordingAckQueue = do
     let recording = base{ack = \receipt -> atomicModifyIORef' acked (\rs -> (receipt : rs, ())) >> ack base receipt}
     pure (recording, reverse <$> readIORef acked)
 
--- | The test queue with 'deadLetter' wrapped to record each dead-lettered receipt. That record is the only signal a terminal fault went to the terminus rather than 'ack'.
+-- | Observe dead-lettering separately from acknowledgement.
 recordingDeadLetterQueue :: IO (MirrorQueue, IO [ReceiptHandle])
 recordingDeadLetterQueue = do
     base <- newTestMemoryQueue

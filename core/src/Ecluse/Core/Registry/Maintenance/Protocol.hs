@@ -2,13 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The store maintenance leaf for a store whose only control plane is the ecosystem protocol
-it already speaks. It drives the adapter's own verbs over one origin, so it serves every
-ecosystem that fills the maintenance slice and names none of them. Reads go through the bounded
-exchange rather than a metadata client, because the delete edit needs the store's raw document,
-revision marker included, and the serve path's version-count bound is no bound on a store
-listing. Consent and classification read the operator's own key, because no protocol read can
-tell whether such a store refills itself from an uplink.
+{- | Maintenance through registry protocol endpoints.
+Deletion needs the raw document revision, with listing bounds separate from serve-path bounds.
+Consent and refill classification rely on operator configuration.
 -}
 module Ecluse.Core.Registry.Maintenance.Protocol (
     ProtocolStore (..),
@@ -84,7 +80,7 @@ data ProtocolStore = ProtocolStore
     -- ^ How an operator marks it, logged verbatim when consent is withheld.
     }
 
--- | Build the maintenance handle for one protocol-only store. Every version deletes on its own call, because the delete edit addresses a document revision the previous delete changed.
+-- | Delete versions individually because each edit changes the document revision needed by the next.
 newProtocolMaintenance :: ProtocolStore -> StoreMaintenance
 newProtocolMaintenance store =
     StoreMaintenance

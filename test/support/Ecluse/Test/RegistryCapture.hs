@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | A shared package catalogue and live-registry fetch path for the smoke and capture tiers.
+{- | Shared package catalogue and registry capture helpers for live test tiers.
+Unavailable or undecodable upstream data yields absence so a live test can pend.
+-}
 module Ecluse.Test.RegistryCapture (
     -- * The curated catalogue
     Catalogue (..),
@@ -61,7 +63,7 @@ instance FromJSON Catalogue where
             Just eco -> pure (eco, vs)
             Nothing -> fail ("RegistryCapture: unknown ecosystem key in smokeNames: " <> toString k)
 
--- | The committed catalogue's path, relative to the package root the test suites run from. The Node corpus-capture script reads the same file, so both sides share one curated source.
+-- | The shared catalogue path, relative to the repository root.
 cataloguePath :: FilePath
 cataloguePath = "bench/corpus/pins.json"
 
@@ -69,7 +71,7 @@ cataloguePath = "bench/corpus/pins.json"
 decodeCatalogue :: LByteString -> Either String Catalogue
 decodeCatalogue = eitherDecode
 
--- | Read and decode the committed catalogue from 'cataloguePath'. A missing or malformed file fails loudly because that is a committed-data defect, not a runtime condition a caller decides on.
+-- | Fail on a missing or malformed committed catalogue.
 loadCatalogue :: IO Catalogue
 loadCatalogue = do
     raw <- readFileLBS cataloguePath
@@ -90,7 +92,7 @@ registryUrl eco pkg = case eco of
 captureUserAgent :: ByteString
 captureUserAgent = "ecluse-registry-capture"
 
--- | Fetch a package's raw version-listing body from its registry. The result is 'Nothing' on any network failure or non-2xx status, so a live tier pends on absence instead of failing.
+-- | Return 'Nothing' on network failure or non-success status so live tests can report unavailable upstreams.
 fetchPackumentBody :: Manager -> Ecosystem -> Text -> IO (Maybe LByteString)
 fetchPackumentBody manager eco pkg = do
     result <- try $ do

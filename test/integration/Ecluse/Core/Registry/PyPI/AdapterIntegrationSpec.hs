@@ -199,7 +199,7 @@ getIndex = getPath "/pypi/simple/requests"
 sdistPath :: ByteString
 sdistPath = "/pypi/simple/requests/requests-2.34.2.tar.gz"
 
--- | Boot the proxy over an in-process PyPI upstream serving the given index as its __public__ one, and the canned artifact bytes for any file path under it.
+-- | Serve a public index and its distribution bytes from a local upstream.
 withPyPIProxy :: (Text -> Value) -> (Application -> IO a) -> IO a
 withPyPIProxy indexFor k = withPyPIProxyOver indexFor publicPypiDeps (k . proxyApp)
 
@@ -210,7 +210,7 @@ withHelpfulPyPIProxy k =
   where
     helpfulDeps port = (\d -> d{pdHelp = Just (mkHelpMessage helpMessage)}) <$> publicPypiDeps port
 
--- | Boot the proxy over the same upstream bound as the __private__ one, with a public upstream nothing listens on, so what the client sees is what the private leg did.
+-- | Keep the public upstream unreachable so only private reads can succeed.
 withPrivatePyPIProxy :: (Text -> Value) -> (PyPIProxy -> IO a) -> IO a
 withPrivatePyPIProxy indexFor = withPyPIProxyOver indexFor privatePypiDeps
 
@@ -254,7 +254,7 @@ upstreamApp indexFor observe request respond = do
 publicPypiDeps :: Int -> IO PackumentDeps
 publicPypiDeps upstreamPort = pypiDeps Nothing (loopbackRegistryUrl (localhost upstreamPort))
 
--- | The mount's serve dependencies over the one upstream bound as the private one. The public base is a port nothing listens on, so a private miss cannot be covered by a public hit.
+-- | A private-only fixture with no reachable public fallback.
 privatePypiDeps :: Int -> IO PackumentDeps
 privatePypiDeps upstreamPort =
     pypiDeps (Just (loopbackRegistryUrl (localhost upstreamPort))) (loopbackRegistryUrl "http://localhost:1")
@@ -272,7 +272,7 @@ pypiDeps privateBase publicBase = do
 servedAt :: UTCTime
 servedAt = UTCTime (fromGregorian 2026 6 20) 0
 
--- | The public index: two files of a surviving release, each naming the upstream's own authority, and each carrying both PEP 658 sidecar spellings the served index must drop.
+-- | Include both PEP 658 sidecar spellings on two files from one release.
 publicIndex :: Text -> Value
 publicIndex authority =
     object

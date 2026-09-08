@@ -306,7 +306,7 @@ servePublicArtifact mode replies rt deps validators name version file respond = 
                 liftIO (recordDenials metrics [decision])
                 liftIO (respond (artifactError replies deps decision))
 
--- | The outcome of gating a single requested artifact on the public path. The admit carries the artifact, so the stream step honours its 'artUrl' rather than reconstructing the location.
+-- | Preserve the admitted artifact's authoritative location through the public gate.
 data PublicArtifactGate
     = -- | The gate admitted the version. Carries the artifact selected by filename.
       Admitted Artifact
@@ -472,7 +472,7 @@ crossHostRefused :: TarballReplies response -> response
 crossHostRefused replies =
     tarballError replies status403 [] (mkRefusal Nothing "the upstream artifact host is not permitted by the tarball-host policy")
 
--- | The status a refused artifact request renders. A version-absent miss and a first-party miss are the @404@s: every other inability keeps the @503@ or @500@ its transience earns.
+-- | Missing versions and first-party misses map to 404. Other outcomes use 'artifactStatus'.
 artifactOutcomeStatus :: ServeDecision -> ArtifactStatus
 artifactOutcomeStatus decision
     | decision `elem` [versionAbsent, firstPartyAbsent] = NotFound

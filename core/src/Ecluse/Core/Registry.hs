@@ -29,7 +29,7 @@ import Ecluse.Core.Package (Hash, HashAlg, hashAlg, hashValue)
 import Ecluse.Core.Security (LimitError, authorityLabel)
 import Ecluse.Core.Server.Path (Filename)
 
--- | A raw response fetched from a registry, the unparsed bytes 'fetchMetadata' returned. The bytes stay opaque here to keep fetching separate from parsing.
+-- | Upstream status and bytes retained before protocol decoding.
 data RegistryResponse = RegistryResponse
     { responseStatusCode :: Int
     -- ^ The upstream status, retained before body projection.
@@ -49,7 +49,7 @@ data MirrorArtifact = MirrorArtifact
     , maHashes :: NonEmpty Hash
     -- ^ The integrity digests, at least one. The tamper gate verified the fetched bytes against this floor-checked set.
     , maSize :: Maybe Int
-    -- ^ The registry-declared size, if reported. Not guaranteed to be the tarball byte count: for npm it is the unpacked-tree size (@dist.unpackedSize@).
+    -- ^ Registry-declared size, which may describe the unpacked tree rather than transferred bytes.
     }
     deriving stock (Eq, Show)
 
@@ -58,7 +58,7 @@ firstHashValue :: HashAlg -> MirrorArtifact -> Maybe Text
 firstHashValue alg artifact =
     fmap hashValue (find ((== alg) . hashAlg) (maHashes artifact))
 
--- | Why parsing a 'RegistryResponse' into a domain type failed. The parser reports this value rather than throwing, so the caller decides how to respond to untrusted wire data.
+-- | A protocol decode failure for the caller to classify.
 newtype ParseError = ParseError
     { parseErrorMessage :: Text
     -- ^ A human-readable description of what could not be parsed.
@@ -86,13 +86,13 @@ renderUrlFormationError = \case
     EmptyBaseUrl -> "EmptyBaseUrl"
     UnparseableUrl url -> "UnparseableUrl " <> authorityLabel url
 
--- | Why a bounded exchange could not produce a usable response, reported as a value. Total over every exchange the proxy runs: no failure rides up outside this type.
+-- | A request-formation, response-bound, or transport failure before a usable response.
 data FetchFault
     = -- | The request URL could not be formed from the base URL and the package identity.
       FetchUrlUnformable UrlFormationError
     | -- | The peer's body crossed the response-size bound, and the read refused it fail-closed.
       FetchBoundExceeded LimitError
-    | -- | The request never completed (a timeout, an unreachable peer, a TLS refusal), carried as the 'TransportFault' the adapter edge classified.
+    | -- | The adapter classified a failed or interrupted exchange.
       FetchTransport TransportFault
     deriving stock (Eq, Show)
 
@@ -105,9 +105,9 @@ data PublishRelayResponse = PublishRelayResponse
     }
     deriving stock (Eq, Show)
 
--- | Why a publish could not complete, surfaced as a value. The cases differ in retryability, so the worker decides retry against drop by an exhaustive match.
+-- | Separate exchange faults from registry rejections so workers can choose retry or drop.
 data PublishFault
-    = -- | The exchange never produced a status to read, carried as the shared 'FetchFault' so the worker reads one retry-versus-drop table for the write and the artifact fetch.
+    = -- | An exchange failure whose retry disposition follows the shared fetch-fault model.
       PublishFetch FetchFault
     | -- | The registry answered and rejected the write (a non-2xx, non-@409@ status). Retryable.
       PublishRejected PublishError

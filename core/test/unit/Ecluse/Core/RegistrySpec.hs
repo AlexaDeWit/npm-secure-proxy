@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Registry status classification and redacted URL diagnostics.
+{- | Tests for registry access-failure classification and URL diagnostics.
+Diagnostic URLs must exclude userinfo and query credentials.
+-}
 module Ecluse.Core.RegistrySpec (spec) where
 
 import Ecluse.Core.Registry (UrlFormationError (EmptyBaseUrl, UnparseableUrl), isAuthorisationFailure, renderUrlFormationError)

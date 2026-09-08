@@ -297,7 +297,7 @@ apiKeyCredential = credentialMapping recoverApiKey "X-Api-Key" (encodeUtf8 . unS
 edgeToken :: (IsString s) => s
 edgeToken = "edge-token"
 
--- | Serve dependencies whose edge requires 'edgeToken' and whose origins both point at a closed port, so an admitted request degrades rather than reaching an upstream.
+-- | Require the edge token but leave both upstreams unreachable, distinguishing edge refusal from fetch failure.
 gatedDeps :: IO PackumentDeps
 gatedDeps = do
     base <- depsFor 1
@@ -351,7 +351,7 @@ countingUpstream hits app req respond = modifyIORef' hits (+ 1) >> app req respo
 artifactBytes :: ByteString
 artifactBytes = "leftpad artifact bytes"
 
--- | A one-version packument for @leftpad@, its tarball self-hosted on @host@, committing to the given @integrity@ string (so a divergent copy differs only in that digest).
+-- | Keep artifact location and metadata fixed while varying the asserted integrity.
 packumentWithIntegrity :: ByteString -> Text -> Value
 packumentWithIntegrity host integrity =
     packumentValue
@@ -387,6 +387,6 @@ divergentPrivateApp req respond =
   where
     host = maybe "localhost" snd (find ((== hHost) . fst) (requestHeaders req))
 
--- | The private copy's packument: a well-formed SHA-512 digest over /different/ bytes, so it contradicts 'packumentFor' on the shared algorithm while still meeting the floor.
+-- | Use a different SHA-512 digest that still meets the integrity floor.
 packumentForDivergent :: ByteString -> Value
 packumentForDivergent host = packumentWithIntegrity host (sha512Integrity "leftpad artifact bytes (privately tampered)")

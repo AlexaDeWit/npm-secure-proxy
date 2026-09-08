@@ -116,7 +116,7 @@ mergeScenario =
         , scenarioBoot = \knobs k -> withNpmProxy knobs 0 defaultCacheEntries serveMix (k . DriveHttpUrls)
         }
 
--- | The cheap high-throughput path: the same packument @GET@ with the public origin served from a warm metadata cache, so only the live private leg and the merge run.
+-- | Measure a warm public cache while private reads remain live.
 cacheHitScenario :: Scenario
 cacheHitScenario =
     Scenario
@@ -153,7 +153,7 @@ primeETag url = do
         Just tag -> pure (decodeUtf8 tag)
         Nothing -> benchFail "revalidate-not-modified: the priming GET returned no ETag"
 
--- | The cache-eviction baseline: a uniform working set of large packuments against a cache bound that holds the whole set, so every entry stays resident after warm-up.
+-- | Measure a uniform working set that fits entirely in the cache after warm-up.
 cacheFitsScenario :: Scenario
 cacheFitsScenario =
     Scenario
@@ -166,7 +166,7 @@ cacheFitsScenario =
              in withNpmProxy knobs longCacheTtl (length pkgs) (uniformMix pkgs) (k . DriveHttpUrls)
         }
 
--- | The cache-eviction stress: the same uniform working set against a cache bound smaller than it, so the cache continually evicts entries and re-derives them on the next request.
+-- | Measure the same working set with a smaller cache to isolate repeated eviction and reconstruction.
 cacheEvictsScenario :: Scenario
 cacheEvictsScenario =
     Scenario
@@ -189,7 +189,7 @@ tarballScenario =
         , scenarioBoot = \knobs k -> withNpmProxy knobs longCacheTtl defaultCacheEntries tarballMix (k . DriveHttpUrls)
         }
 
--- | The onboarding fail-over: every tarball request misses the private pull-through and takes the public leg, the shape a new project drives before the mirror warms.
+-- | Model onboarding before the mirror warms, with each artifact supplied by the public fallback.
 tarballOnboardingScenario :: Scenario
 tarballOnboardingScenario =
     Scenario
@@ -210,7 +210,7 @@ tarballOnboardingScenario =
                     (k . DriveHttpUrls)
         }
 
--- | The streaming-ceiling probe: the private-hit relay at four times the shared concurrency against a 2 ms stub latency, so the proxy's own relay binds instead of the client's connections x RTT.
+-- | Probe relay capacity at four times the base concurrency with 2 ms upstream latency.
 tarballCeilingScenario :: Scenario
 tarballCeilingScenario =
     Scenario
@@ -244,7 +244,7 @@ benchCacheConfig ttl maxEntries =
   where
     capEntries budget = budget{sbMaxEntries = maxEntries}
 
--- | Boot the two path-aware packument upstream stubs over the real-world corpus, then the composed proxy over them, and yield the caller's serve mix.
+-- | Run corpus-backed local upstreams and the proxy for the supplied request mix.
 withNpmProxy :: LoadKnobs -> NominalDiffTime -> Int -> (Int -> [Text]) -> ([Text] -> IO a) -> IO a
 withNpmProxy knobs ttl maxEntries mkMix body = do
     bodies <- loadServeBodies
@@ -499,7 +499,7 @@ requestedPackage request = case pathInfo request of
     [] -> Nothing
     segments -> Just (T.intercalate "/" segments)
 
--- | The onboarding fixture: the private stub answers @404@ after the injected latency, because an unwarmed pull-through still costs a probe round trip.
+-- | Include probe latency before the private upstream reports an onboarding miss.
 onboardingPrivateStub :: Int -> Application
 onboardingPrivateStub latency _request respond = do
     when (latency > 0) (threadDelay latency)
@@ -556,7 +556,7 @@ loadServeBodies = Map.fromList <$> traverse load corpusPackages
         when (LBS.null packument) (benchFail ("bench-load: corpus capture is empty: " <> toText (cpPath cp)))
         pure (cpName cp, packument)
 
--- | A trusted-private overlay for the requested package: three versions disjoint from any real version and old enough to clear the quarantine, so the merge serves a genuine union.
+-- | Three old, disjoint versions exercise a merge with the public corpus.
 privateOverlay :: Text -> Text -> Value
 privateOverlay authority name =
     packumentValue

@@ -49,7 +49,7 @@ import Ecluse.Core.Server.Pipeline.Internal (
  )
 import Ecluse.Core.Telemetry.Record (MetricsPort (..))
 
--- | Log a per-origin metadata-fetch failure, dispatched by its cause. The serve path calls it once per real fetch, inside the single-flight leader and in the request's context.
+-- | Log once per real fetch, inside the single-flight leader's request context.
 logMetadataFailure :: PackageName -> Text -> MetadataError -> Handler ()
 logMetadataFailure name baseUrl = \case
     MetadataAuthorisationFailure _ -> logFM WarningS "the upstream refused metadata access"
@@ -86,7 +86,7 @@ logBreach name err =
         TooManyArtifacts seen c -> ("artifact-count", show seen, show c)
         TooDeeplyNested c -> ("nesting-depth", "over " <> show c <> " levels", show c <> " levels")
 
--- | Log a cross-upstream integrity divergence (threat #11) at 'WarningS' and meter it: a public copy contradicts the trusted one on a shared integrity algorithm for a shared version.
+-- | Warn and increment the divergence metric when shared digests disagree across origins.
 warnDivergences :: (KatipContext m) => MetricsPort -> PackageName -> MergePlan -> m ()
 warnDivergences metrics name plan =
     case toList (mpDivergences plan) of

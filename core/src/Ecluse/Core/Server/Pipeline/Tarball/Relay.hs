@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | HTTP request shaping and streaming response classification for artifact handlers.
+{- | Request shaping and response classification for artifact relays.
+Response judgements precede the client response commit.
+-}
 module Ecluse.Core.Server.Pipeline.Tarball.Relay (
     -- * Serve mode
     ArtifactServe (..),

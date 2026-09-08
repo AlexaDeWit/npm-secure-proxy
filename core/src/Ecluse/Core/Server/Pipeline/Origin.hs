@@ -65,7 +65,7 @@ data Contribution = Contribution
     , srcDigest :: ContentDigest
     }
 
--- | One source's slice of the derived validator. With the mount base URL and the package name, these are exactly the inputs the assembled document is a deterministic function of.
+-- | Include provenance, source digest, and surviving versions in the assembled document's validator.
 fingerprintPiece :: Contribution -> (Provenance, ContentDigest, [Text])
 fingerprintPiece s = (srcProvenance s, srcDigest s, Map.keys (infoVersions (srcInfo s)))
 
@@ -159,7 +159,7 @@ withMetadataClient rt deps upstream caching origin k =
     -- The log lines name the origin, and a diagnostic reads characters, not a witness.
     baseUrl = registryUrlText (ocBaseUrl origin)
 
--- | The private origin's read handle: uncached, carrying the client's own credential, because the cache keys on the base URL alone and one client's entry must never serve another's.
+-- | Bypass shared caching so the private upstream authorises each caller's credential.
 withPrivateMetadataClient :: ServeRuntime -> PackumentDeps -> RegistryUrl -> Maybe ClientCredential -> (MetadataClient -> IO a) -> Handler a
 withPrivateMetadataClient rt deps baseUrl token =
     withMetadataClient rt deps Metric.Private Uncached (mountOrigin deps (srPrivateManager rt) baseUrl token)
@@ -171,6 +171,6 @@ withPublicMetadataClient rt deps baseUrl =
   where
     caching = Cached (srMetadataCache rt) (Source (registryUrlText baseUrl))
 
--- | One origin's coordinates for this mount: its own response bound, the leg's manager, and the credential posture the caller decided. The artifact path forms its request through it too.
+-- | Build an origin with the mount's response bound and the caller-selected manager and credential.
 mountOrigin :: PackumentDeps -> Manager -> RegistryUrl -> Maybe ClientCredential -> OriginClient
 mountOrigin deps = originClient (pdLimits deps)

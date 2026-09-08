@@ -5,7 +5,9 @@
 -- segments in 'takePackage' and 'takeScoped' ((,rest) / (,more)). See STYLE.md §2.
 {-# LANGUAGE TupleSections #-}
 
--- | The npm route table and its response contracts, shared by serving and OpenAPI generation.
+{- | The npm router and OpenAPI description share one route table.
+Reserved routes take precedence over package captures.
+-}
 module Ecluse.Core.Registry.Npm.Route (
     -- * The mount's router and fallback action
     npmRouter,
@@ -97,7 +99,7 @@ import Ecluse.Core.Server.Route (
 import Ecluse.Core.Server.RouteSpec (ParamSpec (ParamSpec), RouteSpec, catchAllSpecs, specsOf)
 import Ecluse.Core.Version (Version, mkVersion)
 
--- | npm's mount router. The first route that claims the request decides it, and a request no route claims takes the deny-by-default @404@ ('npmNotFound').
+-- | Match the first applicable route, otherwise answer 'npmNotFound'.
 npmRouter :: MountRouter
 npmRouter = routerOf npmNotFound npmRoutes
 
@@ -108,7 +110,7 @@ npmNotFound =
         unsupportedContract
         (AnswerLocally (responseValue [] (NpmError "not found")))
 
--- | npm's routes, in matching order: the reserved literal meta-routes are tried first. The security-critical leaf parsing stays in 'takePackage' and 'tarballCoordinate'.
+-- | Try reserved meta-routes before package captures.
 npmRoutes :: [Route NpmCap]
 npmRoutes =
     [ pingRoute
@@ -424,7 +426,7 @@ buildTarball method = \case
   where
     perimeterFallback = tarballError npmTarballReplies status500 [] (mkRefusal Nothing "internal server error")
 
--- | The captured values npm's routes produce: a parsed package unit, or a raw safety-checked segment (an artifact file name, a dist-tag). Builders consume them positionally.
+-- | Positional captures distinguish parsed package identities from checked path segments.
 data NpmCap
     = NpmPackage PackageName
     | NpmFilename Text
@@ -451,7 +453,7 @@ capFilename =
         (safeSegment NpmFilename)
         renderSegment
 
--- | The dist-tag capture: one segment, accepted only when 'safeSegment' admits it. Both tagged routes answer @501@, so nothing downstream reads the tag.
+-- | Accept one checked dist-tag segment. Tag routes remain unsupported.
 capTag :: Capture NpmCap
 capTag =
     Capture
@@ -501,11 +503,11 @@ tarballCoordinate name file =
             | not (T.null version) -> (mkVersion Npm version,) <$> mkFilename file
         _ -> Nothing
 
--- | The mount-relative path the artifact route serves one package's file under, rendered from that same record so a served URL and the route that must claim it cannot drift.
+-- | Render through the artifact route so generated URLs obey its capture rules.
 tarballPath :: PackageName -> Text -> Maybe Text
 tarballPath name file = T.intercalate "/" <$> renderRoute tarballRoute [NpmPackage name, NpmFilename file]
 
--- | npm's routes as data for the __OpenAPI spec__: the 'specsOf' projection of the same 'npmRoutes' the router runs, plus the synthetic deny-by-default catch-all.
+-- | Describe the live router and its deny-by-default catch-all for OpenAPI.
 npmRouteSpecs :: NonEmpty RouteSpec
 npmRouteSpecs =
     catchAllSpecs unsupportedContract unsupportedParam
