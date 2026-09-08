@@ -21,8 +21,10 @@ import Paths_ecluse (version)
 import System.Directory (removeFile)
 import System.FilePath (takeFileName)
 import System.IO.Error (catchIOError)
-import Test.Hspec (Spec, anyException, describe, it, shouldBe, shouldSatisfy, shouldThrow)
+import Test.Hspec (Spec, anyException, describe, it, shouldBe, shouldReturn, shouldSatisfy, shouldThrow)
+import UnliftIO.Exception (finally)
 
+import Ecluse.Core.Cve (CveDb (..), CveLookup (..), openCveDb)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI))
 import Ecluse.Core.Osv.Advisory (ExtractedOsv (..))
 import Ecluse.Core.Osv.Compile (CompileSources (..), compileOsvToSqlite, osvToRow)
@@ -68,7 +70,7 @@ spec = describe "SQLite OSV Compilation" $ do
 
         -- The file-name literal and the meta keys below pin the artifact's wire contract, the forms
         -- a reader depends on, not the constants that produced them.
-        takeFileName dbFile `shouldBe` "npm-osv-schema3.db"
+        takeFileName dbFile `shouldBe` "npm-osv-schema4.db"
         -- EPSS joins through CVE-2024-48913, while the row retains the GHSA id.
         rows `shouldBe` [("hono", "GHSA-2234-fmw7-43wr", Just "4.6.5", Just 5.9, Just 0.75)]
         map fromOnly stamped `shouldBe` [osvSchemaEpoch]
@@ -130,10 +132,10 @@ spec = describe "SQLite OSV Compilation" $ do
         recorded <- readRecorded
         recorded `shouldBe` RecordedCompile [1] [(DropOversize, 0), (DropMalformed, 20)] [CompileAborted]
 
-    it "reads osv.dev's spelling and writes Ecluse's, for an ecosystem that spells them apart" $ do
+    it "accepts a rebuilt PyPI artifact with canonical names and raw fix versions" $ do
         zipData <-
             osvZipOf
-                [("pypi-advisory.json", "{\"id\":\"GHSA-pypi\",\"affected\":[{\"package\":{\"name\":\"requests\",\"ecosystem\":\"PyPI\"},\"versions\":[\"1.0.0\"]}]}")]
+                [("pypi-advisory.json", "{\"id\":\"GHSA-pypi\",\"affected\":[{\"package\":{\"name\":\"Flask_Thing\",\"ecosystem\":\"PyPI\"},\"ranges\":[{\"type\":\"ECOSYSTEM\",\"events\":[{\"introduced\":\"0\"},{\"fixed\":\"1.0.0\"}]}]}]}")]
         epssData <- LBS.readFile epssFixtureFile
         (metrics, _) <- recordingAdvisoryCompileMetricsPort
         dbFile <- withStub status200 zipData $ \stub ->
@@ -144,11 +146,19 @@ spec = describe "SQLite OSV Compilation" $ do
         rows <- query_ conn "SELECT package_name FROM package_vulnerability_ranges" :: IO [Only Text]
         metaRows <- query_ conn "SELECT key, value FROM meta" :: IO [(Text, Text)]
         close conn
-        catchIOError (removeFile dbFile) (const $ pure ())
 
-        map fromOnly rows `shouldBe` ["requests"]
-        takeFileName dbFile `shouldBe` "pypi-osv-schema3.db"
+        map fromOnly rows `shouldBe` ["flask-thing"]
+        takeFileName dbFile `shouldBe` "pypi-osv-schema4.db"
         Map.lookup "ecosystem" (Map.fromList metaRows) `shouldBe` Just "pypi"
+        openCveDb PyPI dbFile >>= \case
+            Left rejection -> fail ("rebuilt PyPI artifact rejected: " <> show rejection)
+            Right db -> flip finally (cveDbClose db) $ do
+                let cve = cveDbLookup db
+                cveCoveredNames cve `shouldReturn` ["flask-thing"]
+                cveRemediationProbe cve "flask-thing" "1.0.0" `shouldReturn` True
+                cveRemediationProbe cve "flask-thing" "1.0" `shouldReturn` False
+                cveAdvisoriesFor cve "flask-thing" >>= (`shouldSatisfy` (not . null))
+        removeFile dbFile
 
     it "writes an unorderable bound into the artifact and decodes the \"0\" lower bound" $ do
         -- Malware feeds can name versions outside semver. Dropping them would admit affected versions.

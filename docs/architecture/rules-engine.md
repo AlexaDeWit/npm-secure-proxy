@@ -248,7 +248,7 @@ path, since Écluse checks a version only before mirroring it and serves it rule
 #### The artifact contract
 
 The object key is stable per ecosystem and embeds the table-schema epoch,
-`<ecosystem>-osv-schema<N>.db` (currently `npm-osv-schema3.db`). That stability is what makes
+`<ecosystem>-osv-schema<N>.db` (currently `npm-osv-schema4.db`). That stability is what makes
 ETag polling work. The epoch is a hand-bumped constant shared by the Pilot writer and the proxy
 reader ([`Ecluse.Core.Osv.Schema`](../../core/src/Ecluse/Core/Osv/Schema.hs)), stamped inside
 the artifact as SQLite's `user_version`. A mismatch keeps the last-good database and alarms.
@@ -257,13 +257,26 @@ The artifact is **immutable and rebuilt from scratch** on every compilation, so 
 migrations, only a read-compatibility contract. Advance the epoch for an incompatible table shape
 or an incompatible meaning of stored values, even if the columns remain unchanged. A compatible
 addition does not bump it, because readers select explicit columns. What the reader requires is a
-separate question from what the epoch names: within epoch 3
+separate question from what the epoch names: within epoch 4
 the reader requires `severity` and `epss_score` on `package_vulnerability_ranges`, so an artifact
 missing a required column, or carrying it under a different declared type, fails schema
 conformance (`CveDbSchemaNonConformant`) and the last-good database keeps serving.
 
-Pilot writes every row the feed yields, because dropping one admits every version it covered.
-It decodes one spelling on the way: OSV writes "affected from the beginning" as an `introduced`
+Epoch 4 stores canonical package names: PEP 503 for PyPI, verbatim for npm and RubyGems.
+Rules query the same canonical key for denial and remediation. Dredger parses the stored keys
+and store names into the same package identity before evaluating the shared rules.
+Display spelling remains available for decision messages.
+
+The [OSV schema](https://github.com/ossf/osv-schema/blob/main/docs/schema.md#defined-ecosystems)
+requires normalised PyPI names. The sampled records
+[GHSA-m2qf-hxjv-5gpq](https://api.osv.dev/v1/vulns/GHSA-m2qf-hxjv-5gpq) and
+[PYSEC-2021-142](https://api.osv.dev/v1/vulns/PYSEC-2021-142) use `flask` and `pyyaml`.
+Those samples do not establish feed-wide conformance. Pilot applies the existing package
+canonicalisation itself because configured exports can carry other spellings. Epoch 3 did not
+enforce this stored meaning, so epoch 4 consumers reject those artifacts despite their matching
+table shape. Unknown ecosystems retain their package spelling.
+
+Pilot also decodes a version sentinel: OSV writes "affected from the beginning" as an `introduced`
 of `0`, which semver rejects, so the compile records no lower bound and leaves the `fixed` or
 `last_affected` bound beside it unchanged. A version at or above the fix then computes as
 admitted and one below it as denied.

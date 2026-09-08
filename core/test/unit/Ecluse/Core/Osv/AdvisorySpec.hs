@@ -3,6 +3,9 @@
 -- SPDX-License-Identifier: MIT
 {-# LANGUAGE OverloadedStrings #-}
 
+{- | Advisory decoding and extraction regressions.
+Fixtures also exercise bounded streaming and score joins.
+-}
 module Ecluse.Core.Osv.AdvisorySpec (spec) where
 
 import Conduit
@@ -140,6 +143,13 @@ spec = describe "Osv parsing and streaming" $ do
             map extEpss (extractFromAdvisory (mkEpssScores [("CVE-2026-99999", 0.5)]) (aliased ["CVE-2026-77777"]))
                 `shouldBe` [Nothing]
 
+    describe "extractFromAdvisory (package identity)" $ do
+        for_ [("PyPI", "Flask_Thing", "flask-thing"), ("PyPI", "FLASK..__Thing", "flask-thing"), ("PyPI", "flask-thing", "flask-thing"), ("npm", "@Acme/Flask_Thing", "@Acme/Flask_Thing"), ("RubyGems", "Flask_Thing", "Flask_Thing"), ("other", "Flask_Thing", "Flask_Thing")] $ \(eco, raw, expected) ->
+            it (toString ("keys " <> eco <> " package " <> raw <> " as " <> expected)) $ do
+                let adv = OsvAdvisory "GHSA-name" Nothing (Just [OsvAffected (OsvPackage raw eco) Nothing (Just ["1.0", "2.0"])]) Nothing Nothing
+                extractFromAdvisory noScores adv
+                    `shouldBe` [ExtractedOsv expected eco "GHSA-name" (Just version) (LastAffected version) Nothing Nothing | version <- ["1.0", "2.0"]]
+
     describe "extractFromAdvisory (affected-set shapes)" $ do
         it "records an exact enumerated version as a point segment (no ranges)" $ do
             -- The npm malware feed names the single bad version in versions[] with
@@ -155,9 +165,7 @@ spec = describe "Osv parsing and streaming" $ do
                 `shouldBe` [ExtractedOsv "electerm" "npm" "GHSA-la" Nothing (LastAffected "3.8.8") Nothing Nothing]
 
         it "ignores a GIT range whose commit-SHA bounds are not versions" $ do
-            -- Carving a GIT range into segments would store a commit SHA as a version bound, which
-            -- the matcher fails closed-to-affected, quarantining every version of a healthy
-            -- package.
+            -- A commit interpreted as an unorderable version bound would deny every release.
             let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing (Just "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0") Nothing]
                 adv = OsvAdvisory "GHSA-git" Nothing (Just [OsvAffected (OsvPackage "healthy-pkg" "npm") (Just [OsvRange "GIT" events]) Nothing]) Nothing Nothing
             extractFromAdvisory noScores adv `shouldBe` []
@@ -188,9 +196,7 @@ spec = describe "Osv parsing and streaming" $ do
                 `shouldBe` [ExtractedOsv "mixed-pkg" "npm" "GHSA-both" Nothing (FixedBefore "2.0.0") Nothing Nothing]
 
         it "decodes OSV's \"0\" lower bound to no lower bound at all" $ do
-            -- OSV spells "affected from the beginning" as an introduced of "0", which semver
-            -- rejects. Verbatim it would leave the row resting on the matcher's fail-closed
-            -- default instead of on a bound of its own.
+            -- The beginning sentinel must not become an unorderable version bound.
             let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing (Just "1.2.3") Nothing]
                 adv = OsvAdvisory "MAL-zero" Nothing (Just [OsvAffected (OsvPackage "mal-pkg" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing
             extractFromAdvisory noScores adv
@@ -328,9 +334,7 @@ spec = describe "Osv parsing and streaming" $ do
 
     describe "ingest bounds" $ do
         it "drops an over-large advisory and keeps ingesting the entries after it" $ do
-            -- The stream drops the oversized entry before decode, so its bytes need
-            -- not be valid JSON. It comes first, so the good entry after it surfaces
-            -- only if the drop drained cleanly to the next entry boundary.
+            -- Reaching the good entry proves the oversized entry drained to its boundary.
             zipData <-
                 osvZipOf
                     [ ("big.json", LBS.replicate 3000 120)

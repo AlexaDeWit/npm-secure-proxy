@@ -2,10 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The candidate set: the names a default cycle carries to the rules. A mirrored version's
-metadata is immutable after publication, so an admitted version becomes a denied one only
-through a new or changed advisory, an operator identity deny, or a rule-configuration change.
-The first two are local facts, and this module reads them. The third is what the full walk is for.
+{- | Select names covered by advisories or explicit identity denies.
+Other policy changes require a full store walk.
 -}
 module Ecluse.Core.Registry.Sweep.Candidates (
     CandidateSet,
@@ -22,8 +20,8 @@ import Ecluse.Core.Package (PackageName)
 import Ecluse.Core.Registry.Adapter.Capability (ProjectName)
 import Ecluse.Core.Rules.Types (Rule (DenyByIdentity))
 
-{- | The names one cycle decides, canonical under the ecosystem's own parser: the advisory database
-records OSV's spelling and a store lists the backend's, so both go through that parser first.
+{- | Canonical names let the artifact and store use different display spellings.
+The ecosystem parser preserves their shared identity.
 -}
 newtype CandidateSet = CandidateSet (Set PackageName)
     deriving stock (Eq, Show)

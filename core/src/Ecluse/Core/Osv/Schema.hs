@@ -28,13 +28,9 @@ import Data.Universe.Generic (universeGeneric)
 
 -- | Advance for incompatible shape or stored-value semantics, not compatible additions.
 osvSchemaEpoch :: Int
-osvSchemaEpoch = 3
+osvSchemaEpoch = 4
 
-{- | A stable per-ecosystem key until the artifact's read contract changes.
-
->>> osvDbFileName "npm"
-"npm-osv-schema3.db"
--}
+-- | Keep a stable object key until the artifact's read contract changes.
 osvDbFileName :: Text -> FilePath
 osvDbFileName ecosystem =
     toString ecosystem <> "-osv-schema" <> show osvSchemaEpoch <> ".db"

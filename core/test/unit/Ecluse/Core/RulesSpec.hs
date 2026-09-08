@@ -2,6 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
+{- | Policy decisions over package evidence and injected capabilities.
+Advisory regressions preserve ecosystem identity and display spelling.
+-}
 module Ecluse.Core.RulesSpec (spec) where
 
 import Data.Text qualified as T
@@ -13,7 +16,7 @@ import Hedgehog.Range qualified as Range
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
-import UnliftIO.Exception (throwString)
+import UnliftIO.Exception (throwIO)
 
 import Ecluse.Core.Breaker (noBreakerReporter)
 import Ecluse.Core.Cve (AdvisoryRange (..))
@@ -31,6 +34,7 @@ import Ecluse.Test.Rules (
     noFaultReporter,
     withInstallScripts,
  )
+import Ecluse.Test.Support (TestContractEscape (TestContractEscape))
 
 import Ecluse.Core.Rules
 import Ecluse.Core.Rules.Types
@@ -130,16 +134,42 @@ genFiringRule scopeTxt =
         , DenyInstallTimeExecution
         ]
 
-{- | Canonicalise a decision for order-independence comparison. Sorting a 'BlockedByDefault'
-reason list is enough, because a permutation only reorders non-decisive reasons at equal
-precedence, and the boot order still resolves every equal-precedence tie by name.
--}
+-- Compare decisions independently of the order in which abstention reasons arrived.
 canonical :: Decision -> Decision
 canonical (BlockedByDefault reasons) = BlockedByDefault (sort reasons)
 canonical d = d
 
 spec :: Spec
 spec = do
+    describe "advisory package identity" $ do
+        for_ [denyCveAt 0, denyEpssAt 0] $ \rule ->
+            it (toString (ruleName rule <> " queries the canonical PyPI name")) $ do
+                let pd = (pkg Nothing 0){pkgName = mkPackageName PyPI Nothing "Flask_Thing"}
+                    rows = [("flask-thing", snd row) | row <- affecting (Just 9.8) (Just 0.9)]
+                evalRule (depsWith rows) ctx rule pd >>= (`shouldSatisfy` isDeny)
+
+        it "matches a PyPI fix and keeps its display spelling in the decision message" $ do
+            let pd = (pkg Nothing 0){pkgName = mkPackageName PyPI Nothing "Flask_Thing"}
+                rows = [("flask-thing", snd row) | row <- fixRows]
+            decision <- decideWith (depsWith rows) [atDefaultPrecedence AllowIfRemediatesCve] pd
+            admittedBy decision `shouldBe` Just "AllowIfRemediatesCve"
+            renderDecision pd decision `shouldSatisfy` T.isInfixOf "Flask_Thing@1.0.0"
+
+        it "does not fast-track a PyPI fix while a canonical-name advisory still affects it" $ do
+            let pd = (pkg Nothing 0){pkgName = mkPackageName PyPI Nothing "Flask_Thing"}
+                rows = [("flask-thing", snd row) | row <- fixRows <> affecting Nothing Nothing]
+            evalRule (depsWith rows) ctx AllowIfRemediatesCve pd >>= (`shouldSatisfy` isNoDecision)
+
+        for_ [mkPackageName Npm Nothing "Flask_Thing", mkPackageName Npm (Just (mkScope "Acme")) "Flask_Thing"] $ \name ->
+            it (toString ("preserves npm identity " <> renderPackageName name)) $ do
+                let pd = (pkg Nothing 0){pkgName = name}
+                    exactRows = [(renderPackageName name, snd row) | row <- affecting Nothing Nothing]
+                    otherRows = [("flask-thing", snd row) | row <- affecting Nothing Nothing]
+                    exactFixes = [(renderPackageName name, snd row) | row <- fixRows]
+                evalRule (depsWith exactRows) ctx (denyCveAt 0) pd >>= (`shouldSatisfy` isDeny)
+                evalRule (depsWith otherRows) ctx (denyCveAt 0) pd >>= (`shouldSatisfy` isNoDecision)
+                evalRule (depsWith exactFixes) ctx AllowIfRemediatesCve pd >>= (`shouldSatisfy` isAllow)
+
     describe "evalRule" $ do
         it "AllowScope allows a matching scope" $
             evalRule inertRuleDeps ctx (AllowScope (mkScope "myorg")) (pkg (Just "myorg") 0)
@@ -418,9 +448,7 @@ spec = do
             decide rs p >>= \d -> blockedBy d `shouldBe` Just "DenyInstallTimeExecution"
             decide (reverse rs) p >>= \d -> blockedBy d `shouldBe` Just "DenyInstallTimeExecution"
         it "resolves an equal-precedence allow-vs-deny tie by name, not by deny-priority" $ do
-            -- At equal explicit precedence there is no deny-over-allow rule. The boot order breaks
-            -- the tie by name, and "AllowScope" sorts first. Out of the box the deny default sits
-            -- higher.
+            -- Equal explicit precedence uses the rule name as its tiebreak.
             let rs = [at 300 (AllowScope (mkScope "myorg")), at 300 DenyInstallTimeExecution]
                 p = withInstallScripts (pkg (Just "myorg") 99)
             decide rs p >>= \d -> admittedBy d `shouldBe` Just "AllowScope"
@@ -463,7 +491,7 @@ spec = do
             -- lane, never availability and never an admission.
             let broken =
                     RuleDeps
-                        { rdWithCveLookup = \_ -> throwString "advisory database exploded"
+                        { rdWithCveLookup = \_ -> throwIO (TestContractEscape "advisory database exploded")
                         , rdCurrentAdvisoryEtag = pure Nothing
                         , rdBreakerReporter = noBreakerReporter
                         , rdFaultReporter = noFaultReporter
@@ -559,10 +587,7 @@ spec = do
 
         it "the decision is invariant under shuffling the rule list" $
             hedgehog $ do
-                -- Colliding precedences make the draw exercise equal-precedence ties, allow-vs-
-                -- allow included. The boot order resolves every tie by name, so the 'Decision' is
-                -- order-independent. Only the gathered reason order tracks the input list, so
-                -- 'canonical' sorts it.
+                -- Colliding precedences exercise deterministic rule-name tiebreaks.
                 scopeTxt <- forAll genScope
                 ageDays <- forAll genAgeDays
                 n <- forAll (Gen.int (Range.linear 0 6))

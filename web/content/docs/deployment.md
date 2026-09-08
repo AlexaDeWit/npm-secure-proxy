@@ -72,7 +72,7 @@ beside the verdict, so you can alert on staleness as well as on the `503`.
 
 A Pilot pod does not need to idle between syncs. `ecluse pilot compile --out DIR` runs one OSV
 compilation and exits: it fetches an ecosystem's advisory export, writes
-`<ecosystem>-osv-schema<N>.db` (e.g. `npm-osv-schema3.db`) into `DIR`, and exits non-zero on
+`<ecosystem>-osv-schema<N>.db` (e.g. `npm-osv-schema4.db`) into `DIR`, and exits non-zero on
 failure. `--out DIR` is required. The rest are optional:
 
 - `--ecosystem` selects the export (default `npm`).
@@ -80,6 +80,14 @@ failure. `--out DIR` is required. The rest are optional:
 - `--epss-source URL` overrides the configured `advisories.epssFeedUrl`.
 - `--upload` also publishes the artifact to the advisory store, a full sync cycle in one
   invocation. Without a configured store it aborts at once.
+
+Advisory epoch 4 uses canonical package names, including PEP 503 names for PyPI.
+Before switching consumers, use the updated Pilot to compile and publish epoch 4 artifacts for
+every mounted ecosystem. Update IAM policies that name exact object keys to include the new
+`<ecosystem>-osv-schema4.db` keys. Retain epoch 3 objects for old consumers during the rollout.
+New consumers reject epoch 3 artifacts and wait for their first compatible sync. No automatic
+migration or fallback rewrites an old artifact. Version strings keep their existing exact-match
+meaning for remediation.
 
 A corrupt or truncated export aborts the compile without publishing, so a running proxy keeps its
 last-good database. Run the one-shot as a Kubernetes `CronJob` with `concurrencyPolicy: Forbid`,
