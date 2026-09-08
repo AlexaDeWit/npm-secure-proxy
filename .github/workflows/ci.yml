@@ -300,12 +300,13 @@ jobs:
 
       # --out-link, not --no-link: the cache save's `nix store gc` drops every unrooted
       # path, and this job is the sole writer of the closure the e2e job restores.
-      - name: Flake checks (docs Haddock, freeze-sync, amazonka-lockstep)
+      - name: Flake checks (Haddock, locks, Saerskriven)
         run: >-
           nix build --out-link "$RUNNER_TEMP/flake-check" --print-build-logs
           .#checks.x86_64-linux.docs
           .#checks.x86_64-linux.freeze-sync
           .#checks.x86_64-linux.amazonka-lockstep
+          .#checks.x86_64-linux.saerskriven
 
   weeder:
     name: Dead-code check (weeder)
