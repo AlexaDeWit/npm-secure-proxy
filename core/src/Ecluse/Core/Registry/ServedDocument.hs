@@ -2,14 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Cross-ecosystem scaffolding for assembling the document Écluse serves.
-
-"Ecluse.Core.Registry.WireSupport" is the inbound half of the same boundary, projecting an
-untrusted upstream document into the domain model. This is the outbound half. Each ecosystem
-owns its own wire-shape assembly, because that shape is exactly what differs between them, and
-calls these definitions for the parts that do not: the plan-to-source overlay, the
-self-reported-name gate, the artifact-URL rebase, and the raw-document field read. The last
-three are security-bearing, which is why each has one definition rather than one per ecosystem.
+{- | Shared outbound document assembly, paired with inbound "Ecluse.Core.Registry.WireSupport".
+Ecosystem adapters own their wire shapes and reuse these name and location gates.
 -}
 module Ecluse.Core.Registry.ServedDocument (
     -- * Replaying a merge plan
@@ -56,8 +50,8 @@ safeDocumentName parse document = case KeyMap.lookup "name" document of
     Just (String name) -> parse name
     _ -> Nothing
 
-{- | Point an upstream artifact location back through this mount, keeping its file name verbatim.
-Idempotent while the renderer puts that file name in the terminal path segment.
+{- | Rebase an artifact under this mount, refusing a missing or unsafe filename.
+Idempotent while the renderer keeps the filename in the terminal path segment.
 -}
 rebaseArtifactUrl :: (Text -> Maybe Text) -> Text -> Maybe Text
 rebaseArtifactUrl renderMountUrl url = renderMountUrl =<< urlFilename url

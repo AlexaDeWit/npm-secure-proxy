@@ -2,6 +2,7 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | Shared text parsing contracts and ISO-8601 rendering parity.
 module Ecluse.Core.TextSpec (spec) where
 
 import Data.Time (UTCTime (UTCTime), fromGregorian, picosecondsToDiffTime)
@@ -14,11 +15,7 @@ import Test.Hspec.Hedgehog (hedgehog)
 
 import Ecluse.Core.Text (afterFirst, joinUrlPath, nonBlank, readDecimalText, readHexText, renderIso8601Utc, stripTrailingSlash, urlFilename)
 
-{- | Tests for the shared text helpers. They pin the promises callers depend on: absence and
-trimming in 'nonBlank', every trailing slash dropped from a URL base, the query- and
-fragment-free filename 'urlFilename' takes, the text after a needle's first occurrence in 'afterFirst', the one
-accepted spelling of a digit run, and 'renderIso8601Utc' byte-for-byte equal to 'iso8601Show'.
--}
+-- | Text parsing contracts and ISO-8601 rendering parity.
 spec :: Spec
 spec = do
     nonBlankSpec
@@ -146,6 +143,14 @@ urlFilenameSpec = describe "urlFilename" $ do
 
     it "is absent for the empty string" $
         urlFilename "" `shouldBe` Nothing
+
+    for_ ["a\\..\\..\\x", ".", "..", "bad\nname", "bad\0name"] $ \filename ->
+        it ("refuses the unsafe filename " <> show filename) $
+            urlFilename ("https://host/" <> filename) `shouldBe` Nothing
+
+    for_ ["archive..tgz", ".hidden", "two words.tgz", "%2e%2e.tgz"] $ \filename ->
+        it ("keeps the valid filename " <> show filename) $
+            urlFilename ("https://host/" <> filename <> "?sig=abc#hash") `shouldBe` Just filename
 
     it "drops a query string, as a presigned artifact URL carries" $
         urlFilename "https://cdn.host/f/thing-1.0.0.tgz?X-Amz-Signature=deadbeef"

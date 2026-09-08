@@ -2,9 +2,11 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | Shared document contracts and artifact dropping through npm and PyPI assembly.
 module Ecluse.Core.Registry.ServedDocumentSpec (spec) where
 
-import Data.Aeson (Value (Number, Object, String), object, (.=))
+import Data.Aeson (Value (Array, Number, Object, String), object, (.=))
+import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -14,16 +16,74 @@ import Hedgehog.Range qualified as Range
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
-import Ecluse.Core.Ecosystem (Ecosystem (Npm))
-import Ecluse.Core.Package (mkPackageName)
-import Ecluse.Core.Package.Merge (MergePlan (..), SourceId)
+import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI))
+import Ecluse.Core.Package (InvalidEntry (invalidKey, invalidKind), InvalidEntryKind (InvalidIndexFile, InvalidVersionManifest), PackageInfo (infoInvalidEntries), mkPackageName)
+import Ecluse.Core.Package.Filter (enforceArtifactLocations)
+import Ecluse.Core.Package.Merge (MergePlan (..), Provenance (GatedSource), SourceId, mergePackuments)
+import Ecluse.Core.Registry.Npm.Filter (assembleMergedPackument)
+import Ecluse.Core.Registry.Npm.Project (parsePackageInfoFromValue)
+import Ecluse.Core.Registry.PyPI.Filter (assembleSimpleIndex)
+import Ecluse.Core.Registry.PyPI.Project (projectSimpleIndexFromValue)
 import Ecluse.Core.Registry.ServedDocument (overlaySurvivors, rebaseArtifactUrl, safeDocumentName)
+import Ecluse.Core.Registry.WireSupport (Projection (NameMismatch, Projected))
+import Ecluse.Core.Security (ecosystemArtifactAuthorities)
+import Ecluse.Test.Registry.Npm qualified as Npm
+import Ecluse.Test.Registry.PyPI (simpleFile, withFileKeys)
+import Ecluse.Test.Support (expectRight)
 
+-- | Pin source selection, name gates, and artifact rebasing after location admission.
 spec :: Spec
 spec = do
     overlaySpec
     nameGateSpec
     rebaseSpec
+    droppedArtifactSpec
+
+droppedArtifactSpec :: Spec
+droppedArtifactSpec = describe "served artifact filename refusals" $
+    for_ ["a\\..\\..\\x", ".", "..", ""] $ \filename -> do
+        it ("drops and records an npm version whose URL ends in " <> show filename) $ do
+            let version = Npm.versionValue (Npm.versionSpec "lodash" "1.0.0" ("https://registry.npmjs.org/" <> filename))
+                source = Npm.packumentValue "lodash" "1.0.0" [("1.0.0", version)] [] []
+            info <- projectedInfo =<< expectRight (parsePackageInfoFromValue (mkPackageName Npm Nothing "lodash") source)
+            let kept = enforceArtifactLocations (ecosystemArtifactAuthorities []) "https://registry.npmjs.org" info
+            map invalidKind (infoInvalidEntries kept) `shouldBe` [InvalidVersionManifest]
+            map invalidKey (infoInvalidEntries kept) `shouldBe` ["1.0.0"]
+            case mergePackuments [(GatedSource, kept)] of
+                Nothing -> expectationFailure "expected a merge plan for the empty listing"
+                Just plan ->
+                    field "versions" (assembleMergedPackument "https://ecluse.test/npm" (Map.singleton 0 source) plan source)
+                        `shouldBe` Just (Object mempty)
+
+        for_ [False, True] $ \keepSibling ->
+            it ("drops and records a PyPI file whose URL ends in " <> show filename <> ", sibling=" <> show keepSibling) $ do
+                let refusedName = "requests-1.0.0.tar.gz"
+                    siblingName = "requests-1.0.0-py3-none-any.whl"
+                    refused = withFileKeys [("url", String ("https://files.pythonhosted.org/" <> filename))] (simpleFile refusedName)
+                    files = refused : [simpleFile siblingName | keepSibling]
+                    source = object ["name" .= ("requests" :: Text), "meta" .= object ["api-version" .= ("1.0" :: Text)], "files" .= files]
+                    index = Map.fromList [(refusedName, "1.0.0"), (siblingName, "1.0.0")]
+                info <- projectedInfo =<< expectRight (projectSimpleIndexFromValue (mkPackageName PyPI Nothing "requests") source)
+                let kept = enforceArtifactLocations (ecosystemArtifactAuthorities ["https://files.pythonhosted.org"]) "https://pypi.org" info
+                map invalidKind (infoInvalidEntries kept) `shouldBe` [if keepSibling then InvalidIndexFile else InvalidVersionManifest]
+                map invalidKey (infoInvalidEntries kept) `shouldBe` [if keepSibling then refusedName else "1.0.0"]
+                case mergePackuments [(GatedSource, kept)] of
+                    Nothing -> expectationFailure "expected a merge plan for the listing"
+                    Just plan -> do
+                        let served = assembleSimpleIndex "https://ecluse.test/pypi" (Map.singleton 0 (source, index)) plan source
+                            sibling = withFileKeys [("url", String ("https://ecluse.test/pypi/simple/requests/" <> siblingName))] (simpleFile siblingName)
+                        field "files" served `shouldBe` Just (Array (fromList [sibling | keepSibling]))
+                        field "versions" served `shouldBe` Just (Array (fromList [String "1.0.0" | keepSibling]))
+
+projectedInfo :: Projection a -> IO a
+projectedInfo = \case
+    Projected info -> pure info
+    NameMismatch name -> fail ("unexpected name mismatch: " <> toString name)
+
+field :: Key -> Value -> Maybe Value
+field key = \case
+    Object o -> KeyMap.lookup key o
+    _ -> Nothing
 
 overlaySpec :: Spec
 overlaySpec = describe "overlaySurvivors" $ do
@@ -68,7 +128,6 @@ nameGateSpec = describe "safeDocumentName" $ do
         safeDocumentName parseName KeyMap.empty `shouldBe` Nothing
 
     it "reads the parser the caller supplies, not a grammar of its own" $
-        -- The gate is shared; which names are legal is each ecosystem's to say.
         safeDocumentName (const (Nothing :: Maybe Text)) (documentNamed (String "lodash")) `shouldBe` Nothing
 
 rebaseSpec :: Spec
@@ -89,13 +148,16 @@ rebaseSpec = describe "rebaseArtifactUrl" $ do
         rebaseArtifactUrl mountUrl "https://registry.npmjs.org/lodash/" `shouldBe` Nothing
         rebaseArtifactUrl mountUrl "" `shouldBe` Nothing
 
+    for_ ["a\\..\\..\\x", ".", ".."] $ \filename ->
+        it ("refuses to rebase " <> show filename) $
+            rebaseArtifactUrl mountUrl ("https://registry.npmjs.org/" <> filename) `shouldBe` Nothing
+
     it "is idempotent: rebasing an already-rebased URL yields the same URL" $
         hedgehog $ do
             file <- forAll (Gen.text (Range.linear 1 20) Gen.alphaNum)
             let once = rebaseArtifactUrl mountUrl ("https://upstream.test/x/" <> file <> ".tgz")
             (once >>= rebaseArtifactUrl mountUrl) === once
 
--- | Run 'overlaySurvivors' over sources and a survivor map, with the versions object as index.
 overlay :: [(SourceId, Value)] -> [(Text, SourceId)] -> [(Text, Value)]
 overlay sources survivors =
     overlaySurvivors versionIn (Map.fromList sources) (planOver (Map.fromList survivors))
@@ -104,11 +166,9 @@ overlay sources survivors =
         Object o | Just (Object vs) <- KeyMap.lookup "versions" o -> KeyMap.lookup (fromString (toString version)) vs
         _ -> Nothing
 
--- | A source document holding one entry per version, each a distinguishable marker.
 sourceOf :: [(Text, Text)] -> Value
 sourceOf entries = object ["versions" .= object [(fromString (toString version), String marker) | (version, marker) <- entries]]
 
--- | A merge plan carrying only the survivor map these examples exercise.
 planOver :: Map Text SourceId -> MergePlan
 planOver survivors =
     MergePlan
@@ -120,18 +180,13 @@ planOver survivors =
         , mpDivergences = mempty
         }
 
--- | A document claiming the given value as its own name.
 documentNamed :: Value -> KeyMap.KeyMap Value
 documentNamed = KeyMap.singleton "name"
 
-{- | A parser standing in for an ecosystem's: it admits a safe path component of ASCII letters
-and yields something the raw text is not, so an example can see which half it got.
--}
 parseName :: Text -> Maybe Text
 parseName raw = do
     guard (not (T.null raw) && T.all (`elem` ("abcdefghijklmnopqrstuvwxyz-." :: String)) raw && not (T.isInfixOf ".." raw))
     pure (T.toUpper raw)
 
--- | The mount-local URL a rebased file resolves to.
 mountUrl :: Text -> Maybe Text
 mountUrl file = Just ("https://ecluse.test/npm/lodash/-/" <> file)

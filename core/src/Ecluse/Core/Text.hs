@@ -2,17 +2,15 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Small pure text helpers shared across the codebase, so the blank-value,
-URL-path-join, URL-filename, scheme-split, and digit-run idioms have a single
-definition rather than several near-identical re-spellings. It also holds the hot-path
-ISO-8601 instant renderer the serve path uses ('renderIso8601Utc'). This module depends
-on nothing else in @Ecluse@, so any module may import it without risking an import cycle.
+{- | Shared text parsing and rendering without dependencies on other core modules.
+Inbound routes and outbound artifact filenames share the same path-component gate.
 -}
 module Ecluse.Core.Text (
     nonBlank,
     stripTrailingSlash,
     joinUrlPath,
     urlFilename,
+    isSafeComponent,
     afterFirst,
     registryPath,
     readDecimalText,
@@ -21,6 +19,7 @@ module Ecluse.Core.Text (
     displayExceptionT,
 ) where
 
+import Data.Char (isControl)
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Builder qualified as TB
@@ -47,15 +46,23 @@ slashes the base writes. It appends the path verbatim, and neither encodes nor v
 joinUrlPath :: Text -> Text -> Text
 joinUrlPath b path = stripTrailingSlash b <> "/" <> path
 
-{- | The text after a URL's final slash, once any query or fragment is cut, or 'Nothing' when
-that is empty. A presigned signature or a @#sha256=@ fragment therefore never lands in a filename.
--}
+-- | The final URL path component without query or fragment, or 'Nothing' if it fails 'isSafeComponent'.
 urlFilename :: Text -> Maybe Text
 urlFilename url =
     let filename = T.takeWhileEnd (/= '/') (T.takeWhile inPath url)
-     in if T.null filename then Nothing else Just filename
+     in if isSafeComponent filename then Just filename else Nothing
   where
     inPath ch = ch /= '?' && ch /= '#'
+
+-- | Refuse empty components, traversal, separators, and controls. Callers must still percent-encode on URL construction.
+isSafeComponent :: Text -> Bool
+isSafeComponent c =
+    not (T.null c)
+        && c /= "."
+        && c /= ".."
+        && T.all safeChar c
+  where
+    safeChar ch = ch /= '/' && ch /= '\\' && not (isControl ch)
 
 {- | The text after @needle@'s first occurrence, or all of @hay@ if absent. The scheme separator
 matches first, so a crafted "https://169.254.169.254/x?u=https://ok" gates on the host dialled.
@@ -90,12 +97,8 @@ readWholly textReader t = case textReader t of
     Right (n, rest) | T.null rest -> Just n
     _ -> Nothing
 
-{- | Render a 'UTCTime' byte for byte as 'iso8601Show' does, at a fraction of the
-allocation cost. The packument serve path renders one instant per surviving version per
-request, so this sits on a hot loop.
-
-Years 0-9999 with a time-of-day below 86 400 seconds take the builder path. Anything
-else delegates to 'iso8601Show', so parity is total.
+{- | Match 'iso8601Show', using a builder for years 0-9999 below 86 400 seconds.
+Other instants delegate to 'iso8601Show' to preserve its representation.
 -}
 renderIso8601Utc :: UTCTime -> Text
 renderIso8601Utc t@(UTCTime day dt)
