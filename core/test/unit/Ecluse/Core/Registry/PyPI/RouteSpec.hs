@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | PyPI route selection, coordinate capture, and URL rendering contracts.
+{- | PyPI route selection, coordinate capture,
+and URL rendering contracts.
+-}
 module Ecluse.Core.Registry.PyPI.RouteSpec (spec) where
 
 import Hedgehog (Gen, forAll)

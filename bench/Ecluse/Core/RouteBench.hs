@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Request routing costs for npm and PyPI, including malformed filename scaling.
+{- | Request routing costs for npm and PyPI,
+including malformed filename scaling.
+-}
 module Ecluse.Core.RouteBench (
     benchmarks,
 ) where

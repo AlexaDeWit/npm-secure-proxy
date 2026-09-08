@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Shared PyPI filenames and PEP 691 entries for projection, routing, and performance checks.
+{- | Shared PyPI filenames and PEP 691 entries
+for projection, routing, and performance checks.
+-}
 module Ecluse.Test.Registry.PyPI (
     simpleFile,
     withFileKeys,

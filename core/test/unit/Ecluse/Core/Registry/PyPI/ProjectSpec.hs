@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | PyPI coordinate compatibility, projection, and allocation growth regressions.
+{- | PyPI coordinate compatibility, projection,
+and allocation growth regressions.
+-}
 module Ecluse.Core.Registry.PyPI.ProjectSpec (spec) where
 
 import Data.Aeson (Value, object, toJSON, (.=))
@@ -153,11 +155,11 @@ allocationSpec = describe "filename allocation growth" $
     it "keeps malformed rejection below quadratic growth as separators double" $ do
         allocations <- forM [1000, 2000, 4000, 8000] $ \count -> do
             files <- evaluate (force [separatorHeavySdist "requests" count (show repetition) | repetition <- [1 :: Int .. 5]])
-            before <- getAllocationCounter
+            allocationBefore <- getAllocationCounter
             rejected <- evaluate (length (filter (isNothing . fileCoordinate requests) files))
-            after <- getAllocationCounter
+            allocationAfter <- getAllocationCounter
             rejected `shouldBe` length files
-            pure (before - after)
+            pure (allocationBefore - allocationAfter)
         -- Each window has two reads accurate to about 4 KiB. Weight both windows by the 3x ratio.
         -- The resulting 32 KiB allowance covers counter granularity without admitting quadratic growth.
         forM_ (zip allocations (drop 1 allocations)) $ \(smaller, larger) ->
