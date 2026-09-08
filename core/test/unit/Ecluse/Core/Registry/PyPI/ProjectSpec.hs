@@ -2,12 +2,15 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | PyPI coordinate compatibility, projection, and allocation growth regressions.
 module Ecluse.Core.Registry.PyPI.ProjectSpec (spec) where
 
 import Data.Aeson (Value, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import GHC.Conc (getAllocationCounter)
 import Test.Hspec
+import UnliftIO (evaluate)
 
 import Ecluse.Core.Ecosystem (Ecosystem (PyPI))
 import Ecluse.Core.Package (
@@ -38,13 +41,14 @@ import Ecluse.Core.Registry.PyPI.Project (
 import Ecluse.Core.Registry.WireSupport (Projection (NameMismatch, Projected))
 import Ecluse.Core.Version (renderVersion)
 import Ecluse.Test.Package (validSha256)
-import Ecluse.Test.Registry.PyPI (simpleFile, withFileKeys)
+import Ecluse.Test.Registry.PyPI (separatorHeavySdist, simpleFile, withFileKeys)
 
 spec :: Spec
 spec = do
     projectNameSpec
     canonicalNameSpec
     coordinateSpec
+    allocationSpec
     projectionSpec
     versionFoldSpec
 
@@ -112,6 +116,20 @@ coordinateSpec = describe "fileCoordinate" $ do
         fileCoordinate requests "requests-2.34.2-1.tar.gz"
             `shouldBe` Just (FileCoordinate "2.34.2.post1" Sdist)
 
+    it "preserves mixed separators, ignored edge runs, and every supported archive" $
+        forM_ [".tar.gz", ".tgz", ".zip", ".tar.bz2", ".tar.xz"] $ \suffix ->
+            fileCoordinate azureStorageBlob ("__Azure..Storage_-Blob---12.14.0" <> suffix)
+                `shouldBe` Just (FileCoordinate "12.14" Sdist)
+
+    it "rejects missing boundaries and incomplete project names" $
+        forM_ ["azure-storage-blob.tar.gz", "azure-storage-.tar.gz", "azure-storage-other-1.tar.gz"] $ \file ->
+            fileCoordinate azureStorageBlob file `shouldBe` Nothing
+
+    it "retains the canonicaliser's empty-name behaviour for domain values outside the project grammar" $ do
+        let emptyName = mkPackageName PyPI Nothing ""
+        fileCoordinate emptyName "___1.tar.gz" `shouldBe` Just (FileCoordinate "1" Sdist)
+        fileCoordinate emptyName "1.tar.gz" `shouldBe` Nothing
+
     it "canonicalises the release, so two spellings of it key alike" $
         fileVersionKey requests "requests-2.34.tar.gz" `shouldBe` fileVersionKey requests "requests-2.34.0.tar.gz"
 
@@ -130,8 +148,30 @@ coordinateSpec = describe "fileCoordinate" $ do
     it "refuses a wheel with too few tag parts to be one" $
         fileCoordinate requests "requests-2.34.2-py3.whl" `shouldBe` Nothing
 
+allocationSpec :: Spec
+allocationSpec = describe "filename allocation growth" $
+    it "keeps malformed rejection below quadratic growth as separators double" $ do
+        allocations <- forM [1000, 2000, 4000, 8000] $ \count -> do
+            files <- evaluate (force [separatorHeavySdist "requests" count (show repetition) | repetition <- [1 :: Int .. 5]])
+            before <- getAllocationCounter
+            rejected <- evaluate (length (filter (isNothing . fileCoordinate requests) files))
+            after <- getAllocationCounter
+            rejected `shouldBe` length files
+            pure (before - after)
+        -- Each window has two reads accurate to about 4 KiB. Weight both windows by the 3x ratio.
+        -- The resulting 32 KiB allowance covers counter granularity without admitting quadratic growth.
+        forM_ (zip allocations (drop 1 allocations)) $ \(smaller, larger) ->
+            larger `shouldSatisfy` (<= 3 * smaller + 32768)
+
 projectionSpec :: Spec
 projectionSpec = describe "projectSimpleIndexFromValue" $ do
+    it "drops malformed separator-heavy upstream files while retaining normal releases" $
+        forM_ [1000, 2000, 4000, 8000] $ \count -> do
+            let filename = separatorHeavySdist "requests" count "projection"
+            info <- shouldProject requests (indexOf [sdistFileNamed filename, sdistFile "2.34.2", wheelFile "2.34.2"])
+            artifactNames info "2.34.2" `shouldBe` Just ["requests-2.34.2.tar.gz", "requests-2.34.2-py3-none-any.whl"]
+            map invalidKey (infoInvalidEntries info) `shouldBe` [filename]
+
     it "projects one release per canonical version, carrying every file of it" $ do
         info <- shouldProject requests (indexOf [sdistFile "2.34.2", wheelFile "2.34.2", wheelFile "2.34.1"])
         Map.keys (infoVersions info) `shouldBe` ["2.34.1", "2.34.2"]
@@ -207,70 +247,55 @@ versionFoldSpec = describe "the version-level folds over a release's files" $ do
         wholly <- shouldProject requests (indexOf [yanked (sdistFile "2.34.2"), yanked (wheelFile "2.34.2")])
         pkgAvailability <$> Map.lookup "2.34.2" (infoVersions wholly) `shouldBe` Just (Yanked (Just "withdrawn"))
 
--- | The project every example is requested for.
 requests :: PackageName
 requests = mkPackageName PyPI Nothing "requests"
 
--- | A project whose name carries PEP 503 separators, so a file name must split at the right one.
 azureStorageBlob :: PackageName
 azureStorageBlob = mkPackageName PyPI Nothing "azure-storage-blob"
 
--- | Project an index for 'requests', failing the example on a refusal or a name mismatch.
 shouldProject :: PackageName -> Value -> IO PackageInfo
 shouldProject name value = case projectSimpleIndexFromValue name value of
     Left err -> fail (show err)
     Right (NameMismatch reported) -> fail (toString ("index self-reported " <> reported))
     Right (Projected info) -> pure info
 
--- | Unwrap a parse the example expects to succeed.
 shouldParse :: (Show e) => Either e a -> IO a
 shouldParse = either (fail . show) pure
 
--- | Whether an agreement check carried a projection through.
 isProjected :: Projection a -> Bool
 isProjected = \case
     Projected _ -> True
     NameMismatch _ -> False
 
--- | Whether an install signal says installing the release runs code.
 runsCode :: CodeExecSignal -> Bool
 runsCode = \case
     RunsCodeOnInstall _ -> True
     NoCodeOnInstall -> False
     CodeExecUnknown -> False
 
--- | One release's artifacts, in the order the projection placed them.
 artifactsOf :: PackageInfo -> Text -> [Artifact]
 artifactsOf info version = maybe [] (toList . pkgArtifacts) (Map.lookup version (infoVersions info))
 
--- | One release's artifact names.
 artifactNames :: PackageInfo -> Text -> Maybe [Text]
 artifactNames info version = map artFilename . toList . pkgArtifacts <$> Map.lookup version (infoVersions info)
 
--- | The digests on a release's first artifact.
 artifactHashes :: PackageInfo -> Text -> [Hash]
 artifactHashes info version = concatMap artHashes (take 1 (artifactsOf info version))
 
--- | An index for @requests@ offering the given file entries.
 indexOf :: [Value] -> Value
 indexOf = indexNamed "requests"
 
--- | An index reporting the given name and offering the given file entries.
 indexNamed :: Text -> [Value] -> Value
 indexNamed name files = object ["name" .= name, "files" .= files]
 
--- | A wheel entry for the given release.
 wheelFile :: Text -> Value
 wheelFile version = simpleFile ("requests-" <> version <> "-py3-none-any.whl")
 
--- | A source-distribution entry for the given release.
 sdistFile :: Text -> Value
 sdistFile version = simpleFile ("requests-" <> version <> ".tar.gz")
 
--- | A source-distribution entry under a name of the caller's choosing.
 sdistFileNamed :: Text -> Value
 sdistFileNamed = simpleFile
 
--- | A file entry PEP 592 withdraws, with a stated reason.
 yanked :: Value -> Value
 yanked = withFileKeys [("yanked", toJSON ("withdrawn" :: Text))]

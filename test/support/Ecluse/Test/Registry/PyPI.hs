@@ -2,27 +2,21 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Shared PyPI fixtures: the PEP 691 file entry every Simple-index example is built from.
-
-The module name follows this support library's @Ecluse.X -> Ecluse.Test.X@ convention. The
-entry carries the keys the projection reads plus one this build does not model, so an example
-that asserts what survives a decode and one that asserts what a served entry relays read the
-same document. 'withFileKeys' adds or overrides a key where an example is about that key.
--}
+-- | Shared PyPI filenames and PEP 691 entries for projection, routing, and performance checks.
 module Ecluse.Test.Registry.PyPI (
     simpleFile,
     withFileKeys,
+    separatorHeavySdist,
 ) where
 
 import Data.Aeson (Value (Object), object, (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Text qualified as T
 
 import Ecluse.Test.Package (validSha256)
 
-{- | A complete PEP 691 file entry under the given name, on the ecosystem's declared files host
-and carrying a well-formed sha256.
--}
+-- | A PEP 691 entry on the declared files host with a SHA-256 digest.
 simpleFile :: Text -> Value
 simpleFile filename =
     object
@@ -39,3 +33,7 @@ withFileKeys :: [(Key, Value)] -> Value -> Value
 withFileKeys overrides = \case
     Object base -> Object (foldr (uncurry KeyMap.insert) base overrides)
     other -> other
+
+-- | A malformed sdist with distinct suffixes for allocation and scaling measurements.
+separatorHeavySdist :: Text -> Int -> Text -> Text
+separatorHeavySdist project count suffix = project <> "-1" <> T.replicate count "_a" <> "_" <> suffix <> ".tar.gz"

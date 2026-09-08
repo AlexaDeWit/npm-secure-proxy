@@ -2,14 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Projection of what "Ecluse.Core.Registry.PyPI.Wire" decoded into the agnostic domain model.
-
-PyPI indexes files, not releases, so a release is the set of files whose names spell it
-('fileCoordinate'), keyed by its canonical PEP 440 spelling so two indexes spelling one release
-differently merge into one entry. Three version-level signals fold over that set: install-time
-code execution over any sdist, the age over the newest upload instant, and withdrawal only when
-every file is yanked. A file naming no coordinate drops and is recorded, as does a release with
-no surviving file. Only an unusable top-level structure denies the document outright.
+{- | Project decoded PyPI files into releases keyed by canonical PEP 440 versions.
+The same filename parser supplies coordinates for upstream projection and inbound routes.
 -}
 module Ecluse.Core.Registry.PyPI.Project (
     -- * Projection
@@ -68,17 +62,13 @@ import Ecluse.Core.Registry.WireSupport (
  )
 import Ecluse.Core.Version (Version, canonicalPep440, mkVersion, selectLatest)
 
-{- | Project an already-decoded Simple index @Value@ for the requested project, reusing that parse
-rather than the bytes. A @Value@ that is not a Simple index gives a 'ParseError'.
--}
+-- | Project a decoded Simple index, refusing unusable structure and reporting name mismatches.
 projectSimpleIndexFromValue :: PackageName -> Value -> Either ParseError (Projection PackageInfo)
 projectSimpleIndexFromValue requestedName value = do
     index <- first (ParseError . toText) (parseEither parseJSON value)
     reportedName <- projectName (siName index)
     pure (checkNameAgreement requestedName reportedName (projectIndex reportedName index))
 
-{- Project a decoded index under the name it reported for itself. 'projectSimpleIndexFromValue'
-owns checking that name against the request. -}
 projectIndex :: PackageName -> SimpleIndex -> PackageInfo
 projectIndex name index =
     PackageInfo
@@ -90,8 +80,6 @@ projectIndex name index =
   where
     (versions, fileDrops) = projectVersions name (siFiles index)
 
-{- Group the index's files by the release each names, projecting one 'PackageDetails' per
-release. A file whose name names no coordinate for this project is dropped and recorded. -}
 projectVersions :: PackageName -> [IndexFile] -> (Map Text PackageDetails, [InvalidEntry])
 projectVersions name files =
     (Map.map (projectDetails name) grouped, drops)
@@ -105,8 +93,7 @@ projectVersions name files =
             )
         Nothing -> (byVersion, uncoordinatedDrop file : dropAcc)
 
-{- Record a file whose name names no release of this project. The value is the file's location,
-which 'mkInvalidEntry' reduces to its authority before the record reaches a log line. -}
+-- 'mkInvalidEntry' reduces the location to its authority before logging.
 uncoordinatedDrop :: IndexFile -> InvalidEntry
 uncoordinatedDrop file =
     mkInvalidEntry
@@ -115,15 +102,10 @@ uncoordinatedDrop file =
         (toJSON (ifUrl file))
         "file name names no PEP 440 release of this project"
 
-{- | @dist-tags@ for a PyPI project. The wire carries no @latest@ pointer, so one is computed under
-the shared rule: the highest release, a final one ahead of a pre-release.
--}
 latestTag :: Map Text PackageDetails -> Map Text Version
 latestTag versions =
     maybe Map.empty (Map.singleton "latest") (selectLatest Nothing (map pkgVersion (Map.elems versions)))
 
-{- Project one release's files into its 'PackageDetails'. The version-level signals are folds
-over the file set, documented in the module header. -}
 projectDetails :: PackageName -> NonEmpty (IndexFile, FileCoordinate) -> PackageDetails
 projectDetails name entries =
     PackageDetails
@@ -134,16 +116,14 @@ projectDetails name entries =
         , pkgTrust = TrustUnknown
         , pkgAvailability = availability
         , pkgArtifacts = fmap (uncurry projectArtifact) entries
-        , -- The Simple index declares neither a licence nor a publisher; both live in the
-          -- distribution's own metadata, which this projection does not fetch.
+        , -- Licence and publisher live in distribution metadata, outside the Simple index.
           pkgLicenses = []
         , pkgPublisher = Nothing
         }
   where
     files = fmap fst entries
 
-    -- The newest instant, so a wheel added later moves the whole release's age forward and the
-    -- quarantine measures from the last thing published under it.
+    -- A later wheel restarts quarantine for the whole release.
     newestUpload = case mapMaybe ifUploadTime (toList files) of
         [] -> Nothing
         earliest : rest -> Just (foldl' max earliest rest)
@@ -178,16 +158,12 @@ projectArtifact file coordinate =
         , artProvenance = ifProvenance file
         }
 
--- An algorithm this build does not know, or a malformed digest, is absent rather than
--- degenerate, so no bogus fingerprint reaches the integrity floor.
 indexHash :: (Text, Text) -> Maybe Hash
 indexHash (algorithm, digest) = do
     algo <- rightToMaybe (parseHashAlg algorithm)
     rightToMaybe (mkHash algo digest)
 
-{- | What a distribution file name says about the file: which release it belongs to, and whether
-installing it runs code.
--}
+-- | A filename's canonical release and artifact kind.
 data FileCoordinate = FileCoordinate
     { fcVersionKey :: Text
     -- ^ The release key: the file's version in canonical PEP 440 form.
@@ -196,15 +172,11 @@ data FileCoordinate = FileCoordinate
     }
     deriving stock (Eq, Show)
 
-{- | Read the coordinate a distribution file name spells for @name@. 'Nothing' for another project,
-an unrecognised archive form, or a version that is not PEP 440: none is resolvable.
--}
+-- | Read a filename's coordinate, rejecting another project, an unknown archive, or invalid PEP 440.
 fileCoordinate :: PackageName -> Text -> Maybe FileCoordinate
 fileCoordinate name file = wheelCoordinate name file <|> sdistCoordinate name file
 
-{- | The release key a distribution file belongs to, for an index that maps its files onto the
-versions it serves. 'Nothing' on the same three refusals 'fileCoordinate' makes.
--}
+-- | Read a filename's release key, with the same refusals as 'fileCoordinate'.
 fileVersionKey :: PackageName -> Text -> Maybe Text
 fileVersionKey name = fmap fcVersionKey . fileCoordinate name
 
@@ -229,54 +201,46 @@ sdistCoordinate name file = do
     version <- canonicalPep440 =<< afterProjectName name stem
     pure (FileCoordinate version Sdist)
 
--- The archive forms a Python index serves a source distribution under.
 sdistSuffixes :: [Text]
 sdistSuffixes = [".tar.gz", ".tgz", ".zip", ".tar.bz2", ".tar.xz"]
 
-{- The part of a file-name stem after the project name it must begin with. 'Nothing' when the
-stem names another project, which on the artifact route is a path-confusion attempt. -}
+-- Compare disjoint chunks so unauthenticated filenames cannot trigger repeated prefix work.
 afterProjectName :: PackageName -> Text -> Maybe Text
-afterProjectName name stem =
-    listToMaybe [after | (before, after) <- separatorCuts stem, canonicalise PyPI before == canonicalName name]
-
--- Every cut of a stem at a PEP 503 separator, longest leading part first, so a project name
--- carrying a separator wins over a prefix of itself.
-separatorCuts :: Text -> [(Text, Text)]
-separatorCuts stem = reverse (cutsAfter "" stem)
+afterProjectName name stem
+    | T.null expected = do
+        (separator, _) <- T.uncons stem
+        guard (isNameSeparator separator)
+        pure (T.dropWhile isNameSeparator stem)
+    | otherwise = matchProjectChunks (T.splitOn "-" expected) (T.dropWhile isNameSeparator stem)
   where
-    cutsAfter before rest = case T.break isNameSeparator rest of
-        (chunk, separated) -> case T.uncons separated of
-            Nothing -> []
-            Just (separator, after) ->
-                let leading = before <> chunk
-                 in (leading, after) : cutsAfter (T.snoc leading separator) after
+    expected = canonicalName name
+
+matchProjectChunks :: [Text] -> Text -> Maybe Text
+matchProjectChunks [] rest = Just rest
+matchProjectChunks (expected : remaining) rest = do
+    let (chunk, separated) = T.break isNameSeparator rest
+    guard (canonicalise PyPI chunk == expected)
+    guard (not (T.null separated))
+    matchProjectChunks remaining (T.dropWhile isNameSeparator separated)
 
 -- The characters PEP 503 treats as one separator when it normalises a name.
 isNameSeparator :: Char -> Bool
 isNameSeparator c = c == '-' || c == '_' || c == '.'
 
-{- | A project's canonical PEP 503 key as characters: the spelling a file name is compared against,
-and the one segment an upstream Simple-index URL is built from.
--}
+-- | The PEP 503 key used for filename comparison and upstream Simple-index URLs.
 canonicalName :: PackageName -> Text
 canonicalName = canonicalise PyPI . renderPackageName
 
-{- | Parse a PyPI project name into the domain 'PackageName': the one splitter every PyPI entry
-point reads a name through. PyPI carries no namespace, so a name is one component.
--}
+-- | Parse one PyPI name component under the shared floor and PEP 508 grammar.
 projectName :: Text -> Either ParseError PackageName
 projectName raw = do
     withinNameLimit raw
     mkPackageName PyPI Nothing <$> nameComponent raw
 
-{- | Whether a name is already in PEP 503 canonical form. The serve route claims that spelling
-alone, so another one takes the structural @404@ rather than a redirect.
--}
+-- | Whether the route can claim this name without a canonical-spelling redirect.
 isCanonicalName :: Text -> Bool
 isCanonicalName raw = canonicalise PyPI raw == raw
 
-{- One PyPI project name on the shared name floor, plus PEP 508's own grammar. 'projectName'
-owns the length cap. -}
 nameComponent :: Text -> Either ParseError Text
 nameComponent component = do
     onFloor <- first (refusalText component) (parseNameComponent component)
@@ -284,21 +248,16 @@ nameComponent component = do
         then Right onFloor
         else Left (ParseError ("unusable PyPI project name: " <> show component))
 
--- PyPI's own wording for each way the shared floor refuses a name.
 refusalText :: Text -> NameRefusal -> ParseError
 refusalText component = \case
     NameEmpty -> ParseError "empty PyPI project name"
     NameNotAscii -> ParseError ("non-ASCII PyPI project name: " <> show component)
     NameUnsafeComponent -> ParseError ("unusable PyPI project name: " <> show component)
 
-{- | The characters a canonical PyPI project name may begin with, declared beside the grammar that
-admits them because a store walk partitions a name space by them.
--}
+-- | Initial characters for partitioning canonical PyPI names during a store walk.
 pypiNameLeadChars :: [Char]
 pypiNameLeadChars = ['a' .. 'z'] <> ['0' .. '9']
 
-{- PEP 508's name grammar on top of the floor: an ASCII alphanumeric at each end, and only
-@-@, @_@ or @.@ between them. -}
 usableComponent :: Text -> Bool
 usableComponent component =
     T.all nameChar component
@@ -308,8 +267,7 @@ usableComponent component =
     nameChar ch = nameEdge ch || isNameSeparator ch
     nameEdge ch = isAscii ch && isAlphaNum ch
 
-{- Refuse a name over PyPI's own cap. 'T.compareLength' stops at the cap rather than measuring
-a hostile length in full. -}
+-- 'T.compareLength' stops at the cap without measuring the whole input.
 withinNameLimit :: Text -> Either ParseError ()
 withinNameLimit raw
     | T.compareLength raw pypiNameLimit == GT = Left (ParseError overLong)
