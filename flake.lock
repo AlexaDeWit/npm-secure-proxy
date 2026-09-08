@@ -37,7 +37,31 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "saerskriven": "saerskriven"
+      }
+    },
+    "saerskriven": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788854222,
+        "narHash": "sha256-644Mi4RW8pW64OJnUXzG9ciiJsOsFUYB24b7vMt6/Ds=",
+        "owner": "AlexaDeWit",
+        "repo": "Saerskriven",
+        "rev": "ec3f53815b0ee90451f5634a59582a81142549a8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "AlexaDeWit",
+        "repo": "Saerskriven",
+        "type": "github"
       }
     },
     "systems": {

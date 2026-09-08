@@ -6,28 +6,21 @@
     # docs/architecture/release-supply-chain.md.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
+    saerskriven.url = "github:AlexaDeWit/Saerskriven";
+    saerskriven.inputs.nixpkgs.follows = "nixpkgs";
+    saerskriven.inputs.flake-utils.follows = "flake-utils";
   };
 
-  # Nothing here needs the flake's own source tree, but Nix always passes `self`,
-  # so absorb it with `...` rather than binding it.
-  outputs = { nixpkgs, flake-utils, ... }:
+  outputs = { nixpkgs, flake-utils, saerskriven, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         hlib = pkgs.haskell.lib;
 
-        # OpenTelemetry 1.0 overlay. The pinned nixpkgs (26.05) ships the older
-        # 0.x line: sdk 0.1.0.1, api 0.3.1.0, and no api-types package at all. The
-        # project targets OTel 1.0, the May-2026 release that ships metrics and logs
-        # alongside tracing, with OTLP export. So this overlay injects the 1.0 stack
-        # for the Nix path, where callCabal2nix resolves from this set rather than
-        # Hackage. That matches the 1.0 pin the cabal and Hackage path carries in
-        # cabal.project and cabal.project.freeze. `callHackageDirect` pins each source
-        # by exact version and Hackage tarball sha256: no flake input, and no runtime
-        # fetch beyond the fixed-output derivation. The whole stack moves together.
-        # Each 1.0 package then resolves its OTel deps against the other 1.0 packages
-        # here, never the 0.x ones still in the base set.
-        # See docs/architecture/observability.md → "OpenTelemetry as the substrate".
+        # The base set carries OTel 0.x. Keep the 1.0 packages aligned with
+        # cabal.project and its freeze. Hash-pinned sources resolve against this
+        # shared overlay, including their OTel dependencies.
+        # See docs/architecture/observability.md.
         otelOverlay = hself: _hsuper: {
           # cvss 0.3 adds CVSS v4 parsing and fixes v2 scoring. The base set pins
           # 0.2.0.1, which rejects the v4 vectors that about a third of the scored
@@ -196,18 +189,11 @@
             amazonka-s3 = fromMonorepo "amazonka-s3" "lib/services/amazonka-s3";
           };
 
-        # HSEC advisory pins. The 26.05 set resolves lines that carry Haskell
-        # advisories with released fixes. This overlay pins the fixed versions until
-        # the base set carries them, the same mechanism as the OTel overlay above.
-        # HSEC-2026-0007 (aeson and text-iso8601) is a decode-time denial of service,
-        # and untrusted registry JSON is the serve hot path. HSEC-2026-0008
-        # (crypton-x509 and crypton-x509-validation) leaves X.509 Name Constraints
-        # unenforced, and certificate validation is the guarantor of the HTTPS-only
-        # egress posture. The x509 family, tls, and crypton-connection move as one
-        # coherent set. Version 2.3 is the first tls line accepting x509 1.9, and
-        # crypton-connection 0.4.6 is the first accepting tls 2.3. Both tls 2.3 and
-        # x509 1.9 need crypton 1.1. `aeson-pretty` 0.8.11 is the first release
-        # admitting aeson 2.3. dontCheck for the same reason as cvss above.
+        # These fixes cover JSON decoding DoS (HSEC-2026-0007) and X.509
+        # Name Constraints (HSEC-2026-0008). Keep the x509 family, tls, and
+        # crypton-connection aligned: tls 2.3 accepts x509 1.9, both need crypton
+        # 1.1, and crypton-connection 0.4.6 accepts tls 2.3. aeson-pretty 0.8.11
+        # admits aeson 2.3. dontCheck skips upstream tests as with cvss above.
         advisoryOverlay = hself: hsuper:
           let
             fromHackage = pkg: ver: sha256:
@@ -261,22 +247,11 @@
           ];
         };
 
-        # Shell tooling resolves from the unmodified ghc910 set. The tools do not
-        # ship in the app closure, so the overlays above do not apply to them. The
-        # pristine set keeps them binary-cached instead of rebuilding each tool's own
-        # dependency graph against every pin. It is the same compiler as hpkgs, so
-        # the .hie-consuming tools (stan, weeder) and doctest stay compatible.
-        #
-        # Standalone tools enter the shells as STATIC executables, never as set
-        # packages. A dynamically linked tool drags its whole Haskell library
-        # universe into the shell closure. Two sets are in play, hpkgs for the app
-        # and this one for tools. That closure bloat pushes the CI Nix store past its
-        # cache trim caps (setup-toolchain's nix-gc-max-store-size), and turns every
-        # cache save partial. Tools with a top-level nixpkgs attribute
-        # (pkgs.hlint, pkgs.fourmolu, and so on) are already static and
-        # Hydra-cached, and justStaticExecutables below wraps the rest. Only the
-        # genuinely set-coupled tools (ghc, doctest, hspec-discover) stay as set
-        # packages.
+        # Tools use the unmodified, binary-cached ghc910 set. Its compiler
+        # matches the app's, so HIE consumers and doctest remain compatible.
+        # Use static executables to avoid pulling a second Haskell library
+        # closure past the CI cache trim cap. Only compiler-coupled tools
+        # (ghc, doctest, hspec-discover) remain set packages.
         toolHpkgs = pkgs.haskell.packages.ghc910;
 
         # The cabal package, built by Nix. callCabal2nix reads ecluse.cabal and
@@ -313,15 +288,10 @@
               (d.benchmarkToolDepends or [ ])
             ]));
 
-        # cabal.project.freeze, derived from this flake's package set. The Nix side
-        # is the version authority, and the freeze projects it onto the cabal path.
-        # So `cabal` in the dev shell and the CI gate resolves the exact closure
-        # behind the shipped artifact. Versions only: flag choices follow each
-        # side's defaults, and no index-state line appears, because cabal.project
-        # owns the only copy. The z- ids ghc-pkg also registers are internal
-        # sublibraries of dependencies, not solver targets, hence the filter.
-        # Regenerate with `task freeze`. checks.freeze-sync keeps the committed file
-        # honest.
+        # The freeze projects the Nix package versions onto the cabal path.
+        # Flags keep each resolver's defaults. cabal.project owns index-state.
+        # Filter ghc-pkg's internal z- sublibraries from solver targets.
+        # Regenerate with task freeze. checks.freeze-sync detects drift.
         cabalFreeze = pkgs.runCommand "cabal.project.freeze" { } ''
           ${ecluseDepEnv}/bin/ghc-pkg list --simple-output \
             | tr ' ' '\n' \
@@ -385,15 +355,9 @@
           else
             ecluseBinUnpruned;
 
-        # The npm version-ordering oracle (`node-semver`) for the differential
-        # smoke suite and `task gen-version-fixtures`. nixpkgs 26.05 removed the
-        # node2nix-generated `nodePackages` set. The blessed replacement is to build
-        # node_modules from a committed lockfile. `importNpmLock` reads the
-        # integrity hashes already in test/oracles/package-lock.json, so there is no
-        # separate Nix hash to maintain. The oracle sits deliberately outside
-        # Renovate's reach (renovate.json5 ignorePaths): it is reference test data,
-        # refreshed by hand with the fixture workflow, never auto-bumped. NODE_PATH
-        # below exposes it, so `require("semver")` resolves.
+        # importNpmLock builds the node-semver oracle from its committed lock
+        # and integrity hashes. Renovate excludes this reference data.
+        # Refresh it through the fixture workflow. NODE_PATH exposes semver.
         oracleNodeModules = pkgs.importNpmLock.buildNodeModules {
           npmRoot = ./test/oracles;
           inherit (pkgs) nodejs;
@@ -411,15 +375,8 @@
           AWS_EC2_METADATA_DISABLED = "true";
         };
 
-        # ---- Tool tiers --------------------------------------------------------
-        # The shells compose from explicit tiers, each a strict layer on the one
-        # below. They are `toolchain` (compile and test), `gate` (what the gating CI
-        # jobs add), and `ops` (release and vulnerability scanning). Then `bench`
-        # (benchmarking and profiling) and `ide` (interactive only). `ci` is
-        # toolchain ∪ gate ∪ ops ∪ bench, deliberately ONE closure (see
-        # `ciShellInputs`). `default` adds `ide` on top, and `mcp` is toolchain plus
-        # the LSP bridge. A tool's reason for being in the closure stays documented
-        # beside it.
+        # CI shares one closure: toolchain, gate, ops, and bench.
+        # The default shell adds IDE tools. Keep each tool in one tier.
 
         # Compiling and testing: what every build path needs before any gate
         # tooling. `go-task` lives here and here only, because every job and every
@@ -477,6 +434,7 @@
           # d2 renders web/diagrams/*.d2 to SVG in the site build (`task site` and
           # the site-stub gate). A single Go binary: no npm closure, no client JS.
           pkgs.d2
+          saerskriven.packages.${system}.saerskriven
         ];
 
         # Interactive-only tooling: in the default (human) shell, never needed by
@@ -503,28 +461,11 @@
           agent-lsp
         ];
 
-        # Release and vulnerability-scanning tooling.
-        #
-        # `skopeo` converts the two Nix-built per-arch archives into the OCI layout
-        # that release.yml pushes (scripts/push-multiarch.sh), with no Docker daemon
-        # needed. `sbomnix` generates the Nix-native SBOM (`task sbom`), which is more
-        # accurate than scanning a distroless image, whose static Haskell deps a
-        # scanner cannot see. The provenance and SBOM attestations themselves come
-        # from the GitHub attest-actions in CI, as immutable OCI referrers. See
-        # docs/architecture/release-supply-chain.md → "Supply-chain attestations".
-        #
-        # `grype` is the C-closure scan authority (`task scan`). It scans the
-        # sbomnix SBOM of the image's C closure (openssl, curl, glibc, and the rest)
-        # against its maintained DB. It emits the SARIF that security.yml uploads to
-        # code scanning. `vulnix` is a secondary, Nix-native cross-check
-        # (`task scan-vulnix`): wider and patch-aware, but un-graded, so not the
-        # authority. `osv-scanner` is the Haskell-closure (HSEC) scan authority
-        # (`task scan-osv`). OSV.dev carries the HSEC advisories, and the scan reads
-        # cabal.project.freeze natively. `checks.freeze-sync` keeps that file
-        # equal to this flake's package set, so it describes the closure the image
-        # ships. Its SARIF goes to code scanning too. See
-        # docs/architecture/release-supply-chain.md → "Vulnerability scanning and
-        # dependency freshness".
+        # skopeo converts release archives without a Docker daemon. sbomnix
+        # records static Haskell dependencies that image scanners cannot see.
+        # grype owns C-library scanning, vulnix cross-checks Nix patches, and
+        # osv-scanner reads HSEC advisories against cabal.project.freeze.
+        # See docs/architecture/release-supply-chain.md for the scan contracts.
         opsInputs = [
           pkgs.skopeo
           # regclient ships `regctl`, which assembles the two per-arch OCI
@@ -561,20 +502,10 @@
           pkgs.oha
         ];
 
-        # agent-lsp: the LSP<->MCP bridge for this project. It lets an MCP client,
-        # an agent harness for example, drive haskell-language-server's semantic
-        # navigation instead of lexical grep. That covers go-to-definition,
-        # find-references, hover and type-at-point, diagnostics, and rename. It is
-        # built on a *complete* LSP client. The obvious alternative fails.
-        # `mcp-language-server` v0.1.1 is an incomplete client that leaves HLS
-        # deadlocked at about 0 % CPU on every semantic request, verified against
-        # this project. The same HLS is flawless under VS Code's
-        # vscode-languageclient. See AGENTS.md → "Build & Tooling". It is not in
-        # nixpkgs, so buildGoModule builds it from tagged source. `go.mod` needs Go
-        # 1.26 (the 26.05 set ships go_1_26), and it is pure-Go (modernc sqlite, no
-        # cgo). It rides the ide tier, because that shell already carries the GHC
-        # 9.10 toolchain and the hspec-discover that HLS needs to load the Spec.hs
-        # modules.
+        # agent-lsp drives HLS through MCP. mcp-language-server v0.1.1
+        # leaves this project's HLS requests blocked, so it cannot replace it.
+        # The tagged source needs Go 1.26 and uses no cgo. Keep it in the IDE
+        # tier beside HLS's matching GHC and hspec-discover.
         agent-lsp = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) rec {
           pname = "agent-lsp";
           version = "0.15.0";
@@ -616,16 +547,10 @@
           # `task freeze` copies it over cabal.project.freeze.
           cabal-freeze = cabalFreeze;
 
-          # Lean, reproducible OCI image, built straight from the binary's Nix
-          # closure, with no Dockerfile and no base distro. It contains only the
-          # runtime closure plus CA certificates: no shell, no package manager, and
-          # it runs non-root. `buildLayeredImage` splits the closure into
-          # cache-friendly layers, and the build is bit-for-bit reproducible, a
-          # fitting property for a supply-chain tool. `tag = null` derives a unique
-          # content-hash tag for local use. A release retags at push time, because
-          # the target repo enforces immutable tags (see CONTRIBUTING.md
-          # "Releases"). release.yml pushes the multi-arch index. The GitHub
-          # attest-actions attach the provenance and SBOM attestations in CI.
+          # The image contains the static binary's runtime closure and CA roots.
+          # tag = null gives local builds a content-hash tag. Releases retag it
+          # for the immutable registry, then publish the multi-arch index and
+          # attestations through release.yml.
           dockerImage = pkgs.dockerTools.buildLayeredImage {
             name = "ecluse";
             tag = null;
@@ -652,20 +577,13 @@
           };
         };
 
-        # Flake checks. The CI `docs` job builds all of them.
-        #
-        # This one is here rather than in the Taskfile because Nix can do something
-        # cabal cannot. The dependency closure comes prebuilt from the pinned Haskell
-        # set WITH its .haddock interfaces, so only ecluse compiles and haddocks. The
-        # cabal path (`task docs-check`) instead rebuilds the whole ~188-package
-        # closure on every CI run. `cabal haddock` wants a documentation variant of
-        # the deps that build-test's `cabal build` store does not have. That
-        # asymmetry is the bar a check must clear to earn a Nix implementation. A
-        # check that merely re-runs a tool the dev shell already pins belongs in the
-        # Taskfile, where it runs incrementally and is what actually gates.
-        # `doHaddock` forces the Haddock pass, so a broken doc comment fails the
-        # build. `dontCheck` skips the test suites.
+        # The docs job builds these checks. Nix reuses dependency Haddock
+        # interfaces, avoiding cabal's separate documentation closure build.
+        # Use Nix checks where its store or evaluated inputs are required.
+        # doHaddock forces documentation generation. dontCheck skips tests.
         checks.docs = hlib.doHaddock ecluse;
+        # Test the release binary against this flake's loader and libraries.
+        checks.saerskriven = saerskriven.checks.${system}.saerskriven;
 
       # The two checks below clear the same bar in a different way. Each compares
       # the Nix and cabal views of one pin, which only Nix evaluation can see side

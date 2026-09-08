@@ -28,9 +28,12 @@ exact Nix-store closure (GHC and C libraries from `flake.lock`), use the Nix out
 | Build the `ecluse` binary | `task nix-build` (`nix build`) → `./result/bin/ecluse` |
 | Evaluate the flake and build its checks | `task nix-check` (`nix flake check`) |
 
-`nix flake check` builds the `docs`, `freeze-sync`, and `amazonka-lockstep` checks. The first
-builds library Haddock. The others verify the dependency locks described below. Test suites,
-formatting, and linting run through separate `task` targets. The authoritative CI tiers and their
+`nix flake check` builds the `docs`, `freeze-sync`, `amazonka-lockstep`, and
+`saerskriven` checks. The first builds library Haddock. The next two verify
+the dependency locks described below.
+The last runs the pinned Saerskriven CLI against this flake's libraries,
+including PDF rendering. Test suites, formatting, and linting run through
+separate `task` targets. The authoritative CI tiers and their
 external-service requirements are in [Testing Strategy](testing.md#what-gates-and-what-doesnt).
 
 > **Flakes only see git-tracked files.** `git add` new sources before `nix build` /
@@ -61,6 +64,27 @@ then `task freeze`, and commit both together. When the weekly Renovate PR moves 
 `freeze-sync` reds it, and a single `task freeze` commit on that branch completes the refresh.
 Renovate widens the *bounds* in `ecluse.cabal`, only the few explicit `>= && <` ranges its manager
 can parse. Versions themselves move only through the flake.
+
+### Threat modelling tools
+
+The default and CI shells include the released Saerskriven CLI. Its locked
+flake input follows Écluse's nixpkgs and flake-utils inputs. Saerskriven owns
+the binary version, asset hashes, and Nix package definition.
+
+```bash
+nix develop --command saerskriven --version
+nix develop .#ci --command saerskriven validate threat-modelling/ecluse.json
+```
+
+The current source remains `threat-modelling/ecluse.json`. The site still uses
+`site-gen` to render its threat register. The CLI is available for the later
+migration to Saerskriven's model and rendering workflow.
+
+After Saerskriven publishes and reviews a packaging update, update its input
+with `nix flake update saerskriven` and review `flake.lock` in a PR. Run
+`task nix-check` to test the package against Écluse's pinned libraries.
+[Saerskriven's Nix guide](https://github.com/AlexaDeWit/Saerskriven/blob/main/docs/nix.md)
+records the upstream release update process and platform execution coverage.
 
 ---
 
