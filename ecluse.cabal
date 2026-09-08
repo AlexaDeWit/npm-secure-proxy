@@ -182,6 +182,7 @@ library ecluse-core
     Ecluse.Core.Security.Limits
     Ecluse.Core.Server.Cache
     Ecluse.Core.Server.Cache.Store
+    Ecluse.Core.Server.Cache.VersionWeight
     Ecluse.Core.Server.Accept
     Ecluse.Core.Server.Admission
     Ecluse.Core.Server.Admission.Bytes
@@ -764,6 +765,7 @@ test-suite ecluse-core-unit
     Ecluse.Core.Server.AcceptSpec
     Ecluse.Core.Server.AdmissionSpec
     Ecluse.Core.Server.Cache.StoreSpec
+    Ecluse.Core.Server.Cache.VersionWeightSpec
     Ecluse.Core.Server.CacheSpec
     Ecluse.Core.Server.ConditionalSpec
     Ecluse.Core.Server.ContractSpec

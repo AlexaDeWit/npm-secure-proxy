@@ -2,43 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | One TTL- and STM-backed single-flight store under a resident-byte budget. Every
-store of the metadata cache ("Ecluse.Core.Server.Cache") takes this shape, factored here
-so the machinery is written once over any key and value.
-
-The @cache@ library supplies the TTL store. Two properties it does not provide on
-its own are layered here:
-
-* __Resident-byte budget with recency-aware eviction.__ @cache@ expires by TTL but
-  bounds neither entry count nor memory. Each value is wrapped with an estimate of its
-  resident footprint (from the store's injected weigher) and a last-access stamp bumped
-  on every hit. An insert first purges expired entries. It then evicts the
-  __least-recently-used__ entries until the incoming value fits within both the
-  resident-byte budget and the entry-count bound. Recency keeps a re-accessed hot head
-  resident under pressure while shedding the one-shot tail. The byte budget bounds
-  memory more faithfully than a count alone. A value whose weight alone exceeds the byte
-  budget is __passed through uncached__. The caller still serves it: the per-value
-  ceiling is the caller's concern, an upstream body cap. Nothing resident is evicted to
-  make room that cannot exist, so the store's budget genuinely bounds its residency.
-  Inserts serialise on a per-store lock, so two leaders' evict-then-insert sequences
-  cannot interleave past the budget. The lock is post-fetch cold path only, and a
-  leader publishes its marker __before__ inserting, so no follower ever blocks on it.
-
-* __Single-flight.__ @cache@'s own @fetchWithCache@ is lookup-then-fetch in plain
-  'IO', so two concurrent misses would both fetch. 'resolveSingleFlight' instead
-  installs an in-flight marker atomically, so the first miss fetches while
-  concurrent misses wait on its result. The leader inserts the result into the store
-  __before__ removing its marker. A caller arriving the instant the fetch returns
-  therefore finds either the store entry or the marker, never a gap. It never re-leads a
-  redundant fetch. A fetch's typed failure reaches every waiter and caches nothing. A
-  claimed slot is always eventually filled and de-registered, even when the leader dies
-  to an async exception (see 'resolveSingleFlight').
-
-The store never knows which cache it serves. The key and value are type parameters, and
-the weigher enters at construction. Telemetry enters per resolution as two callbacks:
-the hit\/miss recording and the post-insert occupancy recording. The domain semantics
-live entirely with the caller: what a key means, which upstream a value came from, and
-what may be shared across clients.
+{- | TTL stores with single-flight fetches and bounded accounted bytes.
+Each store serialises eviction and insertion while followers share the leader's result.
 -}
 module Ecluse.Core.Server.Cache.Store (
     -- * The store
@@ -67,9 +32,6 @@ import UnliftIO.MVar (withMVar)
 import Ecluse.Core.InFlight (guardInFlight)
 import Ecluse.Core.Telemetry.Metrics qualified as Metric
 
-{- | A stored value with the weight the byte budget needs and the stamp eviction needs.
-The stamp sits outside the STM store, so a hit refreshes recency without writing it.
--}
 data Weighted v = Weighted
     { wValue :: v
     -- ^ The cached value.
@@ -79,9 +41,7 @@ data Weighted v = Weighted
     -- ^ The value's last-access stamp, bumped on every hit and read by eviction.
     }
 
-{- | A bounded, TTL- and STM-backed store whose misses collapse onto one fetch per key.
-Opaque: build it with 'newSingleFlight' and drive it through 'resolveSingleFlight'.
--}
+-- | A bounded store whose concurrent misses share one fetch per key.
 data SingleFlight e k v = SingleFlight
     { sfStore :: Cache k (Weighted v)
     -- ^ The TTL- and STM-backed store (the @cache@ library), holding weighted values.
@@ -92,33 +52,16 @@ data SingleFlight e k v = SingleFlight
     , sfWeigh :: v -> Int
     -- ^ Estimate a value's resident footprint in bytes, fixed into its 'Weighted' at insert.
     , sfClock :: IORef Word64
-    {- ^ The store's logical access clock, bumped to issue each entry's recency stamp on
-    insert and on every hit.
-    -}
     , sfInsertLock :: MVar ()
-    {- ^ Serialises the purge\/evict\/insert sequence. Without it, two different-key leaders
-    both read the pre-insert resident sum and both admit, landing the store past its byte
-    budget. Held only on the post-fetch cold path, and never inside an STM transaction.
-    -}
     , sfInFlight :: TVar (Map k (TMVar (FlightOutcome e v)))
-    {- ^ Entries currently being fetched, so concurrent misses coalesce onto one fetch. The
-    marker carries the leader's __typed__ outcome, so a fetch failure reaches every follower
-    as the same value the leader saw.
-    -}
     }
 
-{- The outcome an in-flight marker delivers to coalesced followers. The two failure arms
-are held apart on purpose: 'FlightFault' is the fetch's own typed failure, handed to
-every waiter with nothing cached, while 'FlightOrphaned' is an exception the follower
-re-resolves or re-raises. -}
 data FlightOutcome e v
     = FlightValue v
     | FlightFault e
     | FlightOrphaned SomeException
 
-{- | Build a store from its TTL, entry-count bound, resident-byte budget, and value
-weigher, in that order. Each bound is clamped to at least one.
--}
+-- | Build a store with positive bounds. A weight of 'maxBound' means uncacheable.
 newSingleFlight :: NominalDiffTime -> Int -> Int -> (v -> Int) -> IO (SingleFlight e k v)
 newSingleFlight ttl maxEntries maxBytes weigh = do
     store <- Cache.newCache (Just (toTimeSpec ttl))
@@ -136,17 +79,7 @@ newSingleFlight ttl maxEntries maxBytes weigh = do
             , sfInFlight = inFlight
             }
 
-{- | Resolve a key through the store: serve a fresh hit, follow an in-flight fetch, or
-lead a new one. @afterClaim@ is a test hook run on the leading thread between the claim
-and the fetch (production passes @pure ()@), @recordRequest@ counts the hit or miss, and
-@recordInsert@ refreshes the occupancy gauges after a leading insert.
-
-The fetch runs exactly once per key under concurrent callers. A failed fetch caches
-__nothing__ and its typed 'Left' reaches every waiter. A claimed slot is always
-eventually filled and de-registered, even under an async exception, and the insert
-precedes de-registration, so a caller arriving as the fetch returns follows rather than
-re-leads.
--}
+-- | Share a fetch across concurrent misses. Failed and cancelled leaders release their waiters.
 resolveSingleFlight ::
     (Hashable k, Ord k) =>
     IO () ->
@@ -180,21 +113,14 @@ resolveSingleFlight afterClaim recordRequest recordInsert sf key fetch = mask $ 
                 FlightFault fault -> pure (Left fault)
                 FlightOrphaned err -> case fromException err of
                     Just (_ :: SomeAsyncException) ->
-                        -- Leader cancelled (a client disconnect, say): re-resolve rather than
-                        -- die with it. The retry runs under @restore@ because a bare recursion
-                        -- re-enters masked, which would run the retried fetch and its parse
-                        -- uncancellable. @recordRequest@ is silenced so this caller's counted
-                        -- miss stays one 'Metric.Miss' across any number of retries.
+                        -- Restore cancellation during retries. Keep the original miss count.
                         restore (resolveSingleFlight afterClaim (const pass) recordInsert sf key fetch)
                     -- A synchronous escape broke the fetch's total contract. Re-raise it
                     -- as an invariant break, never laundered into the typed channel.
                     Nothing -> throwIO err
         Lead marker -> do
             recordRequest Metric.Miss
-            -- Only the fetch runs under @restore@. The publish and the insert run under the
-            -- enclosing 'mask', so a cancel after the fetch returns still delivers to followers
-            -- and still inserts. 'guardInFlight' frees the slot on every exit and hands any
-            -- escape to a waiting follower.
+            -- Mask publication and insertion so cancellation cannot strand followers.
             (outcome, occupancy) <- guardInFlight id (orphan marker) (atomically deregister) $ do
                 fetched <- restore (afterClaim >> fetch)
                 atomically (putTMVar marker (either FlightFault FlightValue fetched))
@@ -211,17 +137,9 @@ resolveSingleFlight afterClaim recordRequest recordInsert sf key fetch = mask $ 
         inFlight <- readTVar (sfInFlight sf)
         writeTVar (sfInFlight sf) (Map.delete key inFlight)
 
-{- | Insert a fetched value, purging expired entries and evicting the least recently used
-until it fits the byte budget and the entry-count bound. Returns the store's occupancy
-after a retaining insert, for the residency telemetry.
-
-A value heavier than the whole byte budget is __not retained__: 'Nothing' comes back,
-nothing resident is evicted, and the caller serves it uncached, so one pathological
-document can never flush the store.
--}
 insertBounded :: (Hashable k) => SingleFlight e k v -> k -> v -> IO (Maybe CacheOccupancy)
 insertBounded sf key value
-    | weight > sfMaxBytes sf = pure Nothing
+    | weight == maxBound || weight > sfMaxBytes sf = pure Nothing
     | otherwise = withMVar (sfInsertLock sf) $ \() -> do
         Cache.purgeExpired (sfStore sf)
         evictToBudget sf weight
@@ -232,11 +150,6 @@ insertBounded sf key value
   where
     weight = sfWeigh sf value
 
-{- | Evict least-recently-used entries until an incoming value of the given weight fits
-the byte budget and the entry-count bound, or until the store is empty. Emptying stops
-the sweep too, so the incoming value is admitted afterwards either way. The scan runs
-only on a leader's post-fetch insert, so iterating the held entries stays off the hot path.
--}
 evictToBudget :: (Hashable k) => SingleFlight e k v -> Int -> IO ()
 evictToBudget sf incoming = do
     held <- Cache.toList (sfStore sf)
@@ -249,7 +162,7 @@ evictToBudget sf incoming = do
         s <- readIORef (wStamp w)
         pure (s, k, wWeight w)
 
-    fits resident count = resident + incoming <= sfMaxBytes sf && count < sfMaxEntries sf
+    fits resident count = resident <= sfMaxBytes sf - incoming && count < sfMaxEntries sf
 
     go victims resident count
         | fits resident count = pass
@@ -276,16 +189,11 @@ nextStamp sf = atomicModifyIORef' (sfClock sf) (\n -> let n' = n + 1 in (n', n')
 touch :: SingleFlight e k v -> Weighted v -> IO ()
 touch sf weighted = nextStamp sf >>= writeIORef (wStamp weighted)
 
-{- | Look up a stored value without fetching on a miss and without bumping recency: the
-read-only view for inspection and tests. 'Nothing' is a miss or an expired entry.
--}
+-- | Read without fetching or refreshing recency.
 lookupStore :: (Hashable k) => SingleFlight e k v -> k -> IO (Maybe v)
 lookupStore sf key = fmap wValue <$> Cache.lookup (sfStore sf) key
 
-{- | Look up a stored value like 'lookupStore', but bump the entry's recency on a hit:
-the serve path's read. It ages an entry exactly as a hit through 'resolveSingleFlight'
-does, still never fetches, and 'Nothing' is a miss or an expired entry.
--}
+-- | Read without fetching and refresh recency on a hit.
 lookupStoreTouching :: (Hashable k) => SingleFlight e k v -> k -> IO (Maybe v)
 lookupStoreTouching sf key =
     Cache.lookup (sfStore sf) key >>= traverse (\weighted -> wValue weighted <$ touch sf weighted)
@@ -321,9 +229,7 @@ orphan marker err =
         unfilled <- isEmptyTMVar marker
         when unfilled (putTMVar marker (FlightOrphaned err))
 
-{- | A store's occupancy after a leader's insert: the held entry count and their summed
-resident weight, the values the occupancy and residency gauges report.
--}
+-- | Entry count and summed accounted bytes after a retaining insert.
 data CacheOccupancy = CacheOccupancy
     { occEntries :: Int
     , occBytes :: Int

@@ -124,6 +124,13 @@ document as an [opaque carrier](registry-model.md#decision-surface-vs-served-sur
 ([`CachedDoc`](../../core/src/Ecluse/Core/Registry/CachedDocument.hs)) and sizes it without reading
 it, so the cache stays ecosystem-agnostic.
 
+The selected-version store charges each retained release field, including the full backing
+allocation of each text slice. Repeated artifacts, hashes, licences, and trust evidence each carry
+a node allowance. A fixed allowance covers the entry and scalar fields, and a per-byte version
+allowance covers parsed ordering keys. Shared allocations count repeatedly. This is conservative
+accounting, not exact heap residency. A release above its store's budget is served without retention
+or eviction, and occupancy reports the charged weights. Cached absences keep their smaller charge.
+
 The cache holds the metadata, not the verdict. The rules engine re-evaluates the rules on every
 request, so time-sensitive rules (`AllowIfOlderThan`) stay correct. This is in-memory metadata only.
 On-disk artifact caching is out of scope, and the mirror stays the durable store.
