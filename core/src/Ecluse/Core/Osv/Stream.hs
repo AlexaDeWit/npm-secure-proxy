@@ -45,10 +45,7 @@ import Ecluse.Core.Osv.Epss (EpssScores)
 import Ecluse.Core.Security.Authority (authorityLabel)
 import Ecluse.Core.Telemetry.Span (closeOptionalSpan, openOptionalSpan)
 
-{- | The tunable per-advisory ingest bounds. Generous by design, because Pilot trusts
-osv.dev in normal operation. They only backstop a pathological or tampered payload, and
-must never trip on a real, if large, advisory.
--}
+-- | Per-advisory byte limits and a log-only range fan-out threshold.
 data IngestLimits = IngestLimits
     { ilMaxAdvisoryBytes :: !Int
     {- ^ Largest decompressed advisory JSON, in bytes, the ingest accepts from one
@@ -61,10 +58,7 @@ data IngestLimits = IngestLimits
     }
     deriving stock (Eq, Show)
 
-{- | Sane defaults for 'IngestLimits': an 8 MiB per-advisory ceiling and a 256-range
-fan-out flag. A real advisory is kilobytes and expands into a small multiple of its
-affected packages, so both defaults leave generous headroom.
--}
+-- | An 8 MiB per-advisory ceiling and a 256-range fan-out flag.
 defaultIngestLimits :: IngestLimits
 defaultIngestLimits =
     IngestLimits
@@ -123,10 +117,7 @@ and zeroes the tally alongside it, so the tally reflects only the final attempt.
 resetIngestStats :: (MonadIO m) => OsvIngest -> m ()
 resetIngestStats ingest = writeIORef (counterRef (ingestCounter ingest)) emptyIngestStats
 
-{- | Whether a run's drop tally signals systemic corruption, a hostile or broken feed,
-rather than a few poisoned records. Pilot must not publish a systemically corrupt run's
-artifact.
--}
+-- | Whether the drop tally requires Pilot to refuse publication.
 systemicDrop :: IngestStats -> Bool
 systemicDrop s =
     dropped >= systemicDropFloor && dropped * 100 >= total * systemicDropPercent
@@ -134,20 +125,14 @@ systemicDrop s =
     dropped = statDroppedOversize s + statDroppedMalformed s
     total = dropped + statAccepted s
 
-{- | Fewest drops that can count as systemic, so a tiny feed with a couple of bad
-entries is never judged corrupt.
--}
 systemicDropFloor :: Int
 systemicDropFloor = 16
 
-{- | The fraction of all entries (as a percent) the ingest must drop before a feed
-counts as systemically corrupt.
--}
 systemicDropPercent :: Int
 systemicDropPercent = 10
 
-{- | Raised after a compile pass whose drop tally 'systemicDrop' judged systemic. The
-compiler abandons the run without publishing, so a consumer keeps its last-good artifact.
+{- | Raised when systemic drops or zero relevant output prevent publication.
+The tally records the rejected pass, without replacing a consumer's last-good artifact.
 -}
 newtype PilotIngestAborted = PilotIngestAborted IngestStats
     deriving stock (Show)
@@ -163,9 +148,7 @@ streamOsvUrl mTracerProvider ingest urlStr = do
         closeOptionalSpan
         ( \mSpan -> do
             forM_ mSpan $ \sp -> addAttribute sp "ecluse.osv.source_host" (authorityLabel (toText urlStr))
-            -- 'setRequestCheckStatus' makes a non-2xx response throw at the header boundary,
-            -- so the backoff wrapper ('Ecluse.Core.Osv.Retry') treats a 502 from osv.dev as
-            -- retryable instead of streaming an error page into the unzip parser.
+            -- Reject non-2xx responses before unzip so the retry policy sees HTTP failures.
             req <- liftIO $ setRequestCheckStatus <$> parseRequest urlStr
             httpSource req (\res -> getResponseBody res .| parseOsvStream mTracerProvider ingest)
         )

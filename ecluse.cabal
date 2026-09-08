@@ -1065,6 +1065,7 @@ test-suite ecluse-integration
     Ecluse.Integration.Collector
     Ecluse.Integration.Ministack
     Ecluse.Integration.WorkerLoop
+    Ecluse.PilotIntegrationSpec
     Ecluse.Runtime.Cve.SyncIntegrationSpec
     Ecluse.Runtime.Pilot.ExportIntegrationSpec
     Ecluse.Runtime.Queue.SqsIntegrationSpec

@@ -18,9 +18,10 @@ import Data.Version (showVersion)
 import Database.SQLite.Simple
 import Katip (LogEnv, closeScribes)
 import Paths_ecluse (version)
-import System.Directory (removeFile)
-import System.FilePath (takeFileName)
+import System.Directory (doesFileExist, listDirectory, removeFile)
+import System.FilePath (takeFileName, (</>))
 import System.IO.Error (catchIOError)
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec (Spec, anyException, describe, it, shouldBe, shouldReturn, shouldSatisfy, shouldThrow)
 import UnliftIO.Exception (finally)
 
@@ -29,7 +30,7 @@ import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI))
 import Ecluse.Core.Osv.Advisory (ExtractedOsv (..))
 import Ecluse.Core.Osv.Compile (CompileSources (..), compileOsvToSqlite, osvToRow)
 import Ecluse.Core.Osv.Ecosystem (osvEcosystemFor)
-import Ecluse.Core.Osv.Schema (osvSchemaEpoch)
+import Ecluse.Core.Osv.Schema (osvDbFileName, osvSchemaEpoch)
 import Ecluse.Core.Osv.Stream (PilotIngestAborted (..))
 import Ecluse.Core.Osv.Types (UpperBound (..))
 import Ecluse.Core.Security.Authority (authorityLabel)
@@ -38,7 +39,7 @@ import Ecluse.Core.Telemetry.Metrics (
     AdvisoryDropCause (DropMalformed, DropOversize),
  )
 import Ecluse.Test.Log (captureStdout, jsonLogEnv)
-import Ecluse.Test.Osv (osvZipOf, runOsvTestM, runOsvTestMWith)
+import Ecluse.Test.Osv (CorpusVersion (CorpusV1), osvCorpusZip, osvZipOf, runOsvTestM, runOsvTestMWith)
 import Ecluse.Test.OsvDb (epssFixtureFile)
 import Ecluse.Test.Port (RecordedCompile (RecordedCompile), recordingAdvisoryCompileMetricsPort)
 import Ecluse.Test.Stub (Stub, stubBaseUrl, withStub)
@@ -199,6 +200,39 @@ spec = describe "SQLite OSV Compilation" $ do
                     withStub status404 LBS.empty $ \epssStub ->
                         runOsvTestM (compileOsvToSqlite metrics Nothing "/tmp" (osvEcosystemFor Npm) (sourcesOf stub epssStub "/all.zip"))
         action `shouldThrow` anyException
+
+    for_ [("empty", osvZipOf []), ("wrong-ecosystem", LBS.readFile "test/unit/fixtures/osv/sample.zip")] $ \(label, rejectedZip) ->
+        for_ [False, True] $ \hasPrevious ->
+            it ("refuses " <> label <> " output with ERROR and preserves publication state, previous=" <> show hasPrevious) $
+                withSystemTempDirectory "ecluse-zero-output" $ \outDir -> do
+                    epssData <- LBS.readFile epssFixtureFile
+                    goodZip <- osvCorpusZip CorpusV1
+                    badZip <- rejectedZip
+                    (metrics, readRecorded) <- recordingAdvisoryCompileMetricsPort
+                    let dbFile = outDir </> osvDbFileName "pypi"
+                        compile logEnv zipData = withStub status200 zipData $ \stub ->
+                            withStub status200 epssData $ \epssStub ->
+                                runOsvTestMWith logEnv (compileOsvToSqlite metrics Nothing outDir (osvEcosystemFor PyPI) (sourcesOf stub epssStub "/all.zip"))
+                    previous <-
+                        if hasPrevious
+                            then do
+                                (path, _) <- captureStdout' (`compile` goodZip)
+                                Just <$> readFileBS path
+                            else pure Nothing
+                    (_, logged) <- captureStdout' $ \logEnv ->
+                        compile logEnv badZip `shouldThrow` (\(PilotIngestAborted _) -> True)
+                    logged `shouldSatisfy` T.isInfixOf "zero relevant advisory rows"
+                    logged `shouldSatisfy` T.isInfixOf "\"sev\":\"Error\""
+                    recorded <- readRecorded
+                    case recorded of
+                        RecordedCompile _ _ verdicts -> verdicts `shouldBe` ([CompileCompleted | hasPrevious] <> [CompileAborted])
+                    case previous of
+                        Nothing -> do
+                            doesFileExist dbFile >>= (`shouldBe` False)
+                            listDirectory outDir >>= (`shouldBe` [])
+                        Just bytes -> do
+                            readFileBS dbFile >>= (`shouldBe` bytes)
+                            listDirectory outDir >>= (`shouldBe` [takeFileName dbFile])
 
     describe "osvToRow" $ do
         let rowFor upper = osvToRow (ExtractedOsv "pkg" "npm" "GHSA-row" (Just "1.0.0") upper (Just 5.9) (Just 0.25))

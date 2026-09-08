@@ -293,7 +293,10 @@ string and nothing else. A bound the grammar does parse keeps the ordered compar
 throughout.
 
 Pilot filters rows to the target ecosystem, so an advisory spanning two ecosystems does
-not leak foreign package rows. Each denial's audit log records the advisory database ETag live
+not leak foreign package rows. It refuses zero persisted ranges before writing success metadata
+or publishing. An empty or wrong-ecosystem export cannot replace last-good denial evidence or
+refresh its timestamps. The size guard for reduced nonempty output remains unimplemented (#1234).
+Each denial's audit log records the advisory database ETag live
 at emit (`active_advisory_db_etag`). That is deliberately the ETag live at emit rather than the
 one the rule evaluated against, since a shadow-swap can land mid-request.
 
