@@ -2,20 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The operator-facing diagnostics the packument serve path emits:
-
-* the per-origin metadata-fetch failure log
-* the response-bound breach warning
-* the cross-upstream integrity-divergence warning (threat #11)
-* the dropped-entry warning a successful-but-degraded projection produces
-
-Each one is a log line with its structured payload, or a metered warning. An operator
-filters it, alarms on it, or reads it back during an incident. None of them changes what
-is served. The serve path emits them once per real fetch or merge, inside the request's
-@katip@ context, so every line carries the request's trace correlation. The per-condition
-log helpers these dispatch to ('logDecodeFailure' and friends) live in
-"Ecluse.Core.Server.Pipeline.Internal". This module owns the packument-specific
-renderings.
+{- | Operator diagnostics for metadata failures, dropped entries, and integrity divergence.
+Access-refusal logs contain no upstream body, headers, or credential.
 -}
 module Ecluse.Core.Server.Pipeline.Diagnostics (
     logMetadataFailure,
@@ -46,7 +34,7 @@ import Ecluse.Core.Package.Merge (
  )
 import Ecluse.Core.Registry (FetchFault (FetchBoundExceeded, FetchTransport, FetchUrlUnformable))
 import Ecluse.Core.Registry.Metadata (
-    MetadataError (MetadataBoundExceeded, MetadataFetch, MetadataNameMismatch, MetadataUndecodable),
+    MetadataError (MetadataAuthorisationFailure, MetadataBoundExceeded, MetadataFetch, MetadataNameMismatch, MetadataUndecodable),
  )
 import Ecluse.Core.Security (
     LimitError (BodyTooLarge, TooDeeplyNested, TooManyArtifacts, TooManyVersions),
@@ -61,11 +49,10 @@ import Ecluse.Core.Server.Pipeline.Internal (
  )
 import Ecluse.Core.Telemetry.Record (MetricsPort (..))
 
-{- | Log a per-origin metadata-fetch failure, dispatched by its cause. The serve path calls it once
-per real fetch, inside the single-flight leader and in the request's context.
--}
+-- | Log a per-origin metadata-fetch failure, dispatched by its cause. The serve path calls it once per real fetch, inside the single-flight leader and in the request's context.
 logMetadataFailure :: PackageName -> Text -> MetadataError -> Handler ()
 logMetadataFailure name baseUrl = \case
+    MetadataAuthorisationFailure _ -> logFM WarningS "the upstream refused metadata access"
     MetadataBoundExceeded err -> logBreach name err
     MetadataUndecodable -> logDecodeFailure name
     MetadataNameMismatch reported -> logNameMismatch name baseUrl reported
@@ -73,9 +60,6 @@ logMetadataFailure name baseUrl = \case
     MetadataFetch (FetchUrlUnformable urlErr) -> logUpstreamUnformable name baseUrl urlErr
     MetadataFetch (FetchTransport fault) -> logUpstreamUnreachable name baseUrl fault
 
-{- Log a response-bound breach at 'WarningS' before the contribution degrades fail-closed. A
-breach means a hostile or oversized upstream, or a too-tight cap. The package and the observed
-value are high-cardinality, so they ride the log line and never a metric label. -}
 logBreach :: (KatipContext m) => PackageName -> LimitError -> m ()
 logBreach name err =
     katipAddContext payload $
@@ -102,11 +86,7 @@ logBreach name err =
         TooManyArtifacts seen c -> ("artifact-count", show seen, show c)
         TooDeeplyNested c -> ("nesting-depth", "over " <> show c <> " levels", show c <> " levels")
 
-{- | Log a cross-upstream integrity divergence (threat #11) at 'WarningS' and meter it: a public
-copy contradicts the trusted one on a shared integrity algorithm for a shared version. The trusted
-copy still wins the merge, so this is the supply-chain signal an operator alarms on, never a silent
-reconciliation. The @ecluse.registry.merge.divergence@ counter counts one per diverging version.
--}
+-- | Log a cross-upstream integrity divergence (threat #11) at 'WarningS' and meter it: a public copy contradicts the trusted one on a shared integrity algorithm for a shared version.
 warnDivergences :: (KatipContext m) => MetricsPort -> PackageName -> MergePlan -> m ()
 warnDivergences metrics name plan =
     case toList (mpDivergences plan) of
@@ -142,12 +122,7 @@ renderFingerprint fp = "{" <> T.intercalate ", " (map renderHash (integrityHashe
 renderHash :: (Text, Maybe HashAlg, Text) -> Text
 renderHash (file, alg, body) = file <> " " <> maybe "none" renderHashAlg alg <> ":" <> body
 
-{- | Log at 'WarningS' the malformed packument entries the projection dropped rather than failing
-the whole document. The rest is still served, so this is an observability signal, not a refusal.
-The line carries the raw value the upstream sent, truncated and capped to 'maxRenderedDrops' so a
-flood cannot bloat it, and buckets the counts by drop kind, so a new ecosystem's kinds appear
-without a change here. The serve path calls it once per real fetch, inside the cache leader.
--}
+-- | Log at 'WarningS' the malformed packument entries the projection dropped rather than failing the whole document.
 logInvalidEntries :: (KatipContext m) => PackageName -> Text -> [InvalidEntry] -> m ()
 logInvalidEntries name baseUrl entries =
     katipAddContext payload $

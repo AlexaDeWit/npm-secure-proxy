@@ -2,14 +2,7 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The PyPI adapter driven end to end: route table, projection, gate, merge, assembly, and
-relay, composed as a mount serves them over in-process upstreams.
-
-The tier is integration because the subject is the whole composition rather than one module, and
-because the loopback ports make the artifact-host gate's authority comparison real rather than a
-fixture. Nothing here starts a container, and what a resolver then does with the served index is
-the end-to-end tier's.
--}
+-- | Exercise the PyPI adapter through its metadata and artifact routes using local upstreams.
 module Ecluse.Core.Registry.PyPI.AdapterIntegrationSpec (spec) where
 
 import Data.Aeson (Value (Array, Object, String), decode, encode, object, (.=))
@@ -19,7 +12,7 @@ import Data.List (dropWhileEnd, lookup)
 import Data.Text qualified as T
 import Data.Time (UTCTime (UTCTime), fromGregorian)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
-import Network.HTTP.Types (Header, status200, status404, statusCode)
+import Network.HTTP.Types (Header, methodGet, methodHead, status200, status401, status403, status404, statusCode)
 import Network.Wai (Application, responseLBS)
 import Network.Wai qualified as Wai
 import Network.Wai.Handler.Warp (testWithApplication)
@@ -35,7 +28,7 @@ import Ecluse.Core.Server.Context (PackumentDeps (..))
 import Ecluse.Core.Server.Response (mkHelpMessage)
 import Ecluse.Core.Server.Upstream (MirrorServePlan (NoMirrorWrite))
 import Ecluse.Runtime.Server (application, mkServerConfig)
-import Ecluse.Server.Pipeline.TestSupport (getPath, getPathWith, newTestEnvWithQueue, postPath)
+import Ecluse.Server.Pipeline.TestSupport (getPath, getPathWith, newTestEnvWithQueue, postPath, requestAt)
 import Ecluse.Service (mountBindingFor)
 import Ecluse.Test.Package (hexSha256Of)
 import Ecluse.Test.Queue (newTestMemoryQueue)
@@ -155,6 +148,18 @@ refusalBodySpec = describe "the operator help message on a refusal the route tab
 
 privateLegSpec :: Spec
 privateLegSpec = describe "the private artifact leg, addressed by the index's own location" $ do
+    for_ [status401, status403] $ \upstreamStatus ->
+        it ("refuses an index HTTP " <> show (statusCode upstreamStatus) <> " on metadata and indexed artifacts") $
+            withPyPIProxyResponding (const (\_ respond -> respond (responseLBS upstreamStatus [("WWW-Authenticate", "private-secret")] "private-secret"))) publicIndex privatePypiDeps $ \proxy ->
+                for_ ["/pypi/simple/requests", sdistPath] $ \path ->
+                    for_ [methodGet, methodHead] $ \method -> do
+                        let req = Wai.defaultRequest{Wai.requestHeaders = [clientCredential, ("If-None-Match", "*")]}
+                        response <- requestAt method path req (proxyApp proxy)
+                        statusOf response `shouldBe` 403
+                        lookup "WWW-Authenticate" (simpleHeaders response) `shouldBe` Nothing
+                        decodeUtf8 (LBS.toStrict (simpleBody response)) `shouldSatisfy` (not . T.isInfixOf "private-secret")
+                        when (method == methodHead) (simpleBody response `shouldBe` "")
+
     it "resolves the file through the private index and carries the credential there" $
         -- A private index names each file's location itself, so the leg reads that index rather
         -- than probing a conventional path the backend may not spell.
@@ -182,9 +187,7 @@ getIndex = getPath "/pypi/simple/requests"
 sdistPath :: ByteString
 sdistPath = "/pypi/simple/requests/requests-2.34.2.tar.gz"
 
-{- | Boot the proxy over an in-process PyPI upstream serving the given index as its __public__
-one, and the canned artifact bytes for any file path under it.
--}
+-- | Boot the proxy over an in-process PyPI upstream serving the given index as its __public__ one, and the canned artifact bytes for any file path under it.
 withPyPIProxy :: (Text -> Value) -> (Application -> IO a) -> IO a
 withPyPIProxy indexFor k = withPyPIProxyOver indexFor publicPypiDeps (k . proxyApp)
 
@@ -195,9 +198,7 @@ withHelpfulPyPIProxy k =
   where
     helpfulDeps port = (\d -> d{pdHelp = Just (mkHelpMessage helpMessage)}) <$> publicPypiDeps port
 
-{- | Boot the proxy over the same upstream bound as the __private__ one, with a public upstream
-nothing listens on, so what the client sees is what the private leg did.
--}
+-- | Boot the proxy over the same upstream bound as the __private__ one, with a public upstream nothing listens on, so what the client sees is what the private leg did.
 withPrivatePyPIProxy :: (Text -> Value) -> (PyPIProxy -> IO a) -> IO a
 withPrivatePyPIProxy indexFor = withPyPIProxyOver indexFor privatePypiDeps
 
@@ -209,15 +210,15 @@ data PyPIProxy = PyPIProxy
     -- ^ Each upstream request as its mount-relative path and its @Authorization@ value.
     }
 
-{- Boot the proxy over one in-process upstream the caller binds as it likes. A recorded hit is
-spelled as the mount path a client would use, so an example names one path for both what it asks
-for and what the upstream was asked for. -}
 withPyPIProxyOver :: (Text -> Value) -> (Int -> IO PackumentDeps) -> (PyPIProxy -> IO a) -> IO a
-withPyPIProxyOver indexFor depsFor k = do
+withPyPIProxyOver = withPyPIProxyResponding id
+
+withPyPIProxyResponding :: (Application -> Application) -> (Text -> Value) -> (Int -> IO PackumentDeps) -> (PyPIProxy -> IO a) -> IO a
+withPyPIProxyResponding transform indexFor depsFor k = do
     queue <- newTestMemoryQueue
     manager <- newManager defaultManagerSettings
     recorded <- newIORef []
-    testWithApplication (pure (upstreamApp indexFor (record recorded))) $ \upstreamPort -> do
+    testWithApplication (pure (transform (upstreamApp indexFor (record recorded)))) $ \upstreamPort -> do
         env <- newTestEnvWithQueue queue manager
         deps <- depsFor upstreamPort
         k (PyPIProxy (application (mkServerConfig (maybeToList (mountBindingFor PyPI deps Nothing))) env) (readIORef recorded))
@@ -227,9 +228,6 @@ withPyPIProxyOver indexFor depsFor k = do
 
     mountPathOf request = "/pypi/" <> encodeUtf8 (T.intercalate "/" (dropWhileEnd T.null (Wai.pathInfo request)))
 
-{- The upstream double: a Simple index under @\/simple\/{project}@, and the canned bytes for any
-file under it. One authority answers both, as a private index does and as the artifact-host gate
-requires of any upstream with no declared files host. -}
 upstreamApp :: (Text -> Value) -> (Wai.Request -> IO ()) -> Application
 upstreamApp indexFor observe request respond = do
     observe request
@@ -244,9 +242,7 @@ upstreamApp indexFor observe request respond = do
 publicPypiDeps :: Int -> IO PackumentDeps
 publicPypiDeps upstreamPort = pypiDeps Nothing (loopbackRegistryUrl (localhost upstreamPort))
 
-{- | The mount's serve dependencies over the one upstream bound as the private one. The public
-base is a port nothing listens on, so a private miss cannot be covered by a public hit.
--}
+-- | The mount's serve dependencies over the one upstream bound as the private one. The public base is a port nothing listens on, so a private miss cannot be covered by a public hit.
 privatePypiDeps :: Int -> IO PackumentDeps
 privatePypiDeps upstreamPort =
     pypiDeps (Just (loopbackRegistryUrl (localhost upstreamPort))) (loopbackRegistryUrl "http://localhost:1")
@@ -264,9 +260,7 @@ pypiDeps privateBase publicBase = do
 servedAt :: UTCTime
 servedAt = UTCTime (fromGregorian 2026 6 20) 0
 
-{- | The public index: two files of a surviving release, each naming the upstream's own
-authority, and each carrying both PEP 658 sidecar spellings the served index must drop.
--}
+-- | The public index: two files of a surviving release, each naming the upstream's own authority, and each carrying both PEP 658 sidecar spellings the served index must drop.
 publicIndex :: Text -> Value
 publicIndex authority =
     object

@@ -2,15 +2,7 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | One curated package catalogue and one live-registry fetch path, for the tiers that
-reach real registries.
-
-A language-neutral JSON file holds the catalogue, so the Haskell consumers here and the
-Node corpus-capture script read the same committed source. Per-consumer processing stays
-at the call site: the version-oracle differential keeps every published version because
-ordering is the point, and the benchmark corpus trims to stable releases. Every fetch is
-total, so a live tier pends on absence instead of crashing.
--}
+-- | A shared package catalogue and live-registry fetch path for the smoke and capture tiers.
 module Ecluse.Test.RegistryCapture (
     -- * The curated catalogue
     Catalogue (..),
@@ -48,9 +40,7 @@ import Ecluse.Core.Version (renderVersion)
 import Ecluse.Test.Registry.PyPI.Wire qualified as PyPI
 import Ecluse.Test.Registry.Rubygems.Wire qualified as Rubygems
 
-{- | The curated package catalogue: the per-ecosystem smoke names and the
-benchmark-corpus capture pins, decoded from the shared JSON source.
--}
+-- | The curated package catalogue: the per-ecosystem smoke names and the benchmark-corpus capture pins, decoded from the shared JSON source.
 data Catalogue = Catalogue
     { catSmokeNames :: Map Ecosystem [Text]
     -- ^ Curated gnarly-version package names per ecosystem, for the version-oracle differential.
@@ -71,9 +61,7 @@ instance FromJSON Catalogue where
             Just eco -> pure (eco, vs)
             Nothing -> fail ("RegistryCapture: unknown ecosystem key in smokeNames: " <> toString k)
 
-{- | The committed catalogue's path, relative to the package root the test suites run from. The
-Node corpus-capture script reads the same file, so both sides share one curated source.
--}
+-- | The committed catalogue's path, relative to the package root the test suites run from. The Node corpus-capture script reads the same file, so both sides share one curated source.
 cataloguePath :: FilePath
 cataloguePath = "bench/corpus/pins.json"
 
@@ -81,23 +69,17 @@ cataloguePath = "bench/corpus/pins.json"
 decodeCatalogue :: LByteString -> Either String Catalogue
 decodeCatalogue = eitherDecode
 
-{- | Read and decode the committed catalogue from 'cataloguePath'. A missing or malformed file
-fails loudly because that is a committed-data defect, not a runtime condition a caller decides on.
--}
+-- | Read and decode the committed catalogue from 'cataloguePath'. A missing or malformed file fails loudly because that is a committed-data defect, not a runtime condition a caller decides on.
 loadCatalogue :: IO Catalogue
 loadCatalogue = do
     raw <- readFileLBS cataloguePath
     either (\e -> fail (cataloguePath <> " did not decode: " <> e)) pure (decodeCatalogue raw)
 
-{- | The curated smoke names as @(ecosystem, names)@ pairs, ordered by ecosystem. This
-is the shape the version-oracle differential iterates.
--}
+-- | The curated smoke names as @(ecosystem, names)@ pairs, ordered by ecosystem. This is the shape the version-oracle differential iterates.
 smokeRegistryPackages :: Catalogue -> [(Ecosystem, [Text])]
 smokeRegistryPackages = Map.toList . catSmokeNames
 
-{- | The registry endpoint that lists a package's published versions. It percent-encodes a scoped
-npm name (@\@types\/node@ → @\@types%2Fnode@).
--}
+-- | The registry endpoint that lists a package's published versions. It percent-encodes a scoped npm name (@\@types\/node@ → @\@types%2Fnode@).
 registryUrl :: Ecosystem -> Text -> Text
 registryUrl eco pkg = case eco of
     Npm -> "https://registry.npmjs.org/" <> T.replace "/" "%2F" pkg
@@ -108,9 +90,7 @@ registryUrl eco pkg = case eco of
 captureUserAgent :: ByteString
 captureUserAgent = "ecluse-registry-capture"
 
-{- | Fetch a package's raw version-listing body from its registry. The result is 'Nothing' on any
-network failure or non-2xx status, so a live tier pends on absence instead of failing.
--}
+-- | Fetch a package's raw version-listing body from its registry. The result is 'Nothing' on any network failure or non-2xx status, so a live tier pends on absence instead of failing.
 fetchPackumentBody :: Manager -> Ecosystem -> Text -> IO (Maybe LByteString)
 fetchPackumentBody manager eco pkg = do
     result <- try $ do
@@ -125,23 +105,15 @@ fetchPackumentBody manager eco pkg = do
         Left (_ :: SomeException) -> Nothing
         Right body -> Just body
 
-{- | Fetch a package's published version strings from its registry. The result is 'Nothing' when
-the fetch fails or the body does not decode. It keeps every published version, prereleases
-included, so trimming is the caller's job.
--}
+-- | Fetch a package's published version strings from its registry.
 fetchVersions :: Manager -> Ecosystem -> Text -> IO (Maybe [Text])
 fetchVersions manager eco pkg =
     (>>= parseRegistryVersions eco) <$> fetchPackumentBody manager eco pkg
 
-{- | Extract a registry response's published version strings through each ecosystem's __canonical__
-wire decoder, never a re-parse here. Routing npm through the production
-'Ecluse.Core.Registry.Npm.Project.parseVersionList' keeps the version-oracle differential honest,
-because it compares what the serve path decodes. The result is 'Nothing' if the body does not
-decode for that ecosystem.
--}
+-- | Extract a registry response's published version strings through each ecosystem's __canonical__ wire decoder, never a re-parse here.
 parseRegistryVersions :: Ecosystem -> LByteString -> Maybe [Text]
 parseRegistryVersions eco body = case eco of
-    Npm -> rightToMaybe (map renderVersion <$> parseVersionList (RegistryResponse (BSL.toStrict body)))
+    Npm -> rightToMaybe (map renderVersion <$> parseVersionList (RegistryResponse 200 (BSL.toStrict body)))
     PyPI -> PyPI.projectVersions <$> decode' body
     RubyGems -> Rubygems.listingVersions <$> decode' body
   where

@@ -73,9 +73,7 @@ data ProtocolStore = ProtocolStore
     , psDelete :: VersionDelete
     -- ^ The ecosystem's version-delete verb.
     , psCodec :: PublishCodec
-    {- ^ The ecosystem's publish codec, whose presence probe already reads a store's version
-    list for the mirror worker.
-    -}
+    -- ^ The ecosystem's publish codec, whose presence probe already reads a store's version list for the mirror worker.
     , psReadManifest :: StoreManifestRead
     -- ^ One package's metadata as this store serves it, assembled at the composition root.
     , psBackendName :: Text
@@ -86,9 +84,7 @@ data ProtocolStore = ProtocolStore
     -- ^ How an operator marks it, logged verbatim when consent is withheld.
     }
 
-{- | Build the maintenance handle for one protocol-only store. Every version deletes on its own
-call, because the delete edit addresses a document revision the previous delete changed.
--}
+-- | Build the maintenance handle for one protocol-only store. Every version deletes on its own call, because the delete edit addresses a document revision the previous delete changed.
 newProtocolMaintenance :: ProtocolStore -> StoreMaintenance
 newProtocolMaintenance store =
     StoreMaintenance
@@ -168,10 +164,10 @@ listVersions store name =
         Left fault -> Left fault
         Right (status, body)
             | status == 404 -> Right []
-            | isApplied status -> first (parseFault "version list") (served body)
+            | isApplied status -> first (parseFault "version list") (served status body)
             | otherwise -> Left (readFault "version list" status)
   where
-    served body = map stored <$> pcParseVersionList (psCodec store) (RegistryResponse body)
+    served status body = map stored <$> pcParseVersionList (psCodec store) (RegistryResponse status body)
     stored version = StoredVersion{storedVersion = version, storedPresence = VersionServed}
 
 deleteStoredVersions :: ProtocolStore -> PackageName -> [Version] -> IO [(Version, VersionOutcome)]
@@ -188,7 +184,7 @@ deleteChunk store name = \case
             Right (status, body)
                 | status == 404 -> pure (refused version absentDocument)
                 | not (isApplied status) -> pure (Left (readFault "document" status))
-                | otherwise -> applyDelete store name version body
+                | otherwise -> applyDelete store name version status body
     -- 'deleteCeiling' splits to one, so a wider chunk refuses whole rather than losing its tail.
     chunk -> pure (Right [(version, VersionRefused oversizedChunk) | version <- chunk])
   where
@@ -196,9 +192,9 @@ deleteChunk store name = \case
     oversizedChunk = storeRefusal "CEILING_EXCEEDED" "this protocol deletes one version per call"
 
 -- Form the version's request sequence over the fetched document, then send it.
-applyDelete :: ProtocolStore -> PackageName -> Version -> ByteString -> IO (Either StoreFault [(Version, VersionOutcome)])
-applyDelete store name version body =
-    case deleteRequests (psDelete store) (psOrigin store) name version (RegistryResponse body) of
+applyDelete :: ProtocolStore -> PackageName -> Version -> Int -> ByteString -> IO (Either StoreFault [(Version, VersionOutcome)])
+applyDelete store name version status body =
+    case deleteRequests (psDelete store) (psOrigin store) name version (RegistryResponse status body) of
         Left refusal -> pure (refused version refusal)
         Right requests ->
             sendSequence store (toList requests) <&> fmap outcomeOf

@@ -21,7 +21,7 @@ import Network.HTTP.Client (
     newManager,
  )
 import Network.HTTP.Types.Header (hContentEncoding)
-import Network.HTTP.Types.Status (status200)
+import Network.HTTP.Types.Status (status200, status401, status403, statusCode)
 import Network.TLS qualified as TLS
 import Test.Hspec (Spec, describe, it, shouldBe, shouldSatisfy)
 import UnliftIO (evaluate)
@@ -59,12 +59,17 @@ spec = do
     transportFaultSpec
     configAndWiringSpec
 
-{- | The metadata fetch reads the upstream body through 'boundedRead' against the config's
-'ocLimits'. A body past 'maxBodyBytes' fails closed as a 'FetchBoundExceeded' value, never
-buffered whole. This is the body-size half of invariant 4 at the @http-client@ boundary.
--}
+-- | The metadata fetch reads the upstream body through 'boundedRead' against the config's 'ocLimits'.
 boundedBodySpec :: Spec
 boundedBodySpec = describe "bounded metadata body read" $ do
+    for_ [status401, status403] $ \upstreamStatus ->
+        it ("retains HTTP " <> show (statusCode upstreamStatus) <> " before an oversized error body") $
+            withStub upstreamStatus (toLazy oversizedBody) $ \stub -> do
+                base <- stubConfig loopbackRegistryUrl stub
+                let config = base{ocLimits = defaultLimits{maxBodyBytes = 64}}
+                outcome <- fetchMetadataFormBounded config Full noValidators isOdd
+                outcome `shouldBe` Right (RegistryResponse (statusCode upstreamStatus) "")
+
     it "refuses an over-cap body fail-closed as a FetchBoundExceeded value" $
         withStub status200 (toLazy oversizedBody) $ \stub -> do
             base <- stubConfig loopbackRegistryUrl stub
@@ -81,9 +86,7 @@ boundedBodySpec = describe "bounded metadata body read" $ do
             fmap responseBody resp `shouldBe` Right "{\"name\":\"is-odd\"}"
 
     it "bounds DECOMPRESSED size: a small gzip body that inflates past the cap is refused" $
-        -- The metadata request advertises @Accept-Encoding: gzip@ and http-client decompresses
-        -- transparently, so the cap must bound the inflated bytes, not the wire size. A cap on
-        -- compressed bytes would let a gzip bomb straight through.
+        -- The size cap must cover decompressed bytes, including expansion from a gzip bomb.
         withStubHeaders status200 [(hContentEncoding, "gzip")] (toLazy gzippedOversizedBody) $ \stub -> do
             base <- stubConfig loopbackRegistryUrl stub
             let config = base{ocLimits = defaultLimits{maxBodyBytes = 1024}}
@@ -101,10 +104,7 @@ boundedBodySpec = describe "bounded metadata body read" $ do
         outcome <- fetchMetadataFormBounded config Full noValidators isOdd
         outcome `shouldBe` Left (FetchUrlUnformable EmptyBaseUrl)
 
-{- | 'classifyTransport' folds each @http-client@ exception shape onto the bounded
-'TransportCause'. The bounded fetch reports a live transport failure as a 'FetchTransport'
-value, never as an escaping exception.
--}
+-- | 'classifyTransport' folds each @http-client@ exception shape onto the bounded 'TransportCause'.
 transportFaultSpec :: Spec
 transportFaultSpec = describe "transport faults as values" $ do
     it "classifies timeouts as TransportTimeout" $ do
@@ -165,17 +165,12 @@ configAndWiringSpec = describe "config wiring" $ do
 oversizedBody :: ByteString
 oversizedBody = "{\"name\":\"is-odd\",\"_padding\":\"" <> BS.replicate 256 0x78 <> "\"}"
 
-{- | A gzip body that decompresses to about 64 KiB, far past the 1 KiB cap the gzip test sets,
-while its compressed size stays well under that cap. It proves the bounded read measures
-inflated bytes, not wire bytes.
--}
+-- | A gzip body that decompresses to about 64 KiB, far past the 1 KiB cap the gzip test sets, while its compressed size stays well under that cap.
 gzippedOversizedBody :: ByteString
 gzippedOversizedBody =
     toStrict (GZip.compress (toLazy ("{\"name\":\"is-odd\",\"_padding\":\"" <> BS.replicate 65536 0x78 <> "\"}")))
 
-{- | A typed stand-in for a client library's wrapped inner exception. The classification must
-read the wrapper's type, TLS or not, never the inner rendering.
--}
+-- | A typed stand-in for a client library's wrapped inner exception. The classification must read the wrapper's type, TLS or not, never the inner rendering.
 data FakeInnerFault = FakeInnerFault
     deriving stock (Show)
 

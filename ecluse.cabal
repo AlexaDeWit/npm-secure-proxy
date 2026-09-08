@@ -727,6 +727,7 @@ test-suite ecluse-core-unit
     Ecluse.Core.Registry.Sweep.WalkSpec
     Ecluse.Core.Registry.SweepSpec
     Ecluse.Core.Registry.MetadataSpec
+    Ecluse.Core.RegistrySpec
     Ecluse.Core.Registry.Npm.CredentialSpec
     Ecluse.Core.Registry.Npm.FilterSpec
     Ecluse.Core.Registry.Npm.MaintenanceSpec

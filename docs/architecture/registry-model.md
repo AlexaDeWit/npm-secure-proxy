@@ -142,7 +142,9 @@ and never fetches the private packument first. A lockfile fan-out then pays one 
 round-trip instead of a per-tarball packument fetch it would discard. The proxy forwards the
 client's credential and disables redirect-following, so the leg never follows a `3xx`
 ([Security posture](security.md#trust-assumptions--credential-posture)).
-A `2xx` streams. Anything else is a clean private miss to the public leg. The leg applies **no
+A `2xx` streams and a conditional `304` passes through. An explicit private `401` or `403`
+refuses the read, because public bytes can differ from a private patch under the same identity.
+Other unsuccessful statuses retain the private-miss policy. The leg applies **no
 serve-time integrity floor**: it fast-tracks a lockfile-pinned version from a trusted registry.
 The client and the mirror worker still verify those bytes, so the leg gives up the proactive
 refuse-weak-integrity stance, not tamper-evidence. The packument route's listing-side trusted
@@ -179,6 +181,8 @@ sequenceDiagram
     alt private hit (2xx)
         Priv-->>E: tarball stream
         E-->>Client: stream unfiltered (already vetted)
+    else private access refused (401 or 403)
+        E-->>Client: 403 local refusal
     else private miss
         E->>Pub: fetch version metadata (anonymous)
         E->>Rules: evaluate that one version
@@ -238,7 +242,10 @@ track which input a survivor came from, so the serve layer can index back to the
   kept when it survives, else repointed to the highest stable survivor. The merge drops other tags
   at an absent version, and restricts `time` to the surviving versions while keeping `created` and
   `modified`.
-- **Partial availability.** If one upstream fails while another succeeds, the merge serves the
+- **Private access authority.** An explicit private `401` or `403` refuses the request even when
+  public metadata succeeds. The refusal precedes merge and conditional response selection.
+  See the [operator policy](../../web/content/docs/configuration.md#first-party-namespaces).
+- **Partial availability.** For other failures, if one upstream fails while another succeeds, the merge serves the
   best-effort union with a degraded signal (readiness stays
   [lenient about public reachability](web-layer.md#meta-routes-ping-health-and-search)). Only when
   nothing resolves does the request error.
@@ -259,7 +266,7 @@ sequenceDiagram
     Client->>E: GET packument
     par fetch upstreams in parallel
         E->>Priv: fetch (client token forwarded)
-        Priv-->>E: packument (or miss)
+        Priv-->>E: packument, access refusal, or miss
     and
         E->>Cache: lookup parsed public metadata
         alt cache miss
@@ -268,13 +275,17 @@ sequenceDiagram
             E->>Cache: store parsed metadata (short TTL)
         end
     end
-    E->>Rules: evaluate every public version
-    Rules-->>E: verdicts (allow / deny / unavailable)
-    Note over E: filter gated (public) versions, trust private,<br/>merge (private wins, flag integrity divergence),<br/>repoint latest, recompute ETag over merged body
-    alt no survivors in merge
-        E-->>Client: 403 policy / 503 transient / 502 upstream-invalid / 500 permanent
-    else some admitted
-        E-->>Client: merged + filtered packument
+    alt private access refused (401 or 403)
+        E-->>Client: 403 local refusal
+    else private access not explicitly refused
+        E->>Rules: evaluate every public version
+        Rules-->>E: verdicts (allow / deny / unavailable)
+        Note over E: filter gated (public) versions, trust private,<br/>merge (private wins, flag integrity divergence),<br/>repoint latest, recompute ETag over merged body
+        alt no survivors in merge
+            E-->>Client: 403 policy / 503 transient / 502 upstream-invalid / 500 permanent
+        else some admitted
+            E-->>Client: merged + filtered packument
+        end
     end
     Note over E,Pub: packument requests filter but never mirror
 ```

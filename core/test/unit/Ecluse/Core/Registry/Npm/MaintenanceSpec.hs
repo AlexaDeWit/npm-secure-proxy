@@ -101,7 +101,7 @@ deleteSequenceSpec = describe "the version delete verb" $ do
             origin <- storeOrigin
             requests <-
                 either (fail . show) pure $
-                    versionDeleteRequestsFor origin name (version "1.0.0") (RegistryResponse (encoded onlyVersion))
+                    versionDeleteRequestsFor origin name (version "1.0.0") (RegistryResponse 200 (encoded onlyVersion))
             case requests of
                 request :| [] -> do
                     Client.method request `shouldBe` "DELETE"
@@ -199,7 +199,7 @@ version = mkVersion Npm
 deletePair :: Value -> PackageName -> Version -> IO (Request, Request)
 deletePair document name subject = do
     origin <- storeOrigin
-    case versionDeleteRequestsFor origin name subject (RegistryResponse (encoded document)) of
+    case versionDeleteRequestsFor origin name subject (RegistryResponse 200 (encoded document)) of
         Left refusal -> fail ("the delete verb refused: " <> toString (refusalCode refusal))
         Right (edit :| [tarball]) -> pure (edit, tarball)
         Right other -> fail ("expected two requests, got " <> show (length other))
@@ -214,7 +214,7 @@ editedPackument document name subject = do
 refusalOf :: ByteString -> Version -> IO (Maybe Text)
 refusalOf body subject = do
     origin <- storeOrigin
-    pure (refusalCode <$> leftToMaybe (versionDeleteRequestsFor origin leftpad subject (RegistryResponse body)))
+    pure (refusalCode <$> leftToMaybe (versionDeleteRequestsFor origin leftpad subject (RegistryResponse 200 body)))
 
 listingBody :: [Text] -> ByteString
 listingBody names = encoded (object [Key.fromText raw .= object [] | raw <- names])

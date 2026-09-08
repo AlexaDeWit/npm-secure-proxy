@@ -2,27 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Wiring a per-request "Ecluse.Core.Registry.Metadata.MetadataClient" for the serve
-path: the cross-cutting caching, metrics, and failure-logging policy wrapped around a
-registry's raw fetch primitive.
-
-The read boundary's /type/ lives in the registry layer (agnostic). A registry's raw
-fetch primitive lives with that registry (npm's in
-"Ecluse.Core.Registry.Npm.Metadata"). What lives __here__ is the serve-path policy
-that is the same regardless of ecosystem. That policy covers whether an origin resolves
-through the shared metadata cache, recording the upstream-fetch metrics, and logging a
-failure once in the request's context. Keeping that policy in the serve layer is what lets the
-registry layer stay free of the cache and telemetry.
-
-The two operations differ in how they resolve. The full-manifest op resolves the whole
-packument through the shared full-packument cache. The single-version op takes a
-__hybrid__ path, so a cold tarball gate need not pay a whole-packument decode to consult
-one version (see 'newMetadataClient'). It consults a small @(package, version)@ cache,
-then the warm full-packument cache __read-only__. A packument @GET@ followed by its
-tarball gate therefore still collapses to one upstream call. Only on a cold miss does it
-lead its own __selective__ fetch into the @(package, version)@ cache. That fetch parses
-just the requested version out of the full bytes, and never writes the whole packument
-back to the shared cache.
+{- | Caching, metrics, and failure logs around registry metadata reads.
+Private reads remain uncached. Anonymous public reads share full-document and version caches.
 -}
 module Ecluse.Core.Server.Metadata (
     -- * Caching policy
@@ -42,7 +23,7 @@ import Ecluse.Core.Registry (FetchFault (FetchBoundExceeded, FetchTransport, Fet
 import Ecluse.Core.Registry.Metadata (
     Manifest (Manifest, manifestDigest, manifestInfo, manifestRaw),
     MetadataClient (..),
-    MetadataError (MetadataBoundExceeded, MetadataFetch, MetadataNameMismatch, MetadataUndecodable),
+    MetadataError (MetadataAuthorisationFailure, MetadataBoundExceeded, MetadataFetch, MetadataNameMismatch, MetadataUndecodable),
  )
 
 import Ecluse.Core.Server.Cache (
@@ -58,27 +39,14 @@ import Ecluse.Core.Telemetry.Metrics qualified as Metric
 import Ecluse.Core.Telemetry.Record (MetricsPort (..), timedSeconds)
 import Ecluse.Core.Version (Version, renderVersion)
 
-{- | How a read handle resolves the full manifest for one origin. The private origin is the
-per-client authority and must never be shared, and the public origin is anonymous and shared.
--}
+-- | How a read handle resolves the full manifest for one origin. The private origin is the per-client authority and must never be shared, and the public origin is anonymous and shared.
 data ManifestCaching
-    = {- | Resolve directly, uncached: the per-client private origin. It is re-fetched
-      every request, so the upstream re-authorises each client's own forwarded credential.
-      -}
+    = -- | Resolve directly, uncached: the per-client private origin. It is re-fetched every request, so the upstream re-authorises each client's own forwarded credential.
       Uncached
-    | {- | Resolve through the shared metadata cache under the origin's 'Source' key:
-      the anonymous public origin. Concurrent and subsequent reads therefore collapse to
-      one upstream call, and both operations of the resulting handle share this one entry.
-      -}
+    | -- | Resolve through the shared metadata cache under the origin's 'Source' key: the anonymous public origin.
       Cached MetadataCache Source
 
-{- | Build a per-request read handle from a registry's raw fetch primitives, wired with the
-caching policy, the upstream-fetch metrics, and a request-context failure log.
-
-The single-version op tries the @(package, version)@ cache, then the full-packument cache
-read-only, then a cold selective fetch. It never writes a whole packument back to the shared
-cache, and every log runs once per real fetch inside the single-flight leader.
--}
+-- | Build a per-request read handle from a registry's raw fetch primitives, wired with the caching policy, the upstream-fetch metrics, and a request-context failure log.
 newMetadataClient ::
     MetricsPort ->
     Metric.Upstream ->
@@ -100,9 +68,6 @@ newMetadataClient metrics upstream caching logFailure logInvalid logFetch rawFet
         Uncached -> manifestLeader name
         Cached cache source -> resolveMetadata metrics cache source name (manifestLeader name)
 
-    -- The full-manifest single-flight leader: it runs only on a cache miss. A failure is logged
-    -- once here, and the cache stores nothing and hands the same 'Left' to every coalesced
-    -- follower.
     manifestLeader :: PackageName -> IO (Either MetadataError CacheEntry)
     manifestLeader name = do
         logFetch name
@@ -126,9 +91,6 @@ newMetadataClient metrics upstream caching logFailure logInvalid logFetch rawFet
             case cached of
                 Just details -> pure (Right details)
                 Nothing -> do
-                    -- (2) The warm full-packument cache, read-only: select the version
-                    -- from the shared entry the packument @GET@ populated. Nothing is
-                    -- written back to the version cache, the install one-call property.
                     warm <- cachedMetadata cache source name
                     case warm of
                         Just entry -> pure (Right (selectVersion version (entryInfo entry)))
@@ -144,9 +106,7 @@ newMetadataClient metrics upstream caching logFailure logInvalid logFetch rawFet
                 Right details -> pure (Right details)
                 Left err -> logFailure name err >> pure (Left err)
 
-{- | Select one version's details out of a parsed packument, by its rendered form. The store
-sweep projects every version it decides out of one manifest through this.
--}
+-- | Select one version's details out of a parsed packument, by its rendered form. The store sweep projects every version it decides out of one manifest through this.
 selectVersion :: Version -> PackageInfo -> Maybe PackageDetails
 selectVersion version info = Map.lookup (renderVersion version) (infoVersions info)
 
@@ -174,6 +134,7 @@ recordedFetch metrics upstream action = do
 the typed 'MetadataError', never error text, so the label set stays bounded by construction. -}
 metadataErrorCause :: MetadataError -> Metric.Cause
 metadataErrorCause = \case
+    MetadataAuthorisationFailure _ -> Metric.OtherCause
     MetadataUndecodable -> Metric.Decode
     MetadataNameMismatch _ -> Metric.Decode
     MetadataBoundExceeded _ -> Metric.OtherCause
