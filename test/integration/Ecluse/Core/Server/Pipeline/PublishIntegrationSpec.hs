@@ -2,7 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
--- | Publish routing and credential behaviour through the application and a captured target.
+{- | Publish routing and credential behaviour through the application
+and a captured target.
+-}
 module Ecluse.Core.Server.Pipeline.PublishIntegrationSpec (spec) where
 
 import Data.ByteString.Lazy qualified as LBS
