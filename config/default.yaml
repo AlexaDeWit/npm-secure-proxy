@@ -272,11 +272,11 @@ mounts:
     #     # Without it the Dredger refuses the store, and every other role ignores it.
     #     permitDeletion: true
     # Where a client `npm publish` is relayed. Opt-in: unset, PUT /{pkg} is 405. Every
-    # tag is admitted, and `token` is the fallback forwarded only when the publishing
-    # client sends none. Set it via
-    # ECLUSE_MOUNTS__NPM__PUBLICATION_TARGET__CODE_ARTIFACT__TOKEN (a secret); it
-    # requires server.authToken, or the boot refuses.
-    # It carries the publisher's own credential, so the boot refuses one on any mount's
+    # tag is admitted. A configured `token` replaces the authenticated server.authToken
+    # on publishes. Without `token`, the relay forwards the caller's credential.
+    # Set it via ECLUSE_MOUNTS__NPM__PUBLICATION_TARGET__CODE_ARTIFACT__TOKEN.
+    # It requires server.authToken, or the boot refuses.
+    # The target receives a credential, so the boot refuses one on any mount's
     # publicUpstream host, or equal to another mount's privateUpstream, mirrorTarget, or
     # publicationTarget. Its own mount's privateUpstream or mirrorTarget stays legal.
     # publicationTarget:

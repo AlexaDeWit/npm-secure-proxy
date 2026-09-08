@@ -119,8 +119,8 @@ The [first-party publish path](registry-model.md#publishing-first-party-packages
 relays a client `npm publish` to the publication target. The mount's first-party namespaces
 (`ECLUSE_MOUNTS__NPM__FIRST_PARTY`) constrain which package names a client may publish. It
 is not authentication and does not verify who is publishing. A deployment may set
-a `token` under the publication target's tag, substituting Écluse's own credential for a
-publisher who forwards none. If it does, the composition root refuses to boot without a
+a `token` under the publication target's tag, substituting Écluse's own credential for the
+authenticated edge token on publishes. If it does, the composition root refuses to boot without a
 verifiable inbound edge (`PublishStaticCredentialNeedsEdge`). That makes "static publish
 credential plus open edge" unrepresentable. Such a pairing would let any unauthenticated client
 publish under the operator's credential within the allowed scopes. `ECLUSE_SERVER__AUTH_TOKEN`

@@ -199,7 +199,11 @@ origin across callers, so one caller's read can never answer another's.
 
 A `publish` forwards the publisher's own token the same way. Opt into a static `token` under the
 publication target's tag (`ECLUSE_MOUNTS__NPM__PUBLICATION_TARGET__CODE_ARTIFACT__TOKEN`) and
-Écluse publishes as itself instead. That opt-in
+Écluse replaces the authenticated edge token with that static publish token.
+The publication target receives the static token, never the edge token in this mode.
+Without a static publish token, a closed-edge publish forwards the edge token unchanged.
+Every holder of the edge token can publish anything the static token permits within the configured first-party scopes.
+That opt-in
 needs `ECLUSE_SERVER__AUTH_TOKEN` in place, or the boot refuses
 (`PublishStaticCredentialNeedsEdge`), because the pairing would let any unauthenticated client
 publish under it. `ECLUSE_MOUNTS__NPM__FIRST_PARTY` names the scopes you own, and only a

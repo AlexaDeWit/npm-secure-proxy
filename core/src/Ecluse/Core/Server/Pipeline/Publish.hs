@@ -2,18 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The serve path behind the first-party publish route: @PUT \/{pkg}@.
-
-The publish flow runs in order:
-
-* validate edge authentication
-* apply the anti-shadowing first-party guard, so the package name is one this deployment owns
-* bound the request body at the per-request size cap
-* check body-name agreement between the URL path and the publish document
-* relay the request to the upstream publication target with the publisher's credential
-
-A declared over-cap length fails closed up front, and a counted read bounds a chunked
-body. Both answer @413@.
+{- | The first-party publish route, guarded before any upstream write.
+Credential selection follows the authenticated edge mode. Body limits and name agreement
+bound the request before the adapter relays it to the publication target.
 -}
 module Ecluse.Core.Server.Pipeline.Publish (
     PublishReplies (..),
@@ -45,10 +36,7 @@ import Ecluse.Core.Server.Context (
 import Ecluse.Core.Server.Pipeline.Shared
 import Ecluse.Core.Server.Response (appendHelp)
 
-{- | The route-owned ways the publish pipeline may answer. The configured target may
-return any status, so npm supplies these constructors from an explicit OpenAPI @default@
-contract whose media type stays @application/json@.
--}
+-- | Route-owned replies, including the publication target's unrestricted status codes.
 data PublishReplies response = PublishReplies
     { publishRelayed :: Status -> ResponseHeaders -> LByteString -> response
     -- ^ Relay the publication target's status and bytes.
@@ -56,6 +44,7 @@ data PublishReplies response = PublishReplies
     -- ^ Emit an ecosystem-shaped local error.
     }
 
+-- | Relay a configured first-party publish after authentication and body guards.
 servePublish ::
     PublishReplies response ->
     PackageName ->
@@ -68,8 +57,6 @@ servePublish replies name request respond = do
         Nothing -> liftIO (respond (publishDisabled replies))
         Just deps -> publishWithDeps replies deps (forwardedCredential mount request) name request respond
 
--- The edge gate, the anti-shadowing first-party guard, and the body-name agreement check all run
--- before any write. The relay then carries the publisher's forwarded credential.
 publishWithDeps ::
     PublishReplies response ->
     PublishDeps ->
@@ -84,46 +71,34 @@ publishWithDeps replies deps clientToken name request respond
     | not (pubAllowed deps name) =
         liftIO (respond (outOfScope replies deps name))
     | overDeclaredCap =
-        -- A declared Content-Length over the cap fails closed before a byte is read, with no
-        -- reservation and no relay. A chunked body declares none, so the counted read caps it.
         liftIO (respond (publishTooLarge replies deps))
     | otherwise = do
         rt <- asks ctxRuntime
-        -- The admission is acquired only after the edge gate and the first-party guard admitted
-        -- the request, so a refused publish reserves nothing. The weight is the declared
-        -- Content-Length, and a chunked body reserves the per-request cap pessimistically.
         outcome <- withByteAdmission (srMetrics rt) (pubBodyBudget deps) bodyWeight $ do
-            -- 'boundedRead' caps this counted read and returns the breach as a value: a
-            -- fail-closed 413, never a truncated body and never a throw across the perimeter.
             liftIO (boundedRead requestBodyLimits (getRequestBodyChunk request)) >>= \case
-                -- 'boundedRead' reports only 'BodyTooLarge', so any breach of the
-                -- request cap is the 413.
                 Left _ -> pure (publishTooLarge replies deps)
-                -- The body-name agreement leg of the anti-shadowing guard. A crafted body could
-                -- otherwise write a name the guard never saw. Refuse before the relay.
                 Right body -> case bodyNameDisagreement (publishDeclaredNames (pubAdapter deps)) (pubProjectName deps) name (LBS.fromStrict body) of
                     Just declared -> pure (bodyNameMismatch replies deps name declared)
-                    -- The relay reports failures as the typed 'FetchFault' value, so the
-                    -- render below is total and nothing is caught here.
                     Nothing ->
                         renderRelay replies deps
                             <$> liftIO (publishRelay (pubAdapter deps) (publicationTarget rt) name body)
         liftIO (respond (fromMaybe (bodyBudgetShed replies deps) outcome))
   where
-    -- The publication target as one origin. The posture is passthrough: the publisher's own
-    -- token rides, and the static fallback applies only when the client presented none.
     publicationTarget rt =
         originClient
             (pubLimits deps)
             (srPrivateManager rt)
             (pubTargetUrl deps)
-            (clientToken <|> (bareCredential <$> pubStaticToken deps))
+            publicationCredential
+
+    publicationCredential = case (pubInboundToken deps, pubStaticToken deps) of
+        (Just _, Just staticToken) -> Just (bareCredential staticToken)
+        _ -> clientToken
 
     -- The per-request body cap as a 'boundedRead' bound. 'boundedRead' consults only
     -- 'maxBodyBytes', so the response budget's other 'Limits' fields do not matter here.
     requestBodyLimits = (pubLimits deps){maxBodyBytes = pubMaxRequestBytes deps}
 
-    -- Whether the request declares a Content-Length already over the per-request cap.
     overDeclaredCap = case requestBodyLength request of
         KnownLength n -> n > fromIntegral (pubMaxRequestBytes deps)
         ChunkedBody -> False
@@ -132,8 +107,6 @@ publishWithDeps replies deps clientToken name request respond
         KnownLength n -> fromIntegral n
         ChunkedBody -> pubMaxRequestBytes deps
 
-{- Render the relay outcome. On success the publisher sees the publication target's own
-status and body, so the registry's own @409@ or @403@ reaches the client unchanged. -}
 renderRelay ::
     PublishReplies response ->
     PublishDeps ->
@@ -157,8 +130,6 @@ bodyBudgetShed :: PublishReplies response -> PublishDeps -> response
 bodyBudgetShed replies deps =
     publishError replies shedStatus [shedRetryAfter] (appendHelp (pubHelp deps) "the server is at its publish-body capacity; retry shortly")
 
--- A @413@ for a publish body over the per-request size cap ('pubMaxRequestBytes', the
--- client-to-proxy request-body limit). The refusal happens before any upstream write.
 publishTooLarge :: PublishReplies response -> PublishDeps -> response
 publishTooLarge replies deps =
     publishError replies status413 [] (appendHelp (pubHelp deps) "the publish body exceeds the maximum accepted request size")
@@ -176,8 +147,6 @@ publishDisabled replies =
         "publishing is not enabled on this proxy (no publication target is configured); \
         \publish directly to the registry you intend to publish to"
 
--- A @403@ for a publish whose name is outside the mount's first-party namespaces: the
--- anti-shadowing guard, refused before any upstream write.
 outOfScope :: PublishReplies response -> PublishDeps -> PackageName -> response
 outOfScope replies deps name =
     publishError replies status403 [] (appendHelp (pubHelp deps) message)
@@ -188,8 +157,6 @@ outOfScope replies deps name =
             <> renderPackageName name
             <> "': its name is outside the first-party namespaces this deployment declares (the anti-shadowing guard against publishing a name that shadows a public package)"
 
--- A @403@ for a publish whose body declares a package name that disagrees with the requested
--- name the first-party guard authorised, refused before any upstream write.
 bodyNameMismatch :: PublishReplies response -> PublishDeps -> PackageName -> Text -> response
 bodyNameMismatch replies deps name declared =
     publishError replies status403 [] (appendHelp (pubHelp deps) message)
@@ -202,11 +169,7 @@ bodyNameMismatch replies deps name declared =
             <> declared
             <> "', which disagrees with the requested package name the first-party guard authorised (the anti-shadowing guard against publishing a name the guard never saw)"
 
-{- The first declared body name that disagrees with the URL-path name. A relay keyed off the
-body could otherwise write a name the scope guard never authorised. Each declared name is
-canonicalised and compared by 'PackageName' equality, so an encoding variant cannot disagree
-silently. An absent name is not a claim and not a disagreement, so the target's own
-validation decides. -}
+-- A body-driven target must not write a name the URL-path guard never authorised.
 bodyNameDisagreement :: (LByteString -> [Text]) -> (Text -> Maybe PackageName) -> PackageName -> LByteString -> Maybe Text
 bodyNameDisagreement declaredNames canonicalise name body =
     find disagrees (declaredNames body)

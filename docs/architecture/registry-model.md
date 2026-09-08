@@ -48,7 +48,8 @@ reads the public upstream anonymously.
   token (see [Configuration](configuration.md#outbound-registry-credentials)). Declare it
   under its own key even when it equals the private upstream: the client reads it, Écluse writes
   it.
-- **Publication target (write)**: the client's own forwarded credential. Écluse mints no token.
+- **Publication target (write)**: follows the configured
+  [publish credential mode](https://ecluse-proxy.com/docs/deployment/#edge-authentication-and-client-credentials). Écluse mints no token.
 
 The non-negotiable invariant, under every strategy: **the client's credential is never sent to
 the public upstream.** The boot enforces it on the one client-driven write: a `publicationTarget`
@@ -81,7 +82,7 @@ trigger, content, and credential from the mirror write.
   declared name that disagrees is a `403` before any relay, under the same `PackageName` equality
   the route uses. An absent name is no claim. The guard reads names only and never decodes the
   base64 `_attachments`.
-- **Credential.** Passthrough: Écluse forwards the publisher's own token and mints none.
+- **Credential.** See [Credential flow and authority](#credential-flow-and-authority).
 - **No read-back role.** Write-only from the proxy's view. Published packages read back through
   the private upstream. So the operator points the publication target at the same registry as the
   private upstream, or aggregates it into that read path.
@@ -103,8 +104,8 @@ sequenceDiagram
         alt name out of scope
             E-->>Client: 4xx npm-shaped error (no upstream write)
         else name in scope
-            E->>PubT: publishArtifact (client token forwarded)
-            PubT-->>E: result (publication target authorises the publisher)
+            E->>PubT: publishArtifact (selected publish credential)
+            PubT-->>E: result (publication target authorises the credential)
             E-->>Client: npm success shape
         end
     end
