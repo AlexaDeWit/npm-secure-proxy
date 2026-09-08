@@ -2,13 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The boot-error vocabulary of the composition root: every reason Écluse refuses to start, and
-its operator-facing rendering.
-
-Each case is a __fail-loud__ boot failure, and the root aggregates them, so a single run reports
-every problem an operator must fix (see @docs\/architecture\/configuration.md@ → "Validation").
-This module is the shared spine of the composition-root modules that produce them, so it holds
-no policy of its own beyond the rendering and the fold that turns a thrown fault into one.
+{- | Aggregated startup refusals and their
+operator-facing rendering.
 -}
 module Ecluse.Composition.BootError (
     BootError (..),
@@ -75,10 +70,7 @@ data BootError
       The mirror could never publish, so the mount is refused rather than booted half-wired.
       -}
       MirrorTargetWithoutPublish Ecosystem
-    | {- | A mount declares a publication target, but this build writes nothing for its
-      ecosystem. The relay could never publish, so the mount is refused rather than booted
-      half-wired.
-      -}
+    | -- | A publication target has no adapter that can write its ecosystem's protocol.
       PublicationTargetWithoutPublish Ecosystem
     | {- | A publication target is set and the mount declares no first-party namespaces, so the
       anti-shadowing guard has nothing to enforce and any name could be shadowed.
@@ -104,6 +96,8 @@ data BootError
       carried registry. A sweep of that store would delete data the other role owns.
       -}
       MirrorTargetOnMountEndpoint Ecosystem Ecosystem Text Text
+    | -- | One repository receives caller credentials and bypasses the public rules through the private leg.
+      PrivateUpstreamOnPublicUpstream Ecosystem Text
     | {- | Two endpoints, each carried as its mount and its tagged key path, name the carried
       registry under different tags, so the two declarations disagree about what serves that store.
       -}
@@ -241,6 +235,13 @@ renderBootError = \case
             <> " ("
             <> url
             <> "): the Dredger permanently deletes from the mirror target, so point it at a registry that holds no other role, or run no Dredger against this configuration"
+    PrivateUpstreamOnPublicUpstream eco url ->
+        mountKeyRef eco "privateUpstream"
+            <> " and "
+            <> mountKeyRef eco "publicUpstream"
+            <> " resolve to the same registry ("
+            <> url
+            <> "): the private leg forwards caller credentials and admits versions without the public rules. Configure distinct repositories."
     StoreTagConflict eco key other otherKey url ->
         mountKeyRef eco key
             <> " and "

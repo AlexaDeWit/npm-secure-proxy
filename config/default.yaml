@@ -239,6 +239,8 @@ mounts:
     # enabled: true
     # The read authority. Required on a mirrored mount, so the mirror reads back.
     # Optional on a serve-only mount, where it still merges with the gated public set.
+    # Must name a different repository from this mount's publicUpstream. Boot refuses
+    # equal repository identities, including equivalent URL spellings.
     # Every tag is admitted and each carries the url alone: a read forwards the caller's
     # own credential, so no tag holds one here.
     # privateUpstream:

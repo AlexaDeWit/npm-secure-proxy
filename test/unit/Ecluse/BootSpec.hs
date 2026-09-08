@@ -21,7 +21,7 @@ import UnliftIO.Concurrent (threadDelay)
 import Ecluse (ProcessOutcome (..), exitCodeFor, run, superviseProcess)
 import Ecluse.Boot (BootAborted (..), BootEnv (beLogEnv), applySecretFileIndirection, logBootInfo, orExit, readConfigDocument, withBootEnv)
 import Ecluse.Composition.BootError (
-    BootError (AwsEndpointMalformed, MirrorTargetOnMountEndpoint, SplitRoleNeedsDurableQueue),
+    BootError (AwsEndpointMalformed, MirrorTargetOnMountEndpoint, PrivateUpstreamOnPublicUpstream, SplitRoleNeedsDurableQueue),
     renderBootError,
  )
 import Ecluse.Composition.Support (malformedAwsEndpoint, noMaintenanceBackend, overrideEnv, withoutQueueUrl)
@@ -278,6 +278,25 @@ spec = do
             unsetEnv "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__REGISTRY__TOKEN_FILE"
             traverse_ (unsetEnv . fst) runEnv
             outcome `shouldBe` Left (ExitFailure 2)
+
+    describe "private/public repository collisions"
+        $ forM_
+            [ ["proxy"]
+            , ["proxy", "--no-worker"]
+            , ["mirror"]
+            , ["dredger"]
+            , ["pilot"]
+            , ["pilot", "compile", "--out", "scratchpad/refused-compile"]
+            , ["check-config"]
+            ]
+        $ \args -> it ("refuses " <> toString (unwords (map toText args)) <> " before starting services") $ do
+            let env = overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL" "https://registry.npmjs.org:443/" runEnv
+                refusal = renderBootError (PrivateUpstreamOnPublicUpstream Npm "https://registry.npmjs.org:443/")
+                expected = case args of
+                    ["dredger"] -> [refusal, renderBootError noMaintenanceBackend]
+                    ["check-config"] -> [refusal, "configuration: refused"]
+                    _ -> [refusal]
+            bootRefusal args env `shouldReturn` (Left (ExitFailure 2), expected)
 
     describe "check-config (validate and print, boot nothing)" $ do
         it "validates a bootable configuration and exits 0" $ do

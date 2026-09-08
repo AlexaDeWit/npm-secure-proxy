@@ -27,6 +27,7 @@ spec = do
     otherMountSpec
     mirrorTargetSpec
     mirrorStoreSpec
+    privateUpstreamSpec
     advisorySpec
     aggregationSpec
 
@@ -167,6 +168,40 @@ mirrorStoreSpec = describe "mirrorTarget against another declared endpoint" $ do
         refusalsFor MirrorPruner env `shouldReturn` []
         advisoriesFor env `shouldReturn` []
 
+privateUpstreamSpec :: Spec
+privateUpstreamSpec = describe "privateUpstream against its public upstream" $
+    forM_ [MirrorWriter, MirrorPruner] $ \role -> describe (show role) $ do
+        forM_
+            [ "https://public.example.test"
+            , "https://public.example.test/"
+            , "https://PUBLIC.Example.Test"
+            , "https://public.example.test:443"
+            , "https://PUBLIC.Example.Test:443/"
+            ]
+            $ \url -> it ("refuses the same repository spelled " <> url) $ do
+                let env = overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL" url staticEnvVars
+                refusalsFor role env
+                    `shouldReturn` [PrivateUpstreamOnPublicUpstream Npm (toText url)]
+                advisoriesForRole role env `shouldReturn` []
+
+        it "accepts distinct repository paths on the same host" $ do
+            let env =
+                    overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL" "https://public.example.test/npm/private/" $
+                        overrideEnv "ECLUSE_MOUNTS__NPM__PUBLIC_UPSTREAM__REGISTRY__URL" "https://public.example.test/npm/public/" staticEnvVars
+            refusalsFor role env `shouldReturn` []
+            advisoriesForRole role env `shouldReturn` []
+
+        it "preserves a private upstream equal to another mount's public upstream" $ do
+            let env =
+                    overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL" "https://pypi-public.example.test" (withPyPI staticEnvVars)
+            refusalsFor role env `shouldReturn` []
+            advisoriesForRole role env `shouldReturn` []
+
+        it "accepts a distinct non-default port on the same host" $ do
+            let env = overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL" "https://public.example.test:8443" staticEnvVars
+            refusalsFor role env `shouldReturn` []
+            advisoriesForRole role env `shouldReturn` []
+
 advisorySpec :: Spec
 advisorySpec = describe "the advisories a writing role logs" $ do
     it "says nothing when every registry endpoint is distinct" $
@@ -184,18 +219,9 @@ advisorySpec = describe "the advisories a writing role logs" $ do
         advisoriesFor (withPyPI (mirroringTo "https://pypi-private.example.test" staticEnvVars))
             `shouldReturn` ["mount \"npm\": mirrorTarget and mount \"pypi\" privateUpstream resolve to the same registry (https://pypi-private.example.test); the Dredger refuses this configuration, so pruning this mirror stays manual"]
 
-    it "warns when a mount's private and public upstreams collide" $
-        advisoriesFor (overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL" "https://public.example.test" staticEnvVars)
-            `shouldReturn` ["mount \"npm\": privateUpstream and publicUpstream resolve to the same registry (https://public.example.test); the merge trusts the private leg, so this registry's versions are admitted unfiltered"]
-
     it "ignores a trailing-slash difference when comparing endpoints" $
         advisoriesFor (mirroringTo "https://private.example.test/" staticEnvVars)
             `shouldReturn` ["mount \"npm\": mirrorTarget and privateUpstream resolve to the same registry (https://private.example.test/); the Dredger refuses this configuration, so pruning this mirror stays manual"]
-
-    it "gives the deleting role that same private-and-public-upstream advisory" $
-        -- Rule six advises every role, so a severity flipped for one alone fails here.
-        advisoriesForRole MirrorPruner (overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL" "https://public.example.test" staticEnvVars)
-            `shouldReturn` ["mount \"npm\": privateUpstream and publicUpstream resolve to the same registry (https://public.example.test); the merge trusts the private leg, so this registry's versions are admitted unfiltered"]
 
     it "logs no advisory for a collapse it refuses outright" $
         advisoriesFor (withPyPI (publishingTo "https://pypi-mirror.example.test")) `shouldReturn` []
@@ -203,8 +229,7 @@ advisorySpec = describe "the advisories a writing role logs" $ do
 aggregationSpec :: Spec
 aggregationSpec = describe "aggregation" $ do
     it "reports every refusing rule in the order the pass declares them" $ do
-        -- One registry on four keys fires rules one through five at once, so swapping any
-        -- adjacent pair of them in 'endpointRules' changes this list.
+        -- One registry on four keys exercises all six endpoint comparisons.
         refusals <- refusalsFor MirrorPruner everyEndpointCollapseEnv
         refusals
             `shouldBe` [ PublicationTargetOnPublicUpstream Npm PyPI sharedRegistryText
@@ -212,15 +237,14 @@ aggregationSpec = describe "aggregation" $ do
                        , MirrorTargetOnPublicUpstream Npm PyPI sharedRegistryText
                        , MirrorTargetOnMountEndpoint Npm PyPI "privateUpstream" sharedRegistryText
                        , MirrorTargetOnMountEndpoint Npm Npm "publicationTarget" sharedRegistryText
+                       , PrivateUpstreamOnPublicUpstream PyPI sharedRegistryText
                        ]
 
     it "logs the advising rules of that same configuration in that same order" $
-        -- Rules four and five advise a writing role, and rule six advises every role, so this
-        -- pins the tail of the order the refusal list above cannot reach.
+        -- The mirror collisions still advise a writing role when another rule refuses.
         advisoriesFor everyEndpointCollapseEnv
             `shouldReturn` [ "mount \"npm\": mirrorTarget and mount \"pypi\" privateUpstream resolve to the same registry (" <> sharedRegistryText <> "); the Dredger refuses this configuration, so pruning this mirror stays manual"
                            , "mount \"npm\": mirrorTarget and publicationTarget resolve to the same registry (" <> sharedRegistryText <> "); the Dredger refuses this configuration, so pruning this mirror stays manual"
-                           , "mount \"pypi\": privateUpstream and publicUpstream resolve to the same registry (" <> sharedRegistryText <> "); the merge trusts the private leg, so this registry's versions are admitted unfiltered"
                            ]
 
     it "reports every collision in one boot failure, in rule order" $ do
@@ -273,9 +297,7 @@ publishingTo target =
 mirroringTo :: String -> [(String, String)] -> [(String, String)]
 mirroringTo = overrideEnv "ECLUSE_MOUNTS__NPM__MIRROR_TARGET__REGISTRY__URL"
 
-{- | Activate a second, mirrored PyPI mount, so the cross-mount rules have a neighbour to
-collide with. No adapter ships for it, which these pure endpoint rules never consult.
--}
+-- These endpoint checks do not consult the PyPI adapter's write capabilities.
 withPyPI :: [(String, String)] -> [(String, String)]
 withPyPI env =
     overrideEnv "ECLUSE_MOUNTS__PYPI__PUBLIC_UPSTREAM__REGISTRY__URL" "https://pypi-public.example.test" $
