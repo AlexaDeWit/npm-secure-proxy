@@ -2,15 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The ecosystem-agnostic decisions one public-upstream document needs before it is served.
-
-A 'FilterPlan' says which versions survive the rule set (presence in the served document /is/
-availability), where @dist-tags.latest@ resolves within the public set, and every version's
-'Decision' for a no-survivors outcome to render. It carries no dropped-tag list, because a tag
-survives exactly when its target does. The adapter replays the plan onto the raw document, so
-unmodelled wire keys survive. 'enforceArtifactLocations' is the other agnostic reduction: per
-artifact, the scheme normalises against the https-only egress policy and the authority must be
-honoured for the origin that served the document, the same check the download gate applies.
+{- | Ecosystem-independent listing decisions and artifact-location admission.
+Adapters replay the surviving versions and files onto their raw documents.
 -}
 module Ecluse.Core.Package.Filter (
     -- * Rule-filter plan
@@ -40,6 +33,7 @@ import Ecluse.Core.Package (
 import Ecluse.Core.Rules.Types (Decision (Admitted))
 import Ecluse.Core.Security (AllowedHostPorts, artifactAuthorityHonoured, authorityLabel, hostAddress, hostPortAddress)
 import Ecluse.Core.Security.Egress (registryUrlText, resolveTarballUrl)
+import Ecluse.Core.Text (urlFilename)
 import Ecluse.Core.Version (Version, renderVersion, selectLatest)
 
 {- | The filtering decisions for one public packument, for the adapter to replay onto the raw
@@ -106,8 +100,8 @@ restrictToSurvivors survivors info =
         , infoDistTags = Map.filter ((`Set.member` survivors) . renderVersion) (infoDistTags info)
         }
 
-{- | Reduce a document to the artifact locations a client may be sent to, dropping each artifact
-the scheme or the authority refuses and each version left with none.
+{- | Drop artifacts with refused filenames, schemes, or authorities, and versions left with none.
+Retain drop records for operator reporting.
 -}
 enforceArtifactLocations :: AllowedHostPorts -> Text -> PackageInfo -> PackageInfo
 enforceArtifactLocations ecosystemHosts upstreamBaseUrl info =
@@ -161,12 +155,18 @@ versionDrop rawVersion refusal =
 -- authority check still applies, because the download gate applies it whatever the scheme.
 resolveArtifact :: AllowedHostPorts -> Text -> Artifact -> Either ArtifactRefusal Artifact
 resolveArtifact ecosystemHosts upstreamBaseUrl art = do
+    checkFilename art
     normalised <- normaliseScheme
+    checkFilename normalised
     if artifactAuthorityHonoured ecosystemHosts originAuthority (hostPortAddress (artUrl normalised))
         then Right normalised
         else Left (refusal "artifact authority is neither the serving upstream nor a declared artifact host" (artUrl normalised))
   where
     originAuthority = hostPortAddress upstreamBaseUrl
+
+    checkFilename candidate =
+        when (isNothing (urlFilename (artUrl candidate))) $
+            Left (refusal "artifact URL has no safe filename" (artUrl candidate))
 
     normaliseScheme = case httpsUpstreamHost upstreamBaseUrl of
         Nothing -> Right art

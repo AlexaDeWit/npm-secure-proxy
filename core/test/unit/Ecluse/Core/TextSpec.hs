@@ -2,6 +2,7 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | Shared text parsing contracts and ISO-8601 rendering parity.
 module Ecluse.Core.TextSpec (spec) where
 
 import Data.Time (UTCTime (UTCTime), fromGregorian, picosecondsToDiffTime)
@@ -12,19 +13,16 @@ import Hedgehog.Range qualified as Range
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
-import Ecluse.Core.Text (afterFirst, joinUrlPath, nonBlank, readDecimalText, readHexText, renderIso8601Utc, stripTrailingSlash, urlFilename)
+import Ecluse.Core.Text (afterFirst, joinUrlPath, nonBlank, readDecimalText, readHexText, renderIso8601Utc, stripTrailingSlash, urlFilename, urlFilenameComponent)
 
-{- | Tests for the shared text helpers. They pin the promises callers depend on: absence and
-trimming in 'nonBlank', every trailing slash dropped from a URL base, the query- and
-fragment-free filename 'urlFilename' takes, the text after a needle's first occurrence in 'afterFirst', the one
-accepted spelling of a digit run, and 'renderIso8601Utc' byte-for-byte equal to 'iso8601Show'.
--}
+-- | Text parsing contracts and ISO-8601 rendering parity.
 spec :: Spec
 spec = do
     nonBlankSpec
     trailingSlashSpec
     joinUrlPathSpec
     urlFilenameSpec
+    urlFilenameComponentSpec
     afterFirstSpec
     readDecimalTextSpec
     readHexTextSpec
@@ -147,6 +145,18 @@ urlFilenameSpec = describe "urlFilename" $ do
     it "is absent for the empty string" $
         urlFilename "" `shouldBe` Nothing
 
+    for_ ["a\\..\\..\\x", ".", "..", "bad\nname", "bad\0name"] $ \filename ->
+        it ("refuses the unsafe filename " <> show filename) $
+            urlFilename ("https://host/" <> filename) `shouldBe` Nothing
+
+    for_ ["%2e", "%2E", ".%2e", "%2E.", "%2e%2e", "%2E%2e", "a%2fb", "a%2Fb", "a%5cb", "a%5Cb", "bad%00name", "bad%0Aname", "%ff", "%c0%ae"] $ \filename ->
+        it ("refuses the once-decoded unsafe filename " <> show filename) $
+            urlFilename ("https://host/" <> filename) `shouldBe` Nothing
+
+    for_ ["archive..tgz", ".hidden", "two words.tgz", "%2e%2e.tgz", "two%20words.tgz", "caf%C3%A9.tgz", "name+tag.tgz", "%252e%252e", "%252f", "%255c", "literal%", "literal%2", "literal%zz"] $ \filename ->
+        it ("keeps the valid filename " <> show filename) $
+            urlFilename ("https://host/" <> filename <> "?sig=abc#hash") `shouldBe` Just filename
+
     it "drops a query string, as a presigned artifact URL carries" $
         urlFilename "https://cdn.host/f/thing-1.0.0.tgz?X-Amz-Signature=deadbeef"
             `shouldBe` Just "thing-1.0.0.tgz"
@@ -165,6 +175,18 @@ urlFilenameSpec = describe "urlFilename" $ do
 
     it "is absent when the path ends in a slash before the query" $
         urlFilename "https://cdn.host/f/?sig=abc" `shouldBe` Nothing
+
+urlFilenameComponentSpec :: Spec
+urlFilenameComponentSpec = describe "urlFilenameComponent" $ do
+    for_ ["", ".", "..", "a\\b", "a\nb", "%2e", "..%2Fx", "name+tag.tgz"] $ \filename ->
+        it ("extracts the raw component without validation: " <> show filename) $
+            urlFilenameComponent ("https://host/a/" <> filename <> "?redirect=/other#hash") `shouldBe` filename
+
+    it "extracts a bare filename without a URL prefix" $
+        urlFilenameComponent "..%2Fx" `shouldBe` "..%2Fx"
+
+    it "returns an empty component for an empty URL" $
+        urlFilenameComponent "" `shouldBe` ""
 
 renderIso8601Spec :: Spec
 renderIso8601Spec = describe "renderIso8601Utc" $ do

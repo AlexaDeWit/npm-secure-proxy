@@ -51,7 +51,7 @@ import Ecluse.Core.Registry.Origin (OriginClient (ocBaseUrl, ocToken))
 import Ecluse.Core.Registry.Request (joinPath, noValidators)
 import Ecluse.Core.Security.Egress (registryUrlText)
 import Ecluse.Core.Server.Path (encodeComponent, isSafeComponent)
-import Ecluse.Core.Text (nonBlank, urlFilename)
+import Ecluse.Core.Text (nonBlank, urlFilenameComponent)
 import Ecluse.Core.Version (Version, compareVersions, mkVersion, renderVersion)
 
 -- | npm's maintenance slice. It fills both verbs, so an npm mount is sweepable.
@@ -218,7 +218,7 @@ tarballFilename name version manifest =
     conventional = unscopedName name <> "-" <> renderVersion version <> ".tgz"
 
 distTarballSegment :: Value -> Maybe Text
-distTarballSegment manifest = urlFilename =<< tarballUrl manifest
+distTarballSegment manifest = urlFilenameComponent <$> tarballUrl manifest
 
 tarballUrl :: Value -> Maybe Text
 tarballUrl = \case
