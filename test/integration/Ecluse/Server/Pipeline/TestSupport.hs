@@ -352,6 +352,7 @@ privateArtifactMidStreamFailure =
 truncatedResponse :: Status -> ByteString -> Response
 truncatedResponse status body = responseRaw truncated (responseLBS status500 [] "raw unsupported")
   where
+    truncated :: IO ByteString -> (ByteString -> IO ()) -> IO ()
     truncated _recv send = do
         send ("HTTP/1.1 " <> show (statusCode status) <> " " <> statusMessage status <> "\r\nContent-Length: 1048576\r\n\r\n")
         send body
