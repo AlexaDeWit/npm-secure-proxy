@@ -22,6 +22,8 @@ module Ecluse.Core.Osv.Advisory (
     osvExportUrl,
 ) where
 
+import Prelude hiding (universe)
+
 import Data.Aeson (FromJSON (..), withObject, (.:), (.:?))
 import Data.Text qualified as T
 import Data.Universe.Class (Universe (universe))
