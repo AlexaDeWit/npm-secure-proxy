@@ -226,12 +226,15 @@ name under one of them may be published (see
 obligation is to supply a credential the private registry accepts, keyed to the proxy's URL in
 whatever per-registry auth configuration that client keeps. Écluse forwards it to the private
 upstream, which authorises the caller, so what someone reaches through the proxy is what your
-registry already grants them. A caller holding no credential still installs public packages through
-the gate. The private set is what the credential unlocks.
+registry already grants them. Public installs without credentials remain possible when no private
+upstream explicitly refuses access. The private set is what the credential unlocks.
 
-Public success does not prove the private credential worked. For non-first-party packages, current
-private 401/403 handling can fall back to public content.
-[#1244](https://github.com/AlexaDeWit/Ecluse/issues/1244) will replace that fallback with refusal.
+Public success does not prove the private credential worked. An explicit private `401` or `403`
+stops metadata and artifact reads with a local `403`, including HEAD and conditional requests.
+Public content cannot replace the private copy after that refusal. Genuine private `404` responses
+still permit public fallback for non-first-party packages. Other transient and transport policies
+remain unchanged, and first-party names stay private-only. A backend-masked `404` does not prove
+authentication succeeded. See the [private access policy](@/docs/configuration.md#first-party-namespaces).
 
 Two rules hold whatever ecosystem the client speaks:
 
