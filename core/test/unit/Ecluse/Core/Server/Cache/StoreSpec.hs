@@ -298,7 +298,7 @@ spec = do
             _ <- resolveOkRecording seen sf "second" (pure "b")
             lookupStore sf "first" `shouldReturn` Nothing
             lookupStore sf "second" `shouldReturn` Just "b"
-            readIORef seen `shouldReturn` Just CacheOccupancy{occEntries = 1, occBytes = maxBound - 1}
+            (fmap (\occ -> (occEntries occ, occBytes occ)) <$> readIORef seen) `shouldReturn` Just (1, maxBound - 1)
 
         it "serves a value larger than the whole byte budget without retaining it" $ do
             sf <- newStore 60 100 (flatWeight - 1)

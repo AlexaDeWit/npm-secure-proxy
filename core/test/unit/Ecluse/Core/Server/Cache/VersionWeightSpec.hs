@@ -25,9 +25,9 @@ spec = describe "selected-release accounting" $ do
         weighVersion (Just baseline) `shouldSatisfy` (> weighVersion Nothing)
 
     it "charges each artifact even when its fields share allocations" $ do
-        let one = weight baseline{pkgArtifacts = oneArtifact :| []}
-            many = weight baseline{pkgArtifacts = oneArtifact :| replicate 99 oneArtifact}
-        many `shouldSatisfy` (> one + 99 * 256)
+        let singleWeight = weight baseline{pkgArtifacts = oneArtifact :| []}
+            repeatedWeight = weight baseline{pkgArtifacts = oneArtifact :| replicate 99 oneArtifact}
+        repeatedWeight `shouldSatisfy` (> singleWeight + 99 * 256)
 
     it "charges a Text slice for the complete retained backing allocation" $ do
         let backing = T.replicate 65536 "x"
