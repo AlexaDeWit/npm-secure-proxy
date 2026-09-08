@@ -2,14 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | The advisory database's sync mechanics, and the write side of "Ecluse.Core.Cve.Slot":
-detect a new @osv.db@ artifact in object storage, download it bounded, verify it, and
-shadow-swap it into the read path, one task per configured mount. 'syncStep' performs
-exactly one such cycle over an injected 'CveFetch', so unit tests drive it without a
-network, and 'runCveSync' schedules those steps: an eager boot burst, retried with
-incremental backoff and eventually allowed to fail so a broken bucket never wedges
-startup, then the steady ETag poll. Until an artifact lands, the ecosystem denies by
-default.
+{- | Advisory artifact sync and the write side of "Ecluse.Core.Cve.Slot".
+Each mount retries at boot, then polls for new artifacts. An empty slot denies by default.
 -}
 module Ecluse.Runtime.Cve.Sync (
     -- * The injected transport
@@ -37,6 +31,10 @@ import Conduit (ConduitT, await, runResourceT, yield, (.|))
 import Control.Retry (retrying)
 import Data.ByteString qualified as BS
 import Data.Conduit.Combinators qualified as C
+import Data.List (lookup)
+import Data.Text qualified as T
+import Data.Time (UTCTime)
+import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Katip (KatipContext, Severity (DebugS, ErrorS, InfoS, WarningS), logFM, ls)
 import Network.HTTP.Types.Status (statusCode)
 import System.Directory (removeFile, renameFile)
@@ -53,12 +51,14 @@ import Ecluse.Core.Cve (CveDb (cveDbClose, cveDbMeta), CveDbRejected, DbEtag (..
 import Ecluse.Core.Cve.Slot (CveSlot, swapIn)
 import Ecluse.Core.Ecosystem (Ecosystem)
 import Ecluse.Core.Fault (TransportFault)
+import Ecluse.Core.Osv.Schema (MetaKey (MetaBuiltAt, MetaRowCount), renderMetaKey)
 import Ecluse.Core.Supervision (delayListPolicy)
 import Ecluse.Core.Telemetry.Metrics (
     AdvisorySyncResult (AdvisoryFetchFailed, AdvisoryNonePublished, AdvisoryRefused, AdvisorySwapped, AdvisoryUnchanged),
  )
 import Ecluse.Core.Telemetry.Record (AdvisorySyncMetricsPort (asmpSyncAttempt, asmpSyncDuration), timedSeconds)
 import Ecluse.Core.Telemetry.Span (AdvisorySyncTracingPort (astpSyncAttemptSpan))
+import Ecluse.Core.Text (readDecimalText)
 import Ecluse.Runtime.Aws.Env (AwsEndpoint)
 import Ecluse.Runtime.Aws.Fault (classifyAwsTransport)
 import Ecluse.Runtime.Aws.S3 (buildS3Env)
@@ -192,9 +192,8 @@ then the burst concedes to the steady poll. The poll interval, not this, is the 
 bootBackoffDelays :: [Int]
 bootBackoffDelays = [1_000_000, 2_000_000, 4_000_000, 8_000_000, 16_000_000]
 
-{- | One ecosystem's sync task: the boot burst, then the steady poll, forever. The burst concedes
-early on a refused artifact, because the same bytes cannot end differently. An empty slot denies by
-default. @notifyFirstSync@ runs after every successful swap, so its consumer must be idempotent.
+{- | Retry at boot, then poll forever. A refused artifact ends the boot burst.
+@notifyFirstSync@ runs after every swap and must be idempotent.
 -}
 runCveSync ::
     (MonadUnliftIO m, KatipContext m) =>
@@ -266,7 +265,7 @@ observedStep metrics tracing env eco notifyFirstSync lastSeen =
                 logFM WarningS (ls ("cve-sync[" <> eco <> "]: sync fetch failed: " <> show fault))
                 pure (AdvisoryFetchFailed, (False, lastSeen))
             SyncSwapped etag meta -> do
-                logFM InfoS (ls ("cve-sync[" <> eco <> "]: advisory database swapped in: etag=" <> show etag <> " meta=" <> show meta))
+                logFM InfoS (ls ("cve-sync[" <> eco <> "]: advisory database swapped in: etag=" <> show etag <> " meta=" <> show (metadataSummary meta)))
                 liftIO notifyFirstSync
                 pure (AdvisorySwapped, (True, Just etag))
             SyncUnchanged -> do
@@ -280,6 +279,24 @@ observedStep metrics tracing env eco notifyFirstSync lastSeen =
                 -- Remember the ETag so the same refused artifact is not re-downloaded.
                 -- A fixed re-publish carries a new one. Identical bytes cannot end differently.
                 pure (AdvisoryRefused, (True, Just etag))
+
+-- Legacy artifacts contain arbitrary text. Only parsed, bounded values reach the log.
+metadataSummary :: [(Text, Text)] -> (Maybe UTCTime, Maybe Word64)
+metadataSummary meta =
+    ( boundedValue MetaBuiltAt 64 >>= iso8601ParseM . toString
+    , boundedValue MetaRowCount 20 >>= parseMetadataCount
+    )
+  where
+    boundedValue key limit = do
+        value <- lookup (renderMetaKey key) meta
+        guard (T.compareLength value limit /= GT)
+        pure value
+
+parseMetadataCount :: Text -> Maybe Word64
+parseMetadataCount value = do
+    count <- readDecimalText value :: Maybe Integer
+    guard (count <= toInteger (maxBound :: Word64))
+    pure (fromInteger count)
 
 {- | An S3-backed advisory-fetch source. 'newS3CveSource' captures one @amazonka@ 'AWS.Env', so
 every mount's 'CveFetch' shares one credential discovery. The composition shell never sees it.
@@ -295,9 +312,6 @@ newS3CveSource mEndpoint = do
     awsEnv <- buildS3Env mEndpoint
     pure (S3CveSource (s3CveFetch awsEnv))
 
-{- | The real transport over the captured env: S3 @HEAD@ for the ETag, bounded streaming @GET@ for
-the bytes. A @404@ on @HEAD@ is @Right Nothing@, and every other fault is the classified 'Left'.
--}
 s3CveFetch :: AWS.Env -> Text -> Text -> Int -> CveFetch
 s3CveFetch awsEnv bucket key maxBytes =
     CveFetch

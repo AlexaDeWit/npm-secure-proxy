@@ -86,6 +86,10 @@ last-good database. Run the one-shot as a Kubernetes `CronJob` with `concurrency
 which keeps it a singleton, and schedule it less often than the proxy polls. Give the pod
 `s3:PutObject` through IRSA or workload identity rather than mounted keys.
 
+Pilot fetches each complete source URL but stores only its `host:port` identity in artifact
+provenance. Paths, userinfo, queries, and fragments do not enter the source metadata fields.
+The `built_at` value records compilation completion, not the source snapshot's age.
+
 Pin the image by digest and verify its provenance and SBOM attestations before you run it. The
 recipe is in [Verifying the image](https://github.com/AlexaDeWit/Ecluse/blob/main/README.md#verifying-the-image).
 

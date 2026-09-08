@@ -118,8 +118,8 @@ reserved Datadog attributes, the level floor, and the redaction.
 
 An upstream supplies the artifact location. An operator supplies the advisory export URL. Either
 can carry a credential in its userinfo or in a pre-signed query string, and both logs and spans
-leave the node. So on every running path Écluse reduces a URL to its validated `host:port` before it
-names anything, through the one shared reduction in `Ecluse.Core.Security.Authority`. A value with
+leave the node. The runtime diagnostics listed below reduce URLs to `host:port` through
+`Ecluse.Core.Security.Authority`. A value with
 no dialable authority renders as `<unresolved>`, never as a fragment of the input. The paths this
 covers:
 
@@ -129,7 +129,9 @@ covers:
   worker's tarball-host drop reason, and its artifact-fetch line. A failed fetch's reason names the
   authority and the bounded transport cause, not the client's rendered exception.
 - **Advisory sync and export.** The `ecluse.osv.source_host` span attribute on the compile and
-  stream spans, and the stream's start line.
+  stream spans, the stream's start line, and both source identities stored in artifact metadata.
+  Sync logs only parsed compilation time and row count from metadata. It excludes arbitrary
+  fields and source values, including complete URLs in older artifacts.
 
 The span attribute names say what they hold: `ecluse.mirror.artifact_host` and
 `ecluse.osv.source_host`.

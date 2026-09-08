@@ -39,12 +39,7 @@ osvDbFileName :: Text -> FilePath
 osvDbFileName ecosystem =
     toString ecosystem <> "-osv-schema" <> show osvSchemaEpoch <> ".db"
 
-{- | The ranges table's canonical DDL. Declaring the table @STRICT@ turns the column
-types from affinity hints into enforced storage types. The reader can then decode rows
-without defending against type-confused values. The dedup guard, the unique index over
-all five identity columns, is the writer's concern. It is not part of the read
-contract, so it lives with the writer.
--}
+-- | The ranges table's canonical strict DDL. The writer owns indexes outside this read contract.
 rangesTableDdl :: Text
 rangesTableDdl =
     "CREATE TABLE package_vulnerability_ranges (\
@@ -65,10 +60,7 @@ metaTableDdl =
     \  value TEXT NOT NULL\
     \) STRICT"
 
-{- | One column the reader requires of an artifact table: its name, its declared type,
-and whether the reader's decode relies on @NOT NULL@. Under @STRICT@ the declared type
-is the enforced storage type.
--}
+-- | A required column's enforced storage type and nullability.
 data ColumnSpec = ColumnSpec
     { colName :: Text
     , colDeclaredType :: Text
@@ -83,11 +75,7 @@ data TableSpec = TableSpec
     }
     deriving stock (Eq, Show)
 
-{- | What the reader verifies before trusting an artifact. Each listed table must be a
-real @STRICT@ table carrying at least these columns with these declared types. The
-reader tolerates a column beyond these, which keeps an additive schema change
-epoch-neutral. The specs mirror 'rangesTableDdl' and 'metaTableDdl' column for column.
--}
+-- | Required strict tables and columns. Additional columns preserve reader compatibility.
 osvTableSpecs :: [TableSpec]
 osvTableSpecs =
     [ TableSpec
@@ -121,9 +109,9 @@ data MetaKey
       MetaEcosystem
     | -- | When the compilation finished, as an ISO-8601 UTC timestamp.
       MetaBuiltAt
-    | -- | The advisory-dump URL Pilot compiled the artifact from.
+    | -- | The advisory source's host:port identity. Older artifacts can carry a complete URL.
       MetaSourceUrl
-    | -- | The EPSS feed URL Pilot joined the artifact's @epss_score@ column from.
+    | -- | The EPSS source's host:port identity. Older artifacts can carry a complete URL.
       MetaEpssSourceUrl
     | -- | The number of advisory ranges the artifact holds.
       MetaRowCount

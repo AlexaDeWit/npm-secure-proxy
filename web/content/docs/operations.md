@@ -92,14 +92,15 @@ Four of those names matter to Datadog specifically: `timestamp`, `status`, `mess
 `service` are its reserved log attributes, and its JSON preprocessing reads them unmodified.
 `env` and `version` are ordinary attributes any backend indexes.
 
-Typed bearer-token fields render as redacted placeholders. URL strings do not all receive that
-protection: Pilot records its source URLs in advisory metadata, and sync logs that metadata at
-`info`. Do not embed credentials in Pilot source URLs. The boot configuration echo also prints
-configured endpoint values. Use the dedicated [secret settings](@/docs/configuration.md#secrets)
-rather than putting secrets into URLs.
+Typed bearer-token fields render as redacted placeholders. Pilot stores only each source's
+`host:port` in artifact provenance. Sync logs only parsed compilation time and row count from
+metadata, including when it reads older artifacts with complete source URLs. Malformed or
+oversized display values appear as absent without changing artifact acceptance.
 
-The advisory metadata/logging defect is tracked in
-[#1248](https://github.com/AlexaDeWit/Ecluse/issues/1248).
+Older artifacts can still contain credentials. Rebuild those artifacts and review access to
+their stored copies and historical logs. The boot configuration echo prints configured endpoint
+values. Use the dedicated [secret settings](@/docs/configuration.md#secrets) rather than putting
+secrets into URLs.
 
 ## Alerting on `ERROR`
 
