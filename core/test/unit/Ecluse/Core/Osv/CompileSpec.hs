@@ -3,9 +3,12 @@
 -- SPDX-License-Identifier: MIT
 {-# LANGUAGE OverloadedStrings #-}
 
+-- | Compiler regressions over committed feeds and local HTTP stubs.
 module Ecluse.Core.Osv.CompileSpec (spec) where
 
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as LBS
+import Data.List (lookup)
 import Data.Map.Strict qualified as Map
 import Data.Text (unpack)
 import Data.Text qualified as T
@@ -25,6 +28,7 @@ import Ecluse.Core.Osv.Ecosystem (osvEcosystemFor)
 import Ecluse.Core.Osv.Schema (osvSchemaEpoch)
 import Ecluse.Core.Osv.Stream (PilotIngestAborted (..))
 import Ecluse.Core.Osv.Types (UpperBound (..))
+import Ecluse.Core.Security.Authority (authorityLabel)
 import Ecluse.Core.Telemetry.Metrics (
     AdvisoryCompileResult (CompileAborted, CompileCompleted),
     AdvisoryDropCause (DropMalformed, DropOversize),
@@ -34,7 +38,10 @@ import Ecluse.Test.Osv (osvZipOf, runOsvTestM, runOsvTestMWith)
 import Ecluse.Test.OsvDb (epssFixtureFile)
 import Ecluse.Test.Port (RecordedCompile (RecordedCompile), recordingAdvisoryCompileMetricsPort)
 import Ecluse.Test.Stub (Stub, stubBaseUrl, withStub)
+import Network.HTTP.Client (applyBasicAuth, defaultRequest, requestHeaders)
 import Network.HTTP.Types.Status (status200, status404)
+import Network.Wai qualified as Wai
+import Network.Wai.Handler.Warp (testWithApplication)
 
 spec :: Spec
 spec = describe "SQLite OSV Compilation" $ do
@@ -42,9 +49,10 @@ spec = describe "SQLite OSV Compilation" $ do
         zipData <- LBS.readFile "test/unit/fixtures/osv/sample.zip"
         epssData <- LBS.readFile epssFixtureFile
         (metrics, readRecorded) <- recordingAdvisoryCompileMetricsPort
-        dbFile <- withStub status200 zipData $ \stub ->
+        (dbFile, sourceHost, epssHost) <- withStub status200 zipData $ \stub ->
             withStub status200 epssData $ \epssStub ->
-                runOsvTestM (compileOsvToSqlite metrics Nothing "/tmp" (osvEcosystemFor Npm) (sourcesOf stub epssStub "/sample.zip"))
+                (,authorityLabel (stubBaseUrl stub),authorityLabel (stubBaseUrl epssStub))
+                    <$> runOsvTestM (compileOsvToSqlite metrics Nothing "/tmp" (osvEcosystemFor Npm) (sourcesOf stub epssStub "/sample.zip"))
 
         conn <- open dbFile
         rows <- query_ conn "SELECT package_name, cve_id, fixed_version, severity, epss_score FROM package_vulnerability_ranges" :: IO [(Text, Text, Maybe Text, Maybe Double, Maybe Double)]
@@ -59,18 +67,11 @@ spec = describe "SQLite OSV Compilation" $ do
         -- The file-name literal and the meta keys below pin the artifact's wire contract, the forms
         -- a reader depends on, not the constants that produced them.
         takeFileName dbFile `shouldBe` "npm-osv-schema3.db"
-        -- The sample carries a CVSS 3.1 vector (5.9). The writer stores the computed
-        -- base score in preference to the "MODERATE" label. Its EPSS score arrives through
-        -- the CVE-2024-48913 alias, since the feed keys on CVE ids and the row on the GHSA id.
+        -- EPSS joins through CVE-2024-48913, while the row retains the GHSA id.
         rows `shouldBe` [("hono", "GHSA-2234-fmw7-43wr", Just "4.6.5", Just 5.9, Just 0.75)]
         map fromOnly stamped `shouldBe` [osvSchemaEpoch]
-        -- The reader's lookups ride these: by-package fetch and the exact
-        -- (name, fixed) remediation probe.
         map fromOnly indexes `shouldBe` ["idx_package_fixed", "idx_package_name"]
-        -- The reader accepts an artifact only if both tables are STRICT. A freshly
-        -- compiled artifact must satisfy its own contract.
         map fromOnly strictTables `shouldBe` ["meta", "package_vulnerability_ranges"]
-        -- The dedup guard behind INSERT OR IGNORE.
         map fromOnly dedupIndexes `shouldBe` ["uq_ranges_segment"]
 
         let meta = Map.fromList metaRows
@@ -78,14 +79,35 @@ spec = describe "SQLite OSV Compilation" $ do
         Map.lookup "ecosystem" meta `shouldBe` Just "npm"
         Map.lookup "row_count" meta `shouldBe` Just "1"
         Map.lookup "pilot_version" meta `shouldBe` Just (toText (showVersion version))
-        Map.lookup "source_url" meta `shouldSatisfy` maybe False (T.isSuffixOf "/sample.zip")
-        Map.lookup "epss_source_url" meta `shouldSatisfy` maybe False (T.isSuffixOf "/epss.csv.gz")
+        Map.lookup "source_url" meta `shouldBe` Just sourceHost
+        Map.lookup "epss_source_url" meta `shouldBe` Just epssHost
         Map.lookup "built_at" meta `shouldSatisfy` maybe False (not . T.null)
 
-        -- The sample holds one advisory and no bad entries, so the pass records one accepted
-        -- entry, a zero under each drop cause, and one completed run.
         recorded <- readRecorded
         recorded `shouldBe` RecordedCompile [1] [(DropOversize, 0), (DropMalformed, 0)] [CompileCompleted]
+
+    it "fetches both credential-bearing overrides without persisting or logging their credentials" $ do
+        zipData <- LBS.readFile "test/unit/fixtures/osv/sample.zip"
+        epssData <- LBS.readFile epssFixtureFile
+        (metrics, _) <- recordingAdvisoryCompileMetricsPort
+        (dbFile, logged) <- captureStdout' $ \logEnv ->
+            withCredentialSource "OSV" zipData $ \source ->
+                withCredentialSource "EPSS" epssData $ \epssSource -> do
+                    path <- runOsvTestMWith logEnv (compileOsvToSqlite metrics Nothing "/tmp" (osvEcosystemFor Npm) (CompileSources source epssSource))
+                    withConnection path $ \conn -> do
+                        meta <- Map.fromList <$> (query_ conn "SELECT key, value FROM meta" :: IO [(Text, Text)])
+                        Map.lookup "source_url" meta `shouldBe` Just (authorityLabel (toText source))
+                        Map.lookup "epss_source_url" meta `shouldBe` Just (authorityLabel (toText epssSource))
+                        Map.lookup "built_at" meta `shouldSatisfy` maybe False (not . T.null)
+                        Map.lookup "row_count" meta `shouldBe` Just "1"
+                    pure path
+        bytes <- readFileBS dbFile
+        for_ ["OSV", "EPSS"] $ \tag ->
+            for_ ["user-", "password-", "query-", "fragment-"] $ \prefix -> do
+                let credential = prefix <> tag
+                bytes `shouldSatisfy` (not . BS.isInfixOf (encodeUtf8 credential))
+                logged `shouldSatisfy` (not . T.isInfixOf credential)
+        removeFile dbFile
 
     it "aborts the compile without publishing when the drop rate is systemic" $ do
         -- 20 malformed entries to one good one trips the systemic-drop breaker. The breaker must
@@ -103,15 +125,10 @@ spec = describe "SQLite OSV Compilation" $ do
                         runOsvTestM (compileOsvToSqlite metrics Nothing "/tmp" (osvEcosystemFor Npm) (sourcesOf stub epssStub "/all.zip"))
         action `shouldThrow` (\(PilotIngestAborted _) -> True)
 
-        -- The abandoned pass still records its tally, and its run reads as aborted, so an
-        -- operator alarms on a feed that keeps failing to compile.
         recorded <- readRecorded
         recorded `shouldBe` RecordedCompile [1] [(DropOversize, 0), (DropMalformed, 20)] [CompileAborted]
 
     it "reads osv.dev's spelling and writes Ecluse's, for an ecosystem that spells them apart" $ do
-        -- osv.dev files PyPI advisories under "PyPI" and stamps that spelling on the affected
-        -- package. The sync reads "pypi". One name for both would either drop every row or
-        -- publish an artifact acceptance refuses, so this pins the two halves together.
         zipData <-
             osvZipOf
                 [("pypi-advisory.json", "{\"id\":\"GHSA-pypi\",\"affected\":[{\"package\":{\"name\":\"requests\",\"ecosystem\":\"PyPI\"},\"versions\":[\"1.0.0\"]}]}")]
@@ -127,17 +144,12 @@ spec = describe "SQLite OSV Compilation" $ do
         close conn
         catchIOError (removeFile dbFile) (const $ pure ())
 
-        -- The row survived the filter, so the filter matched on osv.dev's spelling.
         map fromOnly rows `shouldBe` ["requests"]
-        -- The key and the meta row are what the proxy's sync polls and what acceptance compares.
         takeFileName dbFile `shouldBe` "pypi-osv-schema3.db"
         Map.lookup "ecosystem" (Map.fromList metaRows) `shouldBe` Just "pypi"
 
     it "writes an unorderable bound into the artifact and decodes the \"0\" lower bound" $ do
-        -- The malware feed's shape: an advisory naming versions outright. The date-stamped one
-        -- carries a bound semver cannot order, and it is kept, because dropping it would admit
-        -- every version it covers. The range's "0" lower bound lands as NULL rather than as a
-        -- bound nothing can compare.
+        -- Malware feeds can name versions outside semver. Dropping them would admit affected versions.
         zipData <-
             osvZipOf
                 [ ("point.json", "{\"id\":\"MAL-point\",\"affected\":[{\"package\":{\"name\":\"pointy\",\"ecosystem\":\"npm\"},\"versions\":[\"1.0.0\",\"2026.05.1\"]}]}")
@@ -150,8 +162,6 @@ spec = describe "SQLite OSV Compilation" $ do
                 withStub status200 epssData $ \epssStub ->
                     runOsvTestMWith logEnv (compileOsvToSqlite metrics Nothing "/tmp" (osvEcosystemFor Npm) (sourcesOf stub epssStub "/all.zip"))
 
-        -- The alarm names the package and the bound, rides the compile's summary line, and
-        -- stays below the level an operator pages on.
         logged `shouldSatisfy` T.isInfixOf "for example pointy 2026.05.1"
         logged `shouldSatisfy` T.isInfixOf "kept 1 unorderable"
         logged `shouldSatisfy` (not . T.isInfixOf "\"sev\":\"Error\"")
@@ -161,8 +171,6 @@ spec = describe "SQLite OSV Compilation" $ do
         close conn
         catchIOError (removeFile dbFile) (const $ pure ())
 
-        -- The unorderable point is written as it was published, so the reader can match it
-        -- literally. Nothing the feed named is missing from the artifact.
         rows
             `shouldBe` [ ("pointy", Just "1.0.0", Nothing, Just "1.0.0")
                        , ("pointy", Just "2026.05.1", Nothing, Just "2026.05.1")
@@ -196,8 +204,6 @@ spec = describe "SQLite OSV Compilation" $ do
             osvToRow (ExtractedOsv "pkg" "npm" "GHSA-row" Nothing Unbounded Nothing Nothing)
                 `shouldBe` ("pkg", "GHSA-row", Nothing, Nothing, Nothing, Nothing, Nothing)
 
-{- Run a compile under a JSON scribe and hand back its result with everything it logged, so one
-test can read the artifact and the alarm the same pass raised. -}
 captureStdout' :: (LogEnv -> IO a) -> IO (a, Text)
 captureStdout' body = do
     resultRef <- newIORef Nothing
@@ -208,10 +214,23 @@ captureStdout' body = do
     result <- readIORef resultRef
     maybe (fail "the compile under capture produced no result") (pure . (,logged)) result
 
--- The two upstreams one compile reads, each served by its own stub on an ephemeral port.
 sourcesOf :: Stub -> Stub -> String -> CompileSources
 sourcesOf osvStub epssStub osvPath =
     CompileSources
         { csOsvExportUrl = unpack (stubBaseUrl osvStub) <> osvPath
         , csEpssFeedUrl = unpack (stubBaseUrl epssStub) <> "/epss.csv.gz"
         }
+
+-- The shared stub omits query strings, so this fixture checks authentication before serving bytes.
+withCredentialSource :: Text -> LByteString -> (String -> IO a) -> IO a
+withCredentialSource tag bytes use =
+    testWithApplication (pure app) $ \port ->
+        use (toString ("http://user-" <> tag <> ":password-" <> tag <> "@127.0.0.1:" <> show port <> "/feed?unfamiliar=query-" <> tag <> "#fragment-" <> tag))
+  where
+    expectedAuth = lookup "Authorization" (requestHeaders (applyBasicAuth (encodeUtf8 ("user-" <> tag)) (encodeUtf8 ("password-" <> tag)) defaultRequest))
+    app request respond = do
+        let authorised =
+                lookup "Authorization" (Wai.requestHeaders request) == expectedAuth
+                    && Wai.rawQueryString request == encodeUtf8 ("?unfamiliar=query-" <> tag)
+                    && Wai.rawPathInfo request == "/feed"
+        respond (Wai.responseLBS (if authorised then status200 else status404) [] (if authorised then bytes else "credentials missing"))

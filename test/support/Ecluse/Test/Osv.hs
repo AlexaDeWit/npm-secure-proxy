@@ -3,14 +3,8 @@
 -- SPDX-License-Identifier: MIT
 {-# LANGUAGE UndecidableInstances #-}
 
-{- | The shared OSV advisory fixture corpus, the artifacts derived from it, and the
-monad the derivation runs in.
-
-The committed JSON advisories under @test\/fixtures\/osv\/@ are the single source of
-truth for advisory-shaped test data, so a fixture can never drift from the artifact
-contract ("Ecluse.Core.Osv.Schema"). 'CorpusV2' is 'CorpusV1' plus an advisory for a
-package V1 leaves clean, so a V1-to-V2 shadow swap flips an observable rule outcome.
-The hostile builders model tampered artifacts the real compiler must never produce.
+{- | Shared OSV fixtures derived from @test\/fixtures\/osv\/@ and hostile artifact builders.
+'CorpusV2' adds an advisory for a package absent from 'CorpusV1', making swaps observable.
 -}
 module Ecluse.Test.Osv (
     -- * The corpus
@@ -27,6 +21,7 @@ module Ecluse.Test.Osv (
     mkDbWithoutEpssColumn,
     mkDbWithCorruptPage,
     mkMinimalValidDb,
+    mkMinimalValidDbWithMeta,
 
     -- * The monad the OSV pipeline runs in
     OsvTestM,
@@ -39,7 +34,7 @@ import Conduit (MonadResource, MonadThrow, MonadUnliftIO, PrimMonad, ResourceT, 
 import Control.Monad.Catch (MonadCatch, MonadMask)
 import Data.ByteString qualified as BS
 import Data.Time (LocalTime (..), fromGregorian, midnight)
-import Database.SQLite.Simple (Connection, Only (Only), Query (Query), execute, execute_, withConnection)
+import Database.SQLite.Simple (Connection, Only (Only), Query (Query), execute, executeMany, execute_, withConnection)
 import Katip (Katip (..), KatipContext (..), LogEnv)
 import System.FilePath (takeFileName, (</>))
 import System.IO (SeekMode (AbsoluteSeek), hSeek, withBinaryFile)
@@ -47,6 +42,7 @@ import System.IO (SeekMode (AbsoluteSeek), hSeek, withBinaryFile)
 import Ecluse.Core.Osv.Schema (metaTableDdl, osvSchemaEpoch, rangesTableDdl)
 import Ecluse.Test.Log (newTestLogEnv)
 
+-- | A committed advisory corpus generation.
 data CorpusVersion = CorpusV1 | CorpusV2
     deriving stock (Bounded, Enum, Eq, Show)
 
@@ -69,7 +65,6 @@ corpusV1Files =
 corpusV2ExtraFiles :: [FilePath]
 corpusV2ExtraFiles = ["v2/GHSA-corpus-1001.json"]
 
--- | A corpus version's advisory files, as (zip-entry name, bytes).
 osvCorpusFiles :: CorpusVersion -> IO [(FilePath, LByteString)]
 osvCorpusFiles v = traverse readEntry (files v)
   where
@@ -87,10 +82,7 @@ osvCorpusZip v = do
     entries <- osvCorpusFiles v
     osvZipOf (map (first toText) entries)
 
-{- | Assemble an osv.dev-shaped zip from arbitrary (entry name, bytes) pairs, so a suite can build
-tampered or pathological archives the corpus does not carry. The entry timestamp is fixed, so the
-archive is deterministic.
--}
+-- | Build a zip from arbitrary entries with a fixed timestamp for deterministic hostile fixtures.
 osvZipOf :: [(Text, LByteString)] -> IO LByteString
 osvZipOf entries =
     runConduit $
@@ -119,10 +111,7 @@ mkDbWithWrongEpoch path = withConnection path $ \conn -> do
     createRangesTable conn
     setEpoch conn (osvSchemaEpoch + 1)
 
-{- | An artifact with the right epoch whose ranges relation is a __view__. A view is schema-borne
-SQL, and a hardened reader (read-only, @PRAGMA trusted_schema = OFF@) must refuse to evaluate it.
-Schema conformance refuses it as not a real @STRICT@ table.
--}
+-- | A right-epoch artifact whose ranges relation is a view, which schema conformance must refuse.
 mkDbWithViewShadowingRanges :: FilePath -> IO ()
 mkDbWithViewShadowingRanges path = withConnection path $ \conn -> do
     execute_
@@ -142,10 +131,7 @@ mkDbWithViewShadowingRanges path = withConnection path $ \conn -> do
         \SELECT package_name, cve_id, introduced_version, fixed_version, last_affected_version, severity, epss_score FROM raw_rows"
     setEpoch conn osvSchemaEpoch
 
-{- | An artifact that passes acceptance but carries a malicious trigger poised on the ranges table.
-A read-only consumer must behave exactly as it would on a clean artifact, because a trigger fires
-only on a write and the hardened connection refuses writes outright.
--}
+-- | An accepted artifact with a malicious trigger that the read-only consumer must never activate.
 mkDbWithMaliciousTrigger :: FilePath -> IO ()
 mkDbWithMaliciousTrigger path = withConnection path $ \conn -> do
     createRangesTable conn
@@ -158,11 +144,7 @@ mkDbWithMaliciousTrigger path = withConnection path $ \conn -> do
         \BEGIN DELETE FROM package_vulnerability_ranges; END"
     setEpoch conn osvSchemaEpoch
 
-{- | An artifact forged to look conformant whose stored @meta@ values violate the declaration. The
-builder authors @meta@ __lax__ so the hostile BLOB row can exist, then rewrites the stored DDL to
-the canonical @STRICT@ text under @PRAGMA writable_schema@. Only the @PRAGMA quick_check@ integrity
-walk catches the BLOB, and the reader must refuse it as a rejection value, never a thrown error.
--}
+-- | Forged strict metadata containing a BLOB. Only the integrity check catches the storage mismatch.
 mkDbWithMalformedProvenance :: FilePath -> IO ()
 mkDbWithMalformedProvenance path = withConnection path $ \conn -> do
     createRangesTable conn
@@ -174,10 +156,7 @@ mkDbWithMalformedProvenance path = withConnection path $ \conn -> do
     execute_ conn "PRAGMA writable_schema = OFF"
     setEpoch conn osvSchemaEpoch
 
-{- | An artifact whose tables carry the right names and columns but without @STRICT@. The declared
-types are then affinity hints, not enforced storage types, so schema conformance must refuse it as
-a value.
--}
+-- | An artifact with matching columns but lax tables, which schema conformance must refuse.
 mkDbWithLaxSchema :: FilePath -> IO ()
 mkDbWithLaxSchema path = withConnection path $ \conn -> do
     execute_
@@ -214,11 +193,7 @@ mkDbWithoutEpssColumn path = withConnection path $ \conn -> do
     execute_ conn "INSERT INTO meta (key, value) VALUES ('ecosystem', 'npm')"
     setEpoch conn osvSchemaEpoch
 
-{- | A valid, right-epoch database whose interior b-tree pages carry garbage on disk, modelling a
-tampered or truncated download. Page 1 stays intact, so the file still opens and presents a real
-@package_vulnerability_ranges@ table, and only the @PRAGMA quick_check@ walk catches it. The
-builder creates the ranges table first, so its b-tree root is page 2.
--}
+-- | An artifact with intact schema and a corrupt ranges b-tree, caught only by the integrity check.
 mkDbWithCorruptPage :: FilePath -> IO ()
 mkDbWithCorruptPage path = do
     withConnection path $ \conn -> do
@@ -237,17 +212,17 @@ mkDbWithCorruptPage path = do
         hSeek h AbsoluteSeek 4096
         BS.hPut h (BS.replicate 4096 255)
 
-{- | A minimal artifact 'Ecluse.Core.Cve.openCveDb' accepts, carrying one advisory row whose package
-name is the given tag and whose exact fixed bound is @1.0.0@. Sync and slot tests then tell
-generations apart by which package answers the remediation probe. The corpus-compiled fixtures stay
-the schema's conformance authority.
--}
+-- | An accepted artifact with one package fixed at @1.0.0@, so probes distinguish generations.
 mkMinimalValidDb :: FilePath -> Text -> IO ()
-mkMinimalValidDb path pkg = withConnection path $ \conn -> do
+mkMinimalValidDb path pkg = mkMinimalValidDbWithMeta path pkg [("source_url", pkg)]
+
+-- | A minimal accepted artifact with caller-supplied provenance, apart from its fixed npm ecosystem.
+mkMinimalValidDbWithMeta :: FilePath -> Text -> [(Text, Text)] -> IO ()
+mkMinimalValidDbWithMeta path pkg meta = withConnection path $ \conn -> do
     createRangesTable conn
     createMetaTable conn
     execute_ conn "INSERT INTO meta (key, value) VALUES ('ecosystem', 'npm')"
-    execute conn "INSERT INTO meta (key, value) VALUES ('source_url', ?)" (Only pkg)
+    executeMany conn "INSERT INTO meta (key, value) VALUES (?, ?)" meta
     execute conn "INSERT INTO package_vulnerability_ranges VALUES (?, 'GHSA-minimal', '0', '1.0.0', NULL, NULL, NULL)" (Only pkg)
     setEpoch conn osvSchemaEpoch
 

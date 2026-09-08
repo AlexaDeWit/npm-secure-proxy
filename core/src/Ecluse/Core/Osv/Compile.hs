@@ -3,6 +3,7 @@
 -- SPDX-License-Identifier: MIT
 {-# LANGUAGE OverloadedStrings #-}
 
+-- | Compile OSV advisories and EPSS scores into the artifact consumed by CVE sync.
 module Ecluse.Core.Osv.Compile (
     CompileSources (..),
     compileOsvToSqlite,
@@ -58,12 +59,8 @@ data CompileSources = CompileSources
     }
     deriving stock (Eq, Show)
 
-{- | Compile an ecosystem's OSV advisory export into the SQLite artifact at @outDir@.
-The artifact's name, epoch stamp, and @meta@ table follow "Ecluse.Core.Osv.Schema".
-
-The pass records its tallies and its verdict through @metrics@, which the caller binds to the
-ecosystem it compiles. A fault that escapes the stream records neither, so the supervision above
-reports an abandoned pass instead.
+{- | Compile one ecosystem into @outDir@ using "Ecluse.Core.Osv.Schema".
+An escaping fault leaves no completion verdict on the ecosystem's metrics port.
 -}
 compileOsvToSqlite :: (MonadResource m, MonadMask m, MonadUnliftIO m, KatipContext m) => AdvisoryCompileMetricsPort -> Maybe TracerProvider -> FilePath -> OsvEcosystem -> CompileSources -> m FilePath
 compileOsvToSqlite metrics mTracerProvider outDir eco sources = do
@@ -74,8 +71,6 @@ compileOsvToSqlite metrics mTracerProvider outDir eco sources = do
     liftIO $ createDirectoryIfMissing True outDir
     liftIO $ catchIOError (removeFile dbFile) (const $ pure ())
 
-    -- One span covers the whole compile pass. A systemic-drop abort marks it errored, so
-    -- an abandoned run is legible from the trace alone.
     withOptionalSpan mTracerProvider Internal "ecluse.pilot.osv.compile" $
         \mSpan -> do
             forM_ mSpan $ \sp -> do
@@ -138,7 +133,6 @@ recordTallies metrics stats = do
     acmpCompileDropped metrics DropOversize (statDroppedOversize stats)
     acmpCompileDropped metrics DropMalformed (statDroppedMalformed stats)
 
--- A one-line summary of an ingest pass's drop and anomaly tally for the boot log.
 renderDrops :: IngestStats -> Text
 renderDrops s =
     "accepted "
@@ -151,8 +145,6 @@ renderDrops s =
         <> show (statUnorderable s)
         <> " unorderable"
 
--- The tally as structured log fields. The completion line and the abort line share it, so
--- an operator can filter both on one shape.
 dropFields :: Text -> IngestStats -> SimpleLogPayload
 dropFields ecosystem s =
     sl "ecosystem" ecosystem
@@ -168,8 +160,6 @@ initSchema conn = do
     -- columns implicitly NOT NULL, and the three bound columns are legitimately NULL.
     execute_ conn "CREATE UNIQUE INDEX uq_ranges_segment ON package_vulnerability_ranges(package_name, cve_id, introduced_version, fixed_version, last_affected_version)"
     execute_ conn "CREATE INDEX idx_package_name ON package_vulnerability_ranges(package_name)"
-    -- The reader's remediation probe is an exact (name, fixed) equality, and this
-    -- index makes it one B-tree traversal. Additive, so epoch-neutral.
     execute_ conn "CREATE INDEX idx_package_fixed ON package_vulnerability_ranges(package_name, fixed_version)"
     execute_ conn (Query metaTableDdl)
     execute_ conn (fromString ("PRAGMA user_version = " <> show osvSchemaEpoch))
@@ -187,8 +177,8 @@ writeMeta conn ecosystem sources = do
         [ (renderMetaKey MetaPilotVersion, productVersion)
         , (renderMetaKey MetaEcosystem, ecosystem)
         , (renderMetaKey MetaBuiltAt, toText (iso8601Show now))
-        , (renderMetaKey MetaSourceUrl, toText (csOsvExportUrl sources))
-        , (renderMetaKey MetaEpssSourceUrl, toText (csEpssFeedUrl sources))
+        , (renderMetaKey MetaSourceUrl, authorityLabel (toText (csOsvExportUrl sources)))
+        , (renderMetaKey MetaEpssSourceUrl, authorityLabel (toText (csEpssFeedUrl sources)))
         , (renderMetaKey MetaRowCount, show rowCount)
         ]
     pure rowCount

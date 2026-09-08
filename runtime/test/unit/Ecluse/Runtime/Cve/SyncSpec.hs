@@ -2,12 +2,14 @@
 --
 -- SPDX-License-Identifier: MIT
 
+-- | Sync acceptance, scheduling, and logging regressions over local artifact fixtures.
 module Ecluse.Runtime.Cve.SyncSpec (spec) where
 
 import Conduit (runConduit, yieldMany, (.|))
 import Control.Concurrent.STM (check)
 import Data.Conduit.Combinators qualified as C
-import Katip (KatipContextT)
+import Data.Text qualified as T
+import Katip (KatipContextT, closeScribes, runKatipContextT)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -38,8 +40,8 @@ import Ecluse.Runtime.Cve.Sync (
     syncStep,
  )
 import Ecluse.Runtime.Test.Cve (headOnlyFetch)
-import Ecluse.Test.Log (runQuietKatip)
-import Ecluse.Test.Osv (mkDbWithMalformedProvenance, mkDbWithWrongEpoch, mkMinimalValidDb)
+import Ecluse.Test.Log (captureStdout, jsonLogEnv, runQuietKatip)
+import Ecluse.Test.Osv (mkDbWithMalformedProvenance, mkDbWithWrongEpoch, mkMinimalValidDb, mkMinimalValidDbWithMeta)
 import Ecluse.Test.Port (
     noopAdvisorySyncMetricsPort,
     passthroughAdvisorySyncTracingPort,
@@ -48,7 +50,6 @@ import Ecluse.Test.Port (
  )
 import Ecluse.Test.Support (TestContractEscape (TestContractEscape))
 
--- | An env over a fresh slot and a temp data dir, handed to each case.
 withSyncEnv :: (FilePath -> CveSlot -> (CveFetch -> SyncEnv) -> IO a) -> IO a
 withSyncEnv use =
     withSystemTempDirectory "ecluse-cve-sync" $ \dir -> do
@@ -62,9 +63,6 @@ withSyncEnv use =
                     }
         use dir slot envWith
 
-{- | A fetch whose HEAD answers the given ETag and whose download builds an
-artifact via the given writer, returning the same ETag.
--}
 fetchServing :: Maybe Text -> (FilePath -> IO ()) -> CveFetch
 fetchServing mEtag write =
     CveFetch
@@ -74,27 +72,19 @@ fetchServing mEtag write =
             Just etag -> write dest $> Right (DbEtag etag)
         }
 
--- | The typed transport fault the failing-fetch doubles report.
 transportDown :: OsvDbFetchFault
 transportDown = OsvDbTransport (transportFault TransportUnreachable "transport down")
 
--- | Does the slot's current generation answer the probe for this package?
 probesFor :: CveSlot -> Text -> IO (Maybe Bool)
 probesFor slot pkg = withSlotLookup slot (traverse (\l -> cveRemediationProbe l pkg "1.0.0"))
 
--- | The gap between two reads of a polled condition, in microseconds.
 pollInterval :: Int
 pollInterval = 25_000
 
-{- | The ceiling on every wait in this spec, in microseconds. One artifact build under
-coverage has taken five seconds, so only a condition that never arrives reaches it.
--}
+-- One artifact build under coverage took five seconds. This microsecond budget permits slower CI.
 pollBudget :: Int
 pollBudget = 60_000_000
 
-{- | Poll a condition until the budget runs out, then fail the case naming what never
-happened. A recorder that another thread appends to is readable only this way.
--}
 waitFor :: Text -> IO Bool -> IO ()
 waitFor what ready = go (pollBudget `div` pollInterval)
   where
@@ -104,42 +94,30 @@ waitFor what ready = go (pollBudget `div` pollInterval)
             True -> pass
             False -> threadDelay pollInterval >> go (n - 1)
 
-{- | Block until a counter that another thread advances reaches @wanted@, or fail the case
-naming what never happened once the budget runs out, so a dead task cannot hang the suite.
--}
 awaitCount :: Text -> TVar Int -> Int -> IO ()
 awaitCount what counter wanted =
     timeout pollBudget (atomically (readTVar counter >>= check . (>= wanted)))
         >>= maybe (expectationFailure ("timed out waiting for " <> toString what)) (const pass)
 
-{- | A counter over the sync task's swap notifications, with the action to hand
-'runCveSync'. The task notifies after the swap publishes, so a counted swap already serves.
--}
 newSwapCounter :: IO (TVar Int, IO ())
 newSwapCounter = do
     swaps <- newTVarIO (0 :: Int)
     pure (swaps, atomically (modifyTVar' swaps (+ 1)))
 
--- | The sync task over inert observation ports, for the scheduling cases.
 runUnobserved :: SyncEnv -> SyncSchedule -> IO () -> KatipContextT IO ()
 runUnobserved = runCveSync noopAdvisorySyncMetricsPort passthroughAdvisorySyncTracingPort
 
-{- | A schedule that yields exactly one attempt. An empty boot backoff spends the burst
-budget on the first attempt, and the steady poll's first interval outlasts any test.
--}
+-- The first poll interval outlasts every test, leaving only the immediate boot attempt.
 oneAttempt :: SyncSchedule
 oneAttempt = SyncSchedule{schedBootBackoff = [], schedPollDelay = 600_000_000}
 
--- | What one run of the sync loop recorded, each list in record order.
 data Observed = Observed
     { obsSpans :: [(Ecosystem, AdvisorySyncResult)]
     , obsAttempts :: [(Ecosystem, AdvisorySyncResult)]
     , obsDurations :: [(Ecosystem, AdvisorySyncResult, Double)]
     }
 
-{- | Drive the sync loop over recording ports until it brackets @wanted@ attempts, then
-read back the three recorders. The bracket records the span last, so the metrics settle first.
--}
+-- The span recorder runs last, so its count establishes that the metrics settled too.
 observeAttempts :: Int -> SyncSchedule -> SyncEnv -> IO Observed
 observeAttempts wanted schedule env = do
     (metricsPort, readAttempts, readDurations) <- recordingAdvisorySyncMetricsPort
@@ -148,9 +126,6 @@ observeAttempts wanted schedule env = do
         waitFor (show wanted <> " bracketed sync attempt(s)") ((>= wanted) . length <$> readSpans)
         Observed <$> readSpans <*> readAttempts <*> readDurations
 
-{- | Assert that the run bracketed exactly these attempts: one span, one counter
-increment, and one non-negative latency sample each, all under the same labels.
--}
 shouldObserve :: Observed -> [(Ecosystem, AdvisorySyncResult)] -> Expectation
 shouldObserve observed expected = do
     obsSpans observed `shouldBe` expected
@@ -158,13 +133,37 @@ shouldObserve observed expected = do
     map (\(eco, result, _) -> (eco, result)) (obsDurations observed) `shouldBe` expected
     map (\(_, _, seconds) -> seconds >= 0) (obsDurations observed) `shouldBe` map (const True) expected
 
--- | Keep only the first @n@ of each recording, for a loop that keeps attempting.
 truncateObserved :: Int -> Observed -> Observed
 truncateObserved n (Observed spans attempts durations) =
     Observed (take n spans) (take n attempts) (take n durations)
 
 spec :: Spec
 spec = do
+    describe "sync provenance logging" $ do
+        for_ [("2026-09-08T12:34:56Z", "42", "(Just 2026-09-08 12:34:56 UTC,Just 42)"), ("SECRET-time", "SECRET-count", "(Nothing,Nothing)"), (T.replicate 65 "9", T.replicate 21 "9", "(Nothing,Nothing)"), ("invalid", "18446744073709551616", "(Nothing,Nothing)"), ("invalid", "-1", "(Nothing,Nothing)"), ("invalid", "", "(Nothing,Nothing)")] $ \(builtAt, rowCount, summary) ->
+            it ("logs only parsed values for built_at=" <> toString builtAt <> " and row_count=" <> toString rowCount) $
+                withSyncEnv $ \_ slot envWith -> do
+                    let meta =
+                            [ ("source_url", "https://SECRET-user:SECRET-password@osv.example/feed?unknown=SECRET-osv#SECRET-fragment")
+                            , ("epss_source_url", "https://epss.example/feed?signature=SECRET-epss")
+                            , ("pilot_version", "SECRET-version")
+                            , ("SECRET-key", T.replicate 4096 "SECRET-value")
+                            , ("built_at", builtAt)
+                            , ("row_count", rowCount)
+                            ]
+                        env = envWith (fetchServing (Just "e1") (\path -> mkMinimalValidDbWithMeta path "pkg-a" meta))
+                    (swaps, notify) <- newSwapCounter
+                    logged <- captureStdout $ do
+                        logEnv <- jsonLogEnv
+                        withAsync (runKatipContextT logEnv () mempty (runUnobserved env oneAttempt notify)) $ \_ ->
+                            awaitCount "legacy artifact swap" swaps 1
+                        void (closeScribes logEnv)
+                    logged `shouldSatisfy` T.isInfixOf "advisory database swapped in"
+                    logged `shouldSatisfy` T.isInfixOf summary
+                    logged `shouldSatisfy` (not . T.isInfixOf "SECRET")
+                    T.length logged `shouldSatisfy` (< 2048)
+                    probesFor slot "pkg-a" `shouldReturn` Just True
+
     describe "syncStep" $ do
         it "reports the object absent without attempting a download" $
             withSyncEnv $ \_ _ envWith -> do

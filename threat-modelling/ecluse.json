@@ -2734,12 +2734,12 @@
                 },
                 {
                   "number": 113,
-                  "status": "Open",
+                  "status": "Mitigated",
                   "severity": "Medium",
                   "title": "Advisory source URL credentials enter artifacts and sync logs",
                   "type": "Information disclosure",
-                  "description": "An operator can supply a custom advisory source URL containing query credentials. Pilot stores its original OSV and EPSS source strings in SQLite metadata, and consumer sync includes that metadata in an INFO log. This copies source credentials into the artifact and the consumers' log systems. The default public feed URLs carry no such credentials. A local fixture probe confirmed both fake query tokens survived compilation, acceptance, and sync logging.",
-                  "mitigation": "Required fix, not implemented: #1248 keeps credentials out of ordinary source provenance and replaces raw metadata logging with a bounded non-secret projection. Reuse existing authority rendering and preserve useful source-snapshot identity/time without authentication material. Consumer logging must also handle older artifacts that already contain unsafe values. Until fixed, do not embed credentials in Pilot source URLs. The probe used local fixtures and fake query tokens, not live credentials or a production deployment. CLI parsing and userinfo were traced but not executed in that probe. See https://github.com/AlexaDeWit/Ecluse/issues/1248 .",
+                  "description": "Custom advisory source URLs can carry userinfo and query credentials. Earlier Pilot artifacts stored complete OSV and EPSS URLs in metadata, and consumer sync copied that metadata into INFO logs. A local fixture probe confirmed disclosure of fake query tokens. The default public feeds need no credentials.",
+                  "mitigation": "#1248 stores source host:port identities through the existing authorityLabel helper, excluding paths, userinfo, queries, and fragments while preserving complete URLs for fetching. Sync logs a fixed projection of parsed compilation time and bounded row count, excluding arbitrary metadata and all source values even from older artifacts. Malformed display values do not change artifact acceptance. Compilation completion time remains unchanged and is not a source-snapshot timestamp. Residual: older artifacts and historical logs can retain credentials and require operator review. Configured endpoint values still appear in the boot configuration echo, so operators must not put secrets in those URLs. See https://github.com/AlexaDeWit/Ecluse/issues/1248 .",
                   "modelType": "STRIDE",
                   "id": "9d92a448-e04d-46b6-8b8d-bc353dacdb97"
                 },
