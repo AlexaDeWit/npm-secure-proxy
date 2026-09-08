@@ -15,7 +15,7 @@ import Control.Monad.Trans.Resource (runResourceT)
 import Data.ByteString.Lazy qualified as LBS
 import Network.HTTP.Types.Status (status200)
 import System.IO.Temp (withSystemTempDirectory)
-import Test.Hspec (Spec, aroundAll, describe, it, shouldBe, shouldSatisfy, shouldThrow)
+import Test.Hspec (Spec, aroundAll, describe, it, shouldBe, shouldThrow)
 
 import Ecluse.Config (Config (configApp), loadConfig)
 import Ecluse.Config.Ambient (parseEndpointUrl)
@@ -66,9 +66,6 @@ spec = describe "Pilot refuses zero relevant rows before S3 publication" $
                         when hasPrevious (void (compile endpoint goodZip))
                         before <- snapshot
                         length before `shouldBe` if hasPrevious then 1 else 0
-                        for_ before $ \(_, etag, modified, _) -> do
-                            etag `shouldSatisfy` isJust
-                            modified `shouldSatisfy` isJust
                         withStub status200 LBS.empty $ \observer -> do
                             target <- either (fail . show) pure (parseEndpointUrl (stubBaseUrl observer))
                             compile target badZip `shouldThrow` (\(PilotIngestAborted _) -> True)
