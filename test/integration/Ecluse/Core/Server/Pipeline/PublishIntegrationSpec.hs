@@ -2,6 +2,9 @@
 --
 -- SPDX-License-Identifier: MIT
 
+{- | Publish routing and credential behaviour through the application
+and a captured target.
+-}
 module Ecluse.Core.Server.Pipeline.PublishIntegrationSpec (spec) where
 
 import Data.ByteString.Lazy qualified as LBS
@@ -44,21 +47,14 @@ import Ecluse.Test.Server.Mount (inertPackumentDeps)
 import Ecluse.Test.Stub (Captured (capBody), Stub, allCaptured, headerValue, stubPort, withStubHeaders)
 import Ecluse.Test.Wai (status)
 
-{- | Host a publication-target stub answering every publish with @code@ and @body@. The
-continuation gets the port to point the proxy at, and the stub to inspect what it saw.
--}
 withTarget :: Int -> LByteString -> (Int -> Stub -> IO a) -> IO a
 withTarget code body k =
     withStubHeaders (mkStatus code "OK") [(hContentType, "application/json")] body $ \stub ->
         k (stubPort stub) stub
 
--- The (Authorization, body) pairs the publication target saw, in arrival order.
 targetSaw :: Stub -> IO [(Maybe ByteString, ByteString)]
 targetSaw stub = map (\cap -> (headerValue "Authorization" cap, capBody cap)) <$> allCaptured stub
 
-{- | Publish dependencies pointing at the loopback target, allowing the @\@acme@ scope.
-The relay forwards 'pubStaticToken' only when the client sends no token of its own.
--}
 publishDepsAt :: Int -> Maybe Secret -> ByteAdmission -> PublishDeps
 publishDepsAt targetPort staticToken bodyBudget =
     PublishDeps
@@ -74,39 +70,28 @@ publishDepsAt targetPort staticToken bodyBudget =
         , pubAdapter = npmPublish
         }
 
-{- | A proxy 'Application' over a single @\/npm@ mount carrying the given publish deps.
-'Nothing' leaves the publish path off, so the route answers @405@.
--}
 proxyOver :: Maybe PublishDeps -> IO Application
 proxyOver publishDeps = do
     env <- newTestEnv
     let cfg = mkServerConfig (maybeToList (mountBindingFor Npm inertPackumentDeps publishDeps))
     pure (application cfg env)
 
--- | 'proxyOver' for deps that still need the standard aggregate body budget.
 proxyWith :: Maybe (ByteAdmission -> PublishDeps) -> IO Application
 proxyWith mkPublishDeps =
     forM mkPublishDeps (\mk -> mk <$> newByteAdmission (128 * 1024 * 1024)) >>= proxyOver
 
-{- | A proxy whose publish path caps the request body at @cap@ bytes ('pubMaxRequestBytes').
-The cap fires before the relay, so the target port is an unconnectable placeholder.
--}
+-- The body cap fires before relay, so the target port is an unconnectable placeholder.
 cappedProxyWith :: Int -> IO Application
 cappedProxyWith cap =
     proxyWith (Just (\bodyBudget -> (publishDepsAt 1 Nothing bodyBudget){pubMaxRequestBytes = cap}))
 
--- | A @PUT \/npm\/{path}@ chunked publish carrying the given bearer (if any) and body.
 putPublish :: ByteString -> Maybe Text -> LByteString -> Application -> IO SResponse
 putPublish = putPublishAs ChunkedBody
 
-{- | Like 'putPublish' but the request declares its length ('KnownLength'), so the
-publish route's up-front Content-Length cap check sees it rather than the chunked path.
--}
 putPublishKnownLength :: ByteString -> Maybe Text -> LByteString -> Application -> IO SResponse
 putPublishKnownLength path bearer body =
     putPublishAs (KnownLength (fromIntegral (LBS.length body))) path bearer body
 
--- The shared @PUT \/npm\/{path}@ driver, over a given declared body length.
 putPublishAs :: RequestBodyLength -> ByteString -> Maybe Text -> LByteString -> Application -> IO SResponse
 putPublishAs bodyLen path bearer body =
     runSession (srequest (SRequest req body))
@@ -142,6 +127,7 @@ mismatchedVersionNameBody :: LByteString
 mismatchedVersionNameBody =
     "{\"_id\":\"@acme/widget\",\"name\":\"@acme/widget\",\"versions\":{\"1.0.0\":{\"name\":\"@victim/target\",\"version\":\"1.0.0\"}}}"
 
+-- | Publish guards and the target-visible request and response contract.
 spec :: Spec
 spec = describe "first-party publish path → publication target (S52)" $ do
     it "503s a publish shed at the aggregate body-byte budget while the capacity is held" $ do
@@ -187,28 +173,47 @@ spec = describe "first-party publish path → publication target (S52)" $ do
         withTarget 201 "{\"success\":true}" $ \targetPort target -> do
             app <- proxyWith (Just (publishDepsAt targetPort Nothing))
             resp <- putPublish "/npm/@acme/widget" (Just "publisher-token") publishBody app
-            -- the proxy relays back the publication target's own success status and body
             status resp `shouldBe` 201
             simpleBody resp `shouldBe` "{\"success\":true}"
-            -- the target saw the publisher's OWN token (passthrough), and the body verbatim
             seen <- targetSaw target
             seen `shouldBe` [(Just "Bearer publisher-token", LBS.toStrict publishBody)]
 
-    it "forwards the static ECLUSE_MOUNTS__NPM__PUBLICATION_TARGET__REGISTRY__TOKEN only when the client sends no token of its own" $
+    forM_
+        [ ("substitutes the static publish token after authenticating the edge token", Just "edge-token", Just "publish-token", Just "edge-token", Just "Bearer publish-token")
+        , ("preserves a closed-edge token when no static publish token is configured", Just "edge-token", Nothing, Just "edge-token", Just "Bearer edge-token")
+        , ("preserves the caller token on an open edge even with static publish dependencies", Nothing, Just "publish-token", Just "publisher-token", Just "Bearer publisher-token")
+        , ("keeps a tokenless open-edge publish anonymous even with static publish dependencies", Nothing, Just "publish-token", Nothing, Nothing)
+        ]
+        $ \(label, edgeToken, staticToken, presented, expected) ->
+            it label $
+                withTarget 201 "{\"success\":true}" $ \targetPort target -> do
+                    app <- proxyWith (Just (\budget -> (publishDepsAt targetPort (mkSecret <$> staticToken) budget){pubInboundToken = mkSecret <$> edgeToken}))
+                    resp <- putPublish "/npm/@acme/widget" presented publishBody app
+                    status resp `shouldBe` 201
+                    targetSaw target `shouldReturn` [(expected, LBS.toStrict publishBody)]
+
+    forM_ [Nothing, Just (mkSecret "publish-token")] $ \staticToken ->
+        forM_ [Nothing, Just "wrong-token"] $ \presented ->
+            it ("refuses an unauthenticated closed-edge publish before relay: " <> show (staticToken, presented)) $
+                withTarget 201 "{}" $ \targetPort target -> do
+                    app <- proxyWith (Just (\budget -> (publishDepsAt targetPort staticToken budget){pubInboundToken = Just (mkSecret "edge-token")}))
+                    resp <- putPublish "/npm/@acme/widget" presented publishBody app
+                    status resp `shouldBe` 401
+                    targetSaw target `shouldReturn` []
+
+    it "refuses Basic authentication on the npm publish route before relay" $
         withTarget 201 "{\"success\":true}" $ \targetPort target -> do
-            app <- proxyWith (Just (publishDepsAt targetPort (Just (mkSecret "fallback-token"))))
-            resp <- putPublish "/npm/@acme/widget" Nothing publishBody app
-            status resp `shouldBe` 201
-            seen <- targetSaw target
-            -- no client token, so the relay forwards the configured static fallback
-            map fst seen `shouldBe` [Just "Bearer fallback-token"]
+            app <- proxyWith (Just (\budget -> (publishDepsAt targetPort (Just (mkSecret "publish-token")) budget){pubInboundToken = Just (mkSecret "edge-token")}))
+            let req = setPath defaultRequest{requestMethod = methodPut, requestHeaders = [(hAuthorization, "Basic dXNlcjplZGdlLXRva2Vu")]} "/npm/@acme/widget"
+            resp <- runSession (srequest (SRequest req publishBody)) app
+            status resp `shouldBe` 401
+            targetSaw target `shouldReturn` []
 
     it "refuses an out-of-scope publish with 403 BEFORE any upstream write (anti-shadowing guard)" $
         withTarget 201 "{\"success\":true}" $ \targetPort target -> do
             app <- proxyWith (Just (publishDepsAt targetPort Nothing))
             resp <- putPublish "/npm/@other/widget" (Just "publisher-token") publishBody app
             status resp `shouldBe` 403
-            -- the guard fired before the relay, so the proxy never contacted the target
             targetSaw target `shouldReturn` []
 
     it "refuses an unscoped publish with 403 (an unscoped name is within no scope)" $
@@ -220,20 +225,16 @@ spec = describe "first-party publish path → publication target (S52)" $ do
 
     it "refuses a scope that only prefixes an allowed one (@acme-evil vs the allowed @acme) -- exact match" $
         withTarget 201 "{\"success\":true}" $ \targetPort target -> do
-            -- The guard compares scopes exactly, so it never admits a look-alike scope
-            -- by prefix. The proxy never contacts the publication target.
             app <- proxyWith (Just (publishDepsAt targetPort Nothing))
             resp <- putPublish "/npm/@acme-evil/widget" (Just "publisher-token") publishBody app
             status resp `shouldBe` 403
             targetSaw target `shouldReturn` []
 
-    it "sends NO Authorization header to the target for a fully anonymous in-scope publish (no client token, no static fallback)" $
+    it "sends no Authorization header for an anonymous in-scope publish without a static token" $
         withTarget 201 "{\"success\":true}" $ \targetPort target -> do
             app <- proxyWith (Just (publishDepsAt targetPort Nothing))
             resp <- putPublish "/npm/@acme/widget" Nothing publishBody app
             status resp `shouldBe` 201
-            -- passthrough with no client token and no static fallback, so the relay
-            -- carries no credential at all
             seen <- targetSaw target
             map fst seen `shouldBe` [Nothing]
 
@@ -253,7 +254,6 @@ spec = describe "first-party publish path → publication target (S52)" $ do
         withTarget 409 "{\"error\":\"version already exists\"}" $ \targetPort _target -> do
             app <- proxyWith (Just (publishDepsAt targetPort Nothing))
             resp <- putPublish "/npm/@acme/widget" (Just "publisher-token") publishBody app
-            -- a first-party publisher sees the registry's real 409, not a fabricated success
             status resp `shouldBe` 409
             simpleBody resp `shouldBe` "{\"error\":\"version already exists\"}"
 
@@ -277,7 +277,6 @@ spec = describe "first-party publish path → publication target (S52)" $ do
             app <- proxyWith (Just (publishDepsAt targetPort Nothing))
             resp <- putPublish "/npm/@acme/widget" (Just "publisher-token") mismatchedIdBody app
             status resp `shouldBe` 403
-            -- the agreement check fired before the relay, so nothing reached the target
             targetSaw target `shouldReturn` []
 
     it "refuses a publish whose body top-level name disagrees with the in-scope URL name (403 before any relay)" $
@@ -298,7 +297,6 @@ spec = describe "first-party publish path → publication target (S52)" $ do
         withTarget 201 "{\"success\":true}" $ \targetPort target -> do
             app <- proxyWith (Just (publishDepsAt targetPort Nothing))
             resp <- putPublish "/npm/@acme/widget" (Just "publisher-token") matchingVersionBody app
-            -- a body whose every declared name matches the URL still relays (no over-refusal)
             status resp `shouldBe` 201
             seen <- targetSaw target
             map fst seen `shouldBe` [Just "Bearer publisher-token"]
