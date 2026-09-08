@@ -289,7 +289,7 @@ spec = do
             , ["pilot", "compile", "--out", "scratchpad/refused-compile"]
             , ["check-config"]
             ]
-        $ \args -> it ("refuses " <> unwords args <> " before starting services") $ do
+        $ \args -> it ("refuses " <> toString (unwords (map toText args)) <> " before starting services") $ do
             let env = overrideEnv "ECLUSE_MOUNTS__NPM__PRIVATE_UPSTREAM__REGISTRY__URL" "https://registry.npmjs.org:443/" runEnv
                 refusal = renderBootError (PrivateUpstreamOnPublicUpstream Npm "https://registry.npmjs.org:443/")
                 expected = case args of
