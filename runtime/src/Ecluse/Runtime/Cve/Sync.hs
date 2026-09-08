@@ -30,7 +30,6 @@ module Ecluse.Runtime.Cve.Sync (
 import Conduit (ConduitT, await, runResourceT, yield, (.|))
 import Control.Retry (retrying)
 import Data.ByteString qualified as BS
-import Data.Char (isDigit)
 import Data.Conduit.Combinators qualified as C
 import Data.List (lookup)
 import Data.Text qualified as T
@@ -59,6 +58,7 @@ import Ecluse.Core.Telemetry.Metrics (
  )
 import Ecluse.Core.Telemetry.Record (AdvisorySyncMetricsPort (asmpSyncAttempt, asmpSyncDuration), timedSeconds)
 import Ecluse.Core.Telemetry.Span (AdvisorySyncTracingPort (astpSyncAttemptSpan))
+import Ecluse.Core.Text (readDecimalText)
 import Ecluse.Runtime.Aws.Env (AwsEndpoint)
 import Ecluse.Runtime.Aws.Fault (classifyAwsTransport)
 import Ecluse.Runtime.Aws.S3 (buildS3Env)
@@ -289,13 +289,12 @@ metadataSummary meta =
   where
     boundedValue key limit = do
         value <- lookup (renderMetaKey key) meta
-        guard (T.length value <= limit)
+        guard (T.compareLength value limit /= GT)
         pure value
 
 parseMetadataCount :: Text -> Maybe Word64
 parseMetadataCount value = do
-    guard (not (T.null value) && T.all isDigit value)
-    count <- readMaybe (toString value) :: Maybe Integer
+    count <- readDecimalText value :: Maybe Integer
     guard (count <= toInteger (maxBound :: Word64))
     pure (fromInteger count)
 

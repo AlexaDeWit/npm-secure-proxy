@@ -85,9 +85,8 @@ compileOsvToSqlite metrics mTracerProvider outDir eco sources = do
             bracket (liftIO $ open dbFile) (liftIO . close) $ \conn -> do
                 liftIO $ initSchema conn
 
-                -- Batches commit incrementally, so a failed attempt leaves a partial table
-                -- that INSERT OR IGNORE cannot dedup, because the unique index treats a
-                -- NULL bound as distinct. Each retry therefore wipes the table and the tally.
+                -- A failed attempt leaves committed batches. NULL bounds defeat deduplication,
+                -- so each retry clears the table and tally.
                 withOsvRetry defaultOsvRetryPolicy $ do
                     resetIngestStats ingest
                     liftIO $ execute_ conn "DELETE FROM package_vulnerability_ranges"

@@ -286,9 +286,8 @@ spec = do
                 let buildPkgB dest = do
                         putMVar insideSwapper ()
                         mkMinimalValidDb dest "pkg-b"
-                -- The swap publishes the new generation, then parks draining the displaced
-                -- one, whose reader is still pinned inside. The mask defers the cancellation
-                -- to the swapper's only blocking point, that drain, so no wait rides a clock.
+                -- The pinned reader blocks the drain after publication. The mask defers
+                -- cancellation to that blocking point, avoiding a timed wait.
                 swapper <- async (mask_ (syncStep (envWith (fetchServing (Just "e2") buildPkgB)) (Just (DbEtag "e1"))))
                 takeMVar insideSwapper
                 cancel swapper
@@ -364,16 +363,12 @@ spec = do
                     schedule = SyncSchedule{schedBootBackoff = replicate 5 10_000, schedPollDelay = 20_000}
                 withAsync (runQuietKatip (runUnobserved (envWith fetch) schedule pass)) $ \_ -> do
                     threadDelay 200_000
-                    -- One download despite the burst budget and several polls:
-                    -- identical bytes cannot verify differently, so the
-                    -- remembered ETag reads as unchanged until a re-publish.
+                    -- Identical bytes cannot verify differently. The remembered ETag prevents
+                    -- another download until a re-publish.
                     readIORef downloads `shouldReturn` 1
                     probesFor slot "pkg" `shouldReturn` Nothing
 
     describe "advisory sync observation" $ do
-        -- One span, one counter increment, and one latency sample per attempt, each labelled
-        -- by the ecosystem and the attempt's result. The five cases below are the five
-        -- outcomes 'observedStep' folds.
         it "observes a swapped-in artifact as one attempt" $
             withSyncEnv $ \_ _ envWith -> do
                 observed <- observeAttempts 1 oneAttempt (envWith (fetchServing (Just "e1") (`mkMinimalValidDb` "pkg-a")))
@@ -398,9 +393,8 @@ spec = do
 
         it "observes the poll that finds the artifact unchanged" $
             withSyncEnv $ \_ _ envWith -> do
-                -- The burst can only ever start from no last-seen ETag, so an unchanged
-                -- attempt is the poll that follows a settled one. The loop keeps polling,
-                -- so this case pins the first two attempts rather than the whole run.
+                -- The burst has no last-seen ETag. The first poll can report unchanged,
+                -- so only the first two attempts matter here.
                 let polling = SyncSchedule{schedBootBackoff = [], schedPollDelay = 20_000}
                 observed <- observeAttempts 2 polling (envWith (fetchServing (Just "e1") (`mkMinimalValidDb` "pkg-a")))
                 truncateObserved 2 observed `shouldObserve` [(Npm, AdvisorySwapped), (Npm, AdvisoryUnchanged)]
