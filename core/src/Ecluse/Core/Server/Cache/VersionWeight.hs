@@ -44,7 +44,8 @@ detailsWeight details =
 
 nameWeight :: PackageName -> Integer
 nameWeight name =
-    sum (map (textWeight . TS.toText) [pkgCanonical name, pkgDisplay name, pkgBaseName name])
+    sum (map (textWeight . TS.toText) [pkgCanonical name, pkgBaseName name])
+        + textWeight (renderPackageName name)
         + maybe 0 (textWeight . renderScope) (pkgNamespace name)
 
 -- Decimal digits overestimate Integer payload bytes without depending on its heap layout.
