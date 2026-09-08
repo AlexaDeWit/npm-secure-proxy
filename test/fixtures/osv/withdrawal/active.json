@@ -1,0 +1,17 @@
+{
+  "id": "GHSA-withdrawal",
+  "aliases": ["CVE-2026-10001"],
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"name": "withdrawal-only", "ecosystem": "npm"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "2.0.0"}]}],
+      "versions": ["4.0.0"]
+    },
+    {
+      "package": {"name": "withdrawal-overlap", "ecosystem": "npm"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "2.0.0"}]}],
+      "versions": ["4.0.0"]
+    }
+  ]
+}

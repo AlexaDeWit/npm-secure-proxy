@@ -9,7 +9,7 @@ Fixtures also exercise bounded streaming and score joins.
 module Ecluse.Core.Osv.AdvisorySpec (spec) where
 
 import Conduit
-import Data.Aeson (eitherDecodeStrict)
+import Data.Aeson (Value (..), eitherDecodeStrict)
 import Data.ByteString qualified as BS
 import Katip (closeScribes)
 import Test.Hspec (Spec, anyException, describe, it, shouldBe, shouldSatisfy, shouldThrow)
@@ -17,6 +17,7 @@ import Test.Hspec (Spec, anyException, describe, it, shouldBe, shouldSatisfy, sh
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (unpack)
 import Data.Text qualified as T
+import Data.Time (UTCTime (UTCTime), fromGregorian)
 import Ecluse.Core.Ecosystem (Ecosystem (Npm, PyPI))
 import Ecluse.Core.Osv.Advisory
 import Ecluse.Core.Osv.Epss (EpssScores, mkEpssScores)
@@ -33,10 +34,10 @@ import Ecluse.Core.Osv.Stream (
 import Ecluse.Core.Osv.Types (UpperBound (..))
 import Ecluse.Test.Log (captureStdout, jsonLogEnv)
 import Ecluse.Test.Osv (osvZipOf, runOsvTestM, runOsvTestMWith)
+import Ecluse.Test.Osv.Withdrawal (withdrawalBytes, withdrawalZip)
 import Ecluse.Test.Stub (stubBaseUrl, withStub)
 import Network.HTTP.Types.Status (status200)
 
--- | An advisory carrying only the severity evidence under test.
 advisory :: [OsvSeverityEntry] -> Maybe Text -> OsvAdvisory
 advisory entries label =
     OsvAdvisory
@@ -45,11 +46,14 @@ advisory entries label =
         , osvAffected = Nothing
         , osvSeverity = if null entries then Nothing else Just entries
         , osvDatabaseSpecific = OsvDatabaseSpecific . Just <$> label
+        , osvWithdrawn = Nothing
         }
 
--- An empty feed table: extraction then leaves every segment's EPSS score absent.
 noScores :: EpssScores
 noScores = mkEpssScores []
+
+decodeWithdrawal :: Maybe Value -> IO OsvAdvisory
+decodeWithdrawal withdrawn = withdrawalBytes withdrawn >>= either fail pure . eitherDecodeStrict
 
 spec :: Spec
 spec = describe "Osv parsing and streaming" $ do
@@ -117,12 +121,46 @@ spec = describe "Osv parsing and streaming" $ do
         it "yields Nothing for an advisory with no severity evidence at all" $
             advisorySeverity (advisory [] Nothing) `shouldBe` Nothing
 
+    describe "withdrawal" $ do
+        for_ [Nothing, Just Null] $ \withdrawn ->
+            it ("retains active ranges with withdrawal " <> show withdrawn) $ do
+                adv <- decodeWithdrawal withdrawn
+                osvWithdrawn adv `shouldBe` Nothing
+                length (extractFromAdvisory noScores adv) `shouldBe` 4
+
+        for_ ["2024-05-14T20:15:44Z", "2099-01-01T00:00:00Z"] $ \timestamp ->
+            it ("omits every affected package and exact version after withdrawal " <> toString timestamp) $ do
+                adv <- decodeWithdrawal (Just (String timestamp))
+                osvWithdrawn adv `shouldSatisfy` isJust
+                extractFromAdvisory noScores adv `shouldBe` []
+
+        it "decodes the withdrawal timestamp" $ do
+            adv <- decodeWithdrawal (Just (String "2024-05-14T20:15:44Z"))
+            osvWithdrawn adv `shouldBe` Just (UTCTime (fromGregorian 2024 5 14) 72944)
+
+        for_ [String "", String "not-a-timestamp", Number 1, Bool True, Object mempty] $ \invalid ->
+            it ("rejects malformed withdrawal " <> show invalid) $ do
+                bytes <- withdrawalBytes (Just invalid)
+                (eitherDecodeStrict bytes :: Either String OsvAdvisory) `shouldSatisfy` isLeft
+
+        for_ [(String "2024-05-14T20:15:44Z", 0), (String "invalid", 1)] $ \(withdrawn, malformed) ->
+            it ("preserves streaming drop accounting for withdrawal " <> show withdrawn) $ do
+                archive <- withdrawalZip (Just withdrawn)
+                (rows, stats) <- runOsvTestM $ do
+                    ingest <- newOsvIngest defaultIngestLimits (Just Npm) noScores
+                    rows <- runConduit $ yieldMany (LBS.toChunks archive) .| parseOsvStream Nothing ingest .| sinkList
+                    stats <- readIngestStats ingest
+                    pure (rows, stats)
+                sort (map extCveId rows) `shouldBe` ["GHSA-corpus-0001", "GHSA-independent"]
+                stats `shouldBe` IngestStats (3 - malformed) 0 malformed 0
+
     describe "extractFromAdvisory (the EPSS join)" $ do
         let aliased ids =
                 OsvAdvisory
                     "GHSA-aliased"
                     (Just ids)
                     (Just [OsvAffected (OsvPackage "aliased-pkg" "npm") Nothing (Just ["1.0.0"])])
+                    Nothing
                     Nothing
                     Nothing
 
@@ -146,43 +184,37 @@ spec = describe "Osv parsing and streaming" $ do
     describe "extractFromAdvisory (package identity)" $ do
         for_ [("PyPI", "Flask_Thing", "flask-thing"), ("PyPI", "FLASK..__Thing", "flask-thing"), ("PyPI", "flask-thing", "flask-thing"), ("npm", "@Acme/Flask_Thing", "@Acme/Flask_Thing"), ("RubyGems", "Flask_Thing", "Flask_Thing"), ("other", "Flask_Thing", "Flask_Thing")] $ \(eco, raw, expected) ->
             it (toString ("keys " <> eco <> " package " <> raw <> " as " <> expected)) $ do
-                let adv = OsvAdvisory "GHSA-name" Nothing (Just [OsvAffected (OsvPackage raw eco) Nothing (Just ["1.0", "2.0"])]) Nothing Nothing
+                let adv = OsvAdvisory "GHSA-name" Nothing (Just [OsvAffected (OsvPackage raw eco) Nothing (Just ["1.0", "2.0"])]) Nothing Nothing Nothing
                 extractFromAdvisory noScores adv
                     `shouldBe` [ExtractedOsv expected eco "GHSA-name" (Just version) (LastAffected version) Nothing Nothing | version <- ["1.0", "2.0"]]
 
     describe "extractFromAdvisory (affected-set shapes)" $ do
         it "records an exact enumerated version as a point segment (no ranges)" $ do
-            -- The npm malware feed names the single bad version in versions[] with
-            -- no ranges.
-            let adv = OsvAdvisory "MAL-test" Nothing (Just [OsvAffected (OsvPackage "bad-pkg" "npm") Nothing (Just ["1.0.0"])]) Nothing Nothing
+            let adv = OsvAdvisory "MAL-test" Nothing (Just [OsvAffected (OsvPackage "bad-pkg" "npm") Nothing (Just ["1.0.0"])]) Nothing Nothing Nothing
             extractFromAdvisory noScores adv
                 `shouldBe` [ExtractedOsv "bad-pkg" "npm" "MAL-test" (Just "1.0.0") (LastAffected "1.0.0") Nothing Nothing]
 
         it "carries an inclusive last_affected bound distinct from a fix" $ do
             let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing Nothing (Just "3.8.8")]
-                adv = OsvAdvisory "GHSA-la" Nothing (Just [OsvAffected (OsvPackage "electerm" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing
+                adv = OsvAdvisory "GHSA-la" Nothing (Just [OsvAffected (OsvPackage "electerm" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing Nothing
             extractFromAdvisory noScores adv
                 `shouldBe` [ExtractedOsv "electerm" "npm" "GHSA-la" Nothing (LastAffected "3.8.8") Nothing Nothing]
 
         it "ignores a GIT range whose commit-SHA bounds are not versions" $ do
             -- A commit interpreted as an unorderable version bound would deny every release.
             let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing (Just "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0") Nothing]
-                adv = OsvAdvisory "GHSA-git" Nothing (Just [OsvAffected (OsvPackage "healthy-pkg" "npm") (Just [OsvRange "GIT" events]) Nothing]) Nothing Nothing
+                adv = OsvAdvisory "GHSA-git" Nothing (Just [OsvAffected (OsvPackage "healthy-pkg" "npm") (Just [OsvRange "GIT" events]) Nothing]) Nothing Nothing Nothing
             extractFromAdvisory noScores adv `shouldBe` []
 
         it "leaves a segment unbounded above when no event closes it" $ do
-            -- A second introduced closes the open segment, and the last one runs to the
-            -- end of the event list. Neither carries an upper bound.
             let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent (Just "2.0.0") Nothing Nothing]
-                adv = OsvAdvisory "GHSA-open" Nothing (Just [OsvAffected (OsvPackage "open-pkg" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing
+                adv = OsvAdvisory "GHSA-open" Nothing (Just [OsvAffected (OsvPackage "open-pkg" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing Nothing
             extractFromAdvisory noScores adv
                 `shouldBe` [ ExtractedOsv "open-pkg" "npm" "GHSA-open" Nothing Unbounded Nothing Nothing
                            , ExtractedOsv "open-pkg" "npm" "GHSA-open" (Just "2.0.0") Unbounded Nothing Nothing
                            ]
 
         it "extracts the version range and drops a co-published GIT range" $ do
-            -- OSV advisories often carry a GIT range alongside the ECOSYSTEM/SEMVER
-            -- one. Only the version-typed range contributes a segment.
             let semverEvents = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing (Just "2.0.0") Nothing]
                 gitEvents = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing (Just "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef") Nothing]
                 adv =
@@ -192,20 +224,21 @@ spec = describe "Osv parsing and streaming" $ do
                         (Just [OsvAffected (OsvPackage "mixed-pkg" "npm") (Just [OsvRange "GIT" gitEvents, OsvRange "ECOSYSTEM" semverEvents]) Nothing])
                         Nothing
                         Nothing
+                        Nothing
             extractFromAdvisory noScores adv
                 `shouldBe` [ExtractedOsv "mixed-pkg" "npm" "GHSA-both" Nothing (FixedBefore "2.0.0") Nothing Nothing]
 
         it "decodes OSV's \"0\" lower bound to no lower bound at all" $ do
             -- The beginning sentinel must not become an unorderable version bound.
             let events = [OsvEvent (Just "0") Nothing Nothing, OsvEvent Nothing (Just "1.2.3") Nothing]
-                adv = OsvAdvisory "MAL-zero" Nothing (Just [OsvAffected (OsvPackage "mal-pkg" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing
+                adv = OsvAdvisory "MAL-zero" Nothing (Just [OsvAffected (OsvPackage "mal-pkg" "npm") (Just [OsvRange "SEMVER" events]) Nothing]) Nothing Nothing Nothing
             extractFromAdvisory noScores adv
                 `shouldBe` [ExtractedOsv "mal-pkg" "npm" "MAL-zero" Nothing (FixedBefore "1.2.3") Nothing Nothing]
 
         it "keeps an exactly enumerated \"0\" as the version it names" $ do
             -- The sentinel reading belongs to a range's lower bound. In versions[] the same
             -- text names a version a package may really carry.
-            let adv = OsvAdvisory "MAL-v0" Nothing (Just [OsvAffected (OsvPackage "zero-pkg" "npm") Nothing (Just ["0"])]) Nothing Nothing
+            let adv = OsvAdvisory "MAL-v0" Nothing (Just [OsvAffected (OsvPackage "zero-pkg" "npm") Nothing (Just ["0"])]) Nothing Nothing Nothing
             extractFromAdvisory noScores adv
                 `shouldBe` [ExtractedOsv "zero-pkg" "npm" "MAL-v0" (Just "0") (LastAffected "0") Nothing Nothing]
 

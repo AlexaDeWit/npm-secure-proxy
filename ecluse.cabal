@@ -40,6 +40,7 @@ extra-source-files:
   core/test/unit/fixtures/version-ordering.txt
   test/fixtures/osv/v1/*.json
   test/fixtures/osv/v2/*.json
+  test/fixtures/osv/withdrawal/*.json
   test/unit/fixtures/epss/*.gz
   test/unit/fixtures/osv/*.zip
 
@@ -599,6 +600,7 @@ library ecluse-test-support
     Ecluse.Test.Maintenance
     Ecluse.Test.Metrics
     Ecluse.Test.Osv
+    Ecluse.Test.Osv.Withdrawal
     Ecluse.Test.OsvDb
     Ecluse.Test.Package
     Ecluse.Test.Poll

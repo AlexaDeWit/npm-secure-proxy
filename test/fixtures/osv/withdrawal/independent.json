@@ -1,0 +1,11 @@
+{
+  "id": "GHSA-independent",
+  "aliases": ["CVE-2026-10002"],
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"name": "withdrawal-overlap", "ecosystem": "npm"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "3.0.0"}]}]
+    }
+  ]
+}
