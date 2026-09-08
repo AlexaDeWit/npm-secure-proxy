@@ -819,6 +819,9 @@ test-suite ecluse-core-unit
     , containers        ^>=0.7
     , crypton           >=1.0 && <1.2
     , hedgehog          ^>=1.5
+    , hs-opentelemetry-api  ^>=1.0
+    , hs-opentelemetry-exporter-in-memory  ^>=1.0
+    , hs-opentelemetry-sdk  ^>=1.0
     , hspec             ^>=2.11
     , hspec-hedgehog    ^>=0.3
     , http-client       ^>=0.7
@@ -1065,6 +1068,7 @@ test-suite ecluse-integration
     Ecluse.Integration.Collector
     Ecluse.Integration.Ministack
     Ecluse.Integration.WorkerLoop
+    Ecluse.PilotIntegrationSpec
     Ecluse.Runtime.Cve.SyncIntegrationSpec
     Ecluse.Runtime.Pilot.ExportIntegrationSpec
     Ecluse.Runtime.Queue.SqsIntegrationSpec

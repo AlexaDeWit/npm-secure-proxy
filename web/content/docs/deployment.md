@@ -90,7 +90,11 @@ migration or fallback rewrites an old artifact. Version strings keep their exist
 meaning for remediation.
 
 A corrupt or truncated export aborts the compile without publishing, so a running proxy keeps its
-last-good database. Run the one-shot as a Kubernetes `CronJob` with `concurrencyPolicy: Forbid`,
+last-good database. Pilot also refuses output with zero relevant advisory ranges after filtering
+for the requested ecosystem. It logs ERROR and preserves any previous artifact and its timestamps.
+A first rejected compilation publishes nothing. A genuinely empty feed requires deliberate
+operator handling. The guard does not detect reduced but nonempty coverage.
+Run the one-shot as a Kubernetes `CronJob` with `concurrencyPolicy: Forbid`,
 which keeps it a singleton, and schedule it less often than the proxy polls. Give the pod
 `s3:PutObject` through IRSA or workload identity rather than mounted keys.
 

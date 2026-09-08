@@ -19,8 +19,9 @@ import Data.Time (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Database.SQLite.Simple
 import Katip (KatipContext, Severity (..), SimpleLogPayload, katipAddContext, logFM, ls, sl)
-import System.Directory (createDirectoryIfMissing, removeFile)
+import System.Directory (createDirectoryIfMissing, removeFile, renameFile)
 import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
 import System.IO.Error (catchIOError)
 import UnliftIO.Exception (bracket, throwIO)
 
@@ -61,8 +62,8 @@ data CompileSources = CompileSources
     }
     deriving stock (Eq, Show)
 
-{- | Compile one ecosystem into @outDir@ using "Ecluse.Core.Osv.Schema".
-An escaping fault leaves no completion verdict on the ecosystem's metrics port.
+{- | Compile one ecosystem into @outDir@, refusing systemic drops or zero relevant rows.
+A refused candidate leaves any previous artifact and its metadata unchanged.
 -}
 compileOsvToSqlite :: (MonadResource m, MonadMask m, MonadUnliftIO m, KatipContext m) => AdvisoryCompileMetricsPort -> Maybe TracerProvider -> FilePath -> OsvEcosystem -> CompileSources -> m FilePath
 compileOsvToSqlite metrics mTracerProvider outDir eco sources = do
@@ -71,40 +72,50 @@ compileOsvToSqlite metrics mTracerProvider outDir eco sources = do
     logFM InfoS (ls ("Compiling OSV data for " <> ecosystem <> " to " <> toText dbFile))
 
     liftIO $ createDirectoryIfMissing True outDir
-    liftIO $ catchIOError (removeFile dbFile) (const $ pure ())
 
-    withOptionalSpan mTracerProvider Internal "ecluse.pilot.osv.compile" $
-        \mSpan -> do
-            forM_ mSpan $ \sp -> do
-                addAttribute sp "ecluse.osv.ecosystem" ecosystem
-                addAttribute sp "ecluse.osv.source_host" (authorityLabel (toText (csOsvExportUrl sources)))
-
-            -- The join needs the whole score table before the first advisory row lands, and a
-            -- feed the retry budget cannot fetch fails the pass rather than shipping without.
-            epss <- withOsvRetry defaultOsvRetryPolicy (fetchEpssScores maxEpssFeedBytes (csEpssFeedUrl sources))
-            ingest <- newOsvIngest defaultIngestLimits (osvEcosystemTag eco) epss
-
-            bracket (liftIO $ open dbFile) (liftIO . close) $ \conn -> do
-                liftIO $ initSchema conn
-
-                -- A failed attempt leaves committed batches. NULL bounds defeat deduplication,
-                -- so each retry clears the table and tally.
-                withOsvRetry defaultOsvRetryPolicy $ do
-                    resetIngestStats ingest
-                    liftIO $ execute_ conn "DELETE FROM package_vulnerability_ranges"
-                    runConduit $
-                        streamOsvUrl mTracerProvider ingest (csOsvExportUrl sources)
-                            .| CL.filter ((== osvExportDirectory eco) . extEcosystem)
-                            .| CL.chunksOf 2000
-                            .| sinkSqlite conn
-
-                stats <- readIngestStats ingest
-                concludeCompile metrics mSpan conn ecosystem sources stats
-
+    bracket (liftIO $ newCandidate outDir) (liftIO . removeCandidate) $ \candidate -> do
+        compileCandidate candidate ecosystem
+        liftIO $ renameFile candidate dbFile
     pure dbFile
+  where
+    compileCandidate dbFile ecosystem =
+        withOptionalSpan mTracerProvider Internal "ecluse.pilot.osv.compile" $
+            \mSpan -> do
+                forM_ mSpan $ \sp -> do
+                    addAttribute sp "ecluse.osv.ecosystem" ecosystem
+                    addAttribute sp "ecluse.osv.source_host" (authorityLabel (toText (csOsvExportUrl sources)))
 
--- A systemic drop rate must not ship as a fresh-looking artifact that silently omits
--- advisories, so this abandons the run before 'writeMeta' finalises it.
+                -- The join needs the whole score table before the first advisory row lands, and a
+                -- feed the retry budget cannot fetch fails the pass rather than shipping without.
+                epss <- withOsvRetry defaultOsvRetryPolicy (fetchEpssScores maxEpssFeedBytes (csEpssFeedUrl sources))
+                ingest <- newOsvIngest defaultIngestLimits (osvEcosystemTag eco) epss
+
+                bracket (liftIO $ open dbFile) (liftIO . close) $ \conn -> do
+                    liftIO $ initSchema conn
+
+                    -- A failed attempt leaves committed batches. NULL bounds defeat deduplication,
+                    -- so each retry clears the table and tally.
+                    withOsvRetry defaultOsvRetryPolicy $ do
+                        resetIngestStats ingest
+                        liftIO $ execute_ conn "DELETE FROM package_vulnerability_ranges"
+                        runConduit $
+                            streamOsvUrl mTracerProvider ingest (csOsvExportUrl sources)
+                                .| CL.filter ((== osvExportDirectory eco) . extEcosystem)
+                                .| CL.chunksOf 2000
+                                .| sinkSqlite conn
+
+                    stats <- readIngestStats ingest
+                    concludeCompile metrics mSpan conn ecosystem sources stats
+
+newCandidate :: FilePath -> IO FilePath
+newCandidate outDir = do
+    (path, handle) <- openTempFile outDir ".osv-candidate.db"
+    hClose handle
+    pure path
+
+removeCandidate :: FilePath -> IO ()
+removeCandidate path = catchIOError (removeFile path) (const $ pure ())
+
 concludeCompile :: (KatipContext m) => AdvisoryCompileMetricsPort -> Maybe Span -> Connection -> Text -> CompileSources -> IngestStats -> m ()
 concludeCompile metrics mSpan conn ecosystem sources stats = do
     forM_ mSpan $ \sp -> do
@@ -113,14 +124,20 @@ concludeCompile metrics mSpan conn ecosystem sources stats = do
         addAttribute sp "ecluse.osv.dropped_malformed" (show (statDroppedMalformed stats) :: Text)
         addAttribute sp "ecluse.osv.unorderable" (show (statUnorderable stats) :: Text)
     liftIO (recordTallies metrics stats)
-    when (systemicDrop stats) $ do
-        forM_ mSpan $ \sp -> setStatus sp (Error "systemic advisory drop rate; compile abandoned")
+    counted <- liftIO (query_ conn "SELECT COUNT(*) FROM package_vulnerability_ranges" :: IO [Only Int])
+    let rowCount = maybe 0 fromOnly (listToMaybe counted)
+        refusal
+            | systemicDrop stats = Just "systemic advisory drop rate"
+            | rowCount == 0 = Just "zero relevant advisory rows"
+            | otherwise = Nothing
+    forM_ refusal $ \reason -> do
+        forM_ mSpan $ \sp -> setStatus sp (Error (reason <> ", compile abandoned"))
         liftIO (acmpCompileRun metrics CompileAborted)
         katipAddContext (dropFields ecosystem stats) $
-            logFM ErrorS (ls ("Aborting OSV compile for " <> ecosystem <> ": " <> renderDrops stats))
+            logFM ErrorS (ls ("Aborting OSV compile for " <> ecosystem <> ": " <> reason <> " (" <> renderDrops stats <> ")"))
         throwIO (PilotIngestAborted stats)
 
-    rowCount <- liftIO $ writeMeta conn ecosystem sources
+    liftIO $ writeMeta conn ecosystem sources rowCount
     liftIO (acmpCompileRun metrics CompileCompleted)
     forM_ mSpan $ \sp -> addAttribute sp "ecluse.osv.row_count" (show rowCount :: Text)
     katipAddContext (sl "row_count" rowCount <> dropFields ecosystem stats) $
@@ -167,11 +184,9 @@ initSchema conn = do
 
 -- Written once, after the stream completes: the row count is only meaningful for a
 -- complete artifact.
-writeMeta :: Connection -> Text -> CompileSources -> IO Int
-writeMeta conn ecosystem sources = do
+writeMeta :: Connection -> Text -> CompileSources -> Int -> IO ()
+writeMeta conn ecosystem sources rowCount = do
     now <- getCurrentTime
-    counted <- query_ conn "SELECT COUNT(*) FROM package_vulnerability_ranges" :: IO [Only Int]
-    let rowCount = maybe 0 fromOnly (listToMaybe counted)
     executeMany
         conn
         "INSERT INTO meta (key, value) VALUES (?, ?)"
@@ -182,7 +197,6 @@ writeMeta conn ecosystem sources = do
         , (renderMetaKey MetaEpssSourceUrl, authorityLabel (toText (csEpssFeedUrl sources)))
         , (renderMetaKey MetaRowCount, show rowCount)
         ]
-    pure rowCount
 
 sinkSqlite :: (MonadIO m) => Connection -> ConduitT [ExtractedOsv] o m ()
 sinkSqlite conn = awaitForever $ \batch ->
