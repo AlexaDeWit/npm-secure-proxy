@@ -2,14 +2,8 @@
 --
 -- SPDX-License-Identifier: MIT
 
-{- | Work-per-request bench for request routing: the npm classifier
-("Ecluse.Core.Registry.Npm.Route") that turns a request's method and path segments into
-a typed 'Route'. It runs on every request, before any metadata work.
-
-The input is a representative mix of the request shapes the proxy sees: bare and scoped
-packuments, tarball coordinates, the @ping@ probe, search, first-party publishes
-(@PUT@), and unrecognised paths. The bench therefore reflects the real classifier branch
-distribution rather than one hot path.
+{- | Request routing costs for npm and PyPI,
+including malformed filename scaling.
 -}
 module Ecluse.Core.RouteBench (
     benchmarks,
@@ -18,20 +12,33 @@ module Ecluse.Core.RouteBench (
 import Data.Text qualified as T
 import Network.HTTP.Types.Method (Method, methodGet, methodPut)
 
+import Ecluse.Bench.Fit (notWorseThanLinear)
 import Ecluse.Core.Registry.Npm.Route (npmRoutes)
+import Ecluse.Core.Registry.PyPI.Route (pypiRoutes)
 import Ecluse.Core.Server.Route (Route (routeName), RouteName (RouteName), matchRoute)
+import Ecluse.Test.Registry.PyPI (separatorHeavySdist)
 import Test.Tasty.Bench (Benchmark, bench, bgroup, env, whnf)
 
--- | The classifier bench over a mixed batch of realistic requests.
+-- | Normal request costs and PyPI filename complexity fits.
 benchmarks :: Benchmark
 benchmarks =
-    env (pure requests) $ \reqs ->
-        bgroup
-            "route.match"
-            [ bench "mixed npm requests" (whnf classifyDepth reqs)
-            ]
+    bgroup
+        "route.match"
+        [ env (pure requests) $ \reqs -> bench "mixed npm requests" (whnf classifyDepth reqs)
+        , bench "normal PyPI sdist" (whnf classifyPyPI "requests-2.34.2.tar.gz")
+        , bench "normal PyPI wheel" (whnf classifyPyPI "requests-2.34.2-py3-none-any.whl")
+        , notWorseThanLinear
+            "malformed PyPI filename separators"
+            (64, 8192)
+            (\count -> separatorHeavySdist "requests" (fromIntegral count) "benchmark")
+            classifyPyPI
+        , notWorseThanLinear
+            "valid PyPI filename separators"
+            (64, 8192)
+            (\count -> "requests" <> T.replicate (fromIntegral count) "_" <> "1.tar.gz")
+            classifyPyPI
+        ]
 
--- | A batch of realistic npm requests (method + path segments), the classifier's input.
 requests :: [(Method, [Text])]
 requests = concat (replicate 1000 sample)
   where
@@ -50,14 +57,16 @@ requests = concat (replicate 1000 sample)
         , (methodPut, ["express", "-", "express-4.18.2.tgz"]) -- a PUT to a non-publish path
         ]
 
-{- | Route every request, summing the matched route's identifier length so the fold forces
-each result. The route's action is a closure, so the identifier is what the bench forces.
--}
 classifyDepth :: [(Method, [Text])] -> Int
 classifyDepth = foldl' (\acc (method, segments) -> acc + matchDepth method segments) 0
   where
     matchDepth method segments =
         -- npm's routes negotiate no media type, so the bench routes with no Accept header.
-        maybe 0 (nameLength . routeName . fst) (matchRoute npmRoutes method [] segments)
+        maybe 0 (routeNameLength . routeName . fst) (matchRoute npmRoutes method [] segments)
 
-    nameLength (RouteName n) = T.length n
+classifyPyPI :: Text -> Int
+classifyPyPI file =
+    maybe 0 (routeNameLength . routeName . fst) (matchRoute pypiRoutes methodGet [] ["simple", "requests", file])
+
+routeNameLength :: RouteName -> Int
+routeNameLength (RouteName name) = T.length name
