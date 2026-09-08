@@ -2733,6 +2733,17 @@
                   "id": "c87367bd-fc3f-4792-94b6-8db459011823"
                 },
                 {
+                  "number": 115,
+                  "status": "Mitigated",
+                  "severity": "High",
+                  "title": "Withdrawn OSV records remain active policy evidence",
+                  "type": "Tampering",
+                  "description": "OSV exports retain withdrawn records and their affected ranges. Pilot previously ignored withdrawal, allowing an honest feed to cause false advisory denials, invalid remediation exceptions, and eligible Dredger deletion. This consumer defect is separate from the accepted hostile-source risk in threat 101.",
+                  "mitigation": "Pilot parses the optional withdrawal timestamp and excludes withdrawn records before emitting ranges or exact-version points. Malformed timestamps follow existing malformed-record handling. Tests drive committed fixtures through local HTTP servers, the production compiler, SQLite acceptance, sync, shared advisory rules, and the in-memory Dredger deletion path. Withdrawal removes both denial and remediation evidence while independent overlapping advisories and unrelated active controls remain. First-party protection, named-deny deletion requirements, canonical package identity, and epoch 4 remain unchanged. Existing artifacts retain old evidence until a successful compile and sync replace them. Older Pilot binaries can republish withdrawn evidence, so every publisher needs the fix. The zero-output refusal in #1234 retains the prior artifact when no relevant active rows remain. No live deletion test ran. See https://github.com/AlexaDeWit/Ecluse/issues/1214 .",
+                  "modelType": "STRIDE",
+                  "id": "1da83f8a-f998-4ef8-89bd-61a39b4e22ee"
+                },
+                {
                   "number": 111,
                   "status": "Accepted",
                   "severity": "High",
@@ -3516,6 +3527,6 @@
     ],
     "diagramTop": 1,
     "reviewer": "",
-    "threatTop": 114
+    "threatTop": 115
   }
 }

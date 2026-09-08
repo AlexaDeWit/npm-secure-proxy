@@ -26,6 +26,7 @@ import Prelude hiding (universe)
 
 import Data.Aeson (FromJSON (..), withObject, (.:), (.:?))
 import Data.Text qualified as T
+import Data.Time (UTCTime)
 import Data.Universe.Class (Universe (universe))
 import Security.CVSS (cvssScore, parseCVSS)
 
@@ -41,7 +42,7 @@ import Ecluse.Core.Version (parseVersionKey)
 osvExportUrl :: Text -> Text -> String
 osvExportUrl baseUrl ecosystem = toString (joinUrlPath baseUrl (ecosystem <> "/all.zip"))
 
--- | Exact model of what osv.dev makes available
+-- | The OSV fields used to select and score active advisory evidence.
 data OsvAdvisory = OsvAdvisory
     { osvId :: Text
     , osvAliases :: Maybe [Text]
@@ -51,6 +52,8 @@ data OsvAdvisory = OsvAdvisory
     , osvAffected :: Maybe [OsvAffected]
     , osvSeverity :: Maybe [OsvSeverityEntry]
     , osvDatabaseSpecific :: Maybe OsvDatabaseSpecific
+    , osvWithdrawn :: Maybe UTCTime
+    -- ^ A withdrawn record supplies no active evidence, even when it retains affected ranges.
     }
     deriving stock (Show, Eq)
 
@@ -62,6 +65,7 @@ instance FromJSON OsvAdvisory where
             <*> v .:? "affected"
             <*> v .:? "severity"
             <*> v .:? "database_specific"
+            <*> v .:? "withdrawn"
 
 {- | One entry of an advisory's @severity@ array: a scoring-system tag (@CVSS_V3@) and
 its value. For a CVSS system that value is the /vector string/, not a number.
@@ -179,8 +183,6 @@ advisorySeverity adv = vectorScore <|> labelScore
         (s : ss) -> Just (foldl' max s ss)
     labelScore = ghsaSeverityCeiling =<< (dbsSeverity =<< osvDatabaseSpecific adv)
 
--- The CVSS base score of a vector string via the library, or 'Nothing' if it does
--- not parse (a CVSS version this build's parser rejects).
 parseVectorScore :: Text -> Maybe Double
 parseVectorScore = either (const Nothing) (Just . oneDecimal . snd . cvssScore) . parseCVSS
 
@@ -200,11 +202,12 @@ ghsaSeverityCeiling label = case T.toUpper (T.strip label) of
     "CRITICAL" -> Just 10.0
     _ -> Nothing
 
-{- | Canonicalise package keys and retain raw version bounds for every affected segment.
-Unknown ecosystems keep their package spelling.
+{- | Emit only active advisory segments, with canonical package keys and raw version bounds.
+Withdrawn records emit nothing. Unknown ecosystems keep their package spelling.
 -}
 extractFromAdvisory :: EpssScores -> OsvAdvisory -> [ExtractedOsv]
 extractFromAdvisory scores adv = do
+    guard (isNothing (osvWithdrawn adv))
     aff <- fromMaybe [] (osvAffected adv)
     let pkg = affectedPackage aff
         eco = find ((== packageEcosystem pkg) . osvExportDirectory . osvEcosystemFor) universe

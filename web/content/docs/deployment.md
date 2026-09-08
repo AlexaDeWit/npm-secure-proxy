@@ -101,6 +101,12 @@ The `built_at` value records compilation completion, not the source snapshot's a
 Pin the image by digest and verify its provenance and SBOM attestations before you run it. The
 recipe is in [Verifying the image](https://github.com/AlexaDeWit/Ecluse/blob/main/README.md#verifying-the-image).
 
+Pilot excludes withdrawn OSV records from new artifacts without changing epoch 4.
+Update every Pilot publisher because older binaries can still publish withdrawn evidence.
+Existing artifacts retain that evidence until a successful compile and sync replace them.
+The zero-output refusal from [#1234](https://github.com/AlexaDeWit/Ecluse/issues/1234) retains the prior artifact if no relevant active rows remain.
+Withdrawal does not cancel independent active advisories or operator identity denies.
+
 ## The recommended topology
 
 {{ diagram(name="topology", alt="Clients and CI call the Écluse proxy, which reads the private upstream union of the publication and mirror stores, fetches gated content from the public registry, and queues admitted versions for the mirror worker to write to the mirror target.", caption="Only gated public content enters the union: the mirror write is the single path public packages take into the trusted stores, and no edge runs from the public registry into them.") }}

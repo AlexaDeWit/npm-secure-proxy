@@ -222,6 +222,14 @@ per-ecosystem exports, compiles them into a read-only SQLite database (`osv.db`)
 to a private object store. `advisories.url` names that store as `s3://bucket[/prefix]`, its
 scheme picking the provider the way `queue.url` does. Unset, the advisory stack is off.
 
+OSV retains withdrawn records in its [GCS exports](https://google.github.io/osv.dev/faq/#how-does-osvdev-handle-withdrawn-records).
+Pilot excludes records carrying a withdrawal timestamp before it emits affected ranges or exact versions.
+Their retained ranges cannot justify an advisory deny, a remediation exception, or Dredger deletion after a replacement artifact syncs.
+Independent active advisories still supply their own evidence.
+
+This selection fix keeps epoch 4 because the meaning of each emitted row remains unchanged.
+[Deployment](../../web/content/docs/deployment.md) covers replacement artifacts and older publishers during rollout.
+
 The proxy runs one supervised sync task per configured mount ecosystem
 ([`Ecluse.Runtime.Cve.Sync`](../../runtime/src/Ecluse/Runtime/Cve/Sync.hs)). Each task polls the
 store's stable per-ecosystem key for ETag changes at `advisories.pollInterval`. That interval
