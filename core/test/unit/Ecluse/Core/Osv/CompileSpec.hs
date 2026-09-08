@@ -18,6 +18,10 @@ import Data.Time (UTCTime (UTCTime), fromGregorian)
 import Data.Version (showVersion)
 import Database.SQLite.Simple
 import Katip (LogEnv, closeScribes)
+import OpenTelemetry.Attributes (fromAttribute, lookupAttribute)
+import OpenTelemetry.Exporter.InMemory.Span (inMemoryListExporter)
+import OpenTelemetry.Trace (createTracerProvider, emptyTracerProviderOptions, forceFlushTracerProvider)
+import OpenTelemetry.Trace.Core (ImmutableSpan (spanHot), SpanHot (hotAttributes, hotName, hotStatus), SpanStatus (Error, Unset))
 import Paths_ecluse (version)
 import System.Directory (doesFileExist, getModificationTime, listDirectory, removeFile, setModificationTime)
 import System.FilePath (takeFileName, (</>))
@@ -238,6 +242,45 @@ spec = describe "SQLite OSV Compilation" $ do
                             readFileBS dbFile >>= (`shouldBe` bytes)
                             getModificationTime dbFile >>= (`shouldBe` previousModified)
                             listDirectory outDir >>= (`shouldBe` [takeFileName dbFile])
+
+    describe "compile traces"
+        $ for_
+            [ ("accepted", Npm, LBS.readFile "test/unit/fixtures/osv/sample.zip", Nothing)
+            , ("empty", Npm, osvZipOf [], Just "zero relevant advisory rows, compile abandoned")
+            , ("wrong ecosystem", PyPI, LBS.readFile "test/unit/fixtures/osv/sample.zip", Just "zero relevant advisory rows, compile abandoned")
+            ]
+        $ \(label, ecosystem, zipSource, refusal) ->
+            it ("records the " <> label <> " verdict without source credentials") $
+                withSystemTempDirectory "ecluse-compile-trace" $ \outDir -> do
+                    zipData <- zipSource
+                    epssData <- LBS.readFile epssFixtureFile
+                    (metrics, _) <- recordingAdvisoryCompileMetricsPort
+                    (processor, spansRef) <- inMemoryListExporter
+                    tracerProvider <- createTracerProvider [processor] emptyTracerProviderOptions
+                    withCredentialSource "OSV" zipData $ \source ->
+                        withCredentialSource "EPSS" epssData $ \epssSource -> do
+                            let compile = compileOsvToSqlite metrics (Just tracerProvider) outDir (osvEcosystemFor ecosystem) (CompileSources source epssSource)
+                            _ <- captureStdout' $ \logEnv -> case refusal of
+                                Nothing -> void (runOsvTestMWith logEnv compile)
+                                Just _ -> runOsvTestMWith logEnv compile `shouldThrow` (\(PilotIngestAborted _) -> True)
+                            _ <- forceFlushTracerProvider tracerProvider Nothing
+                            spans <- readIORef spansRef >>= traverse (readIORef . spanHot)
+                            let compiled = filter ((== "ecluse.pilot.osv.compile") . hotName) spans
+                            map hotStatus compiled `shouldBe` [maybe Unset Error refusal]
+                            for_ compiled $ \compiledSpan -> do
+                                for_ ["user-OSV", "password-OSV", "query-OSV", "fragment-OSV"] $ \credential ->
+                                    show (hotAttributes compiledSpan) `shouldSatisfy` (not . T.isInfixOf credential)
+                                for_
+                                    [ ("ecluse.osv.ecosystem", Just (if ecosystem == Npm then "npm" else "pypi"))
+                                    , ("ecluse.osv.source_host", Just (authorityLabel (toText source)))
+                                    , ("ecluse.osv.accepted", Just (if label == "empty" then "0" else "1"))
+                                    , ("ecluse.osv.dropped_oversize", Just "0")
+                                    , ("ecluse.osv.dropped_malformed", Just "0")
+                                    , ("ecluse.osv.unorderable", Just "0")
+                                    , ("ecluse.osv.row_count", if isNothing refusal then Just "1" else Nothing)
+                                    ]
+                                    $ \(key, expected) ->
+                                        (lookupAttribute (hotAttributes compiledSpan) key >>= fromAttribute) `shouldBe` (expected :: Maybe Text)
 
     describe "osvToRow" $ do
         let rowFor upper = osvToRow (ExtractedOsv "pkg" "npm" "GHSA-row" (Just "1.0.0") upper (Just 5.9) (Just 0.25))
