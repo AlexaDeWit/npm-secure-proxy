@@ -12,8 +12,9 @@ any package reaches a build. It hosts no packages itself. The name is French for
 lock: the controlled passage every dependency clears before a build. The goal is
 resilience, limiting the blast radius of a bad publish, not malware detection.
 
-Écluse is not a registry. It delegates storage to the store each mount declares. It enforces
-policy on what it fetches from the public registry, and on what it mirrors from it.
+Écluse delegates storage to the store each mount declares. It enforces policy on public reads
+and mirroring. npm supports reads, mirroring, and first-party publication. PyPI supports reads
+only. The following diagrams show a mirrored npm deployment.
 
 ## The stack at a glance
 
@@ -40,7 +41,7 @@ flowchart LR
         WEB["Web layer<br/>router, streaming, middleware"]
         RULES["Rules engine<br/>deny-by-default"]
         CACHE["Metadata cache<br/>short-TTL, in-memory"]
-        SYNC["Advisory sync<br/>in-memory OSV index"]
+        SYNC["Advisory sync<br/>read-only SQLite snapshot"]
         WORKER["Mirror worker<br/>in-process, supervised"]
     end
 
@@ -57,6 +58,9 @@ flowchart LR
     end
 
     OSV["OSV advisory exports"]
+    EPSS["EPSS score feed"]
+    PILOT["Écluse Pilot<br/>compile per ecosystem"]
+    S3["S3 advisory artifacts"]
 
     DEV -->|"packument / tarball / publish"| WEB
     WEB --> RULES
@@ -66,7 +70,10 @@ flowchart LR
     WEB -->|"publish (write): client token forwarded"| PUBT
     WEB -.->|"enqueue (best-effort)"| QUEUE
     RULES -.->|"reads index"| SYNC
-    SYNC -->|"periodic pull"| OSV
+    OSV --> PILOT
+    EPSS --> PILOT
+    PILOT -->|"publish snapshot"| S3
+    S3 -->|"periodic sync"| SYNC
     WORKER -->|"receive / ack"| QUEUE
     WORKER -->|"fetch artifact"| PUB
     WORKER -->|"token"| CRED
@@ -129,18 +136,17 @@ flowchart TD
 | [Observability](architecture/observability.md) | Opt-in OpenTelemetry/OTLP tracing and metrics, with Datadog optional. |
 | [Release and supply-chain operations](architecture/release-supply-chain.md) | The reproducible OCI image, the publish/attest chain (provenance + SBOM), and CVE and freshness scanning. |
 
-## Out of scope
+## Current limits
 
 - Package hosting or storage (delegated to the registries).
-- Mirroring to raw object storage (S3 / GCS). The mirror target is a registry and writes go
-  through `publishArtifact`.
+- Filesystem and S3 package backends are planned but not implemented. Mirror writes currently
+  use registry protocols. The S3 advisory-artifact store is a separate capability.
 - Web UI or admin API.
 - Re-specifying upstream registry protocols in the
   [OpenAPI spec](architecture/web-layer.md#openapi-spec): Écluse documents its coverage, not npm's
   full contract, which clients hardcode.
-- Non-npm adapters. The adapter registry, the mount model, and the protocol codec over the
-  shared publish transport accommodate them (see
-  [Multi-ecosystem mounts](architecture/web-layer.md#multi-ecosystem-mounts)). Only npm ships.
+- PyPI mirroring and publication are not implemented. PyPI metadata and distribution-file reads
+  ship alongside npm (see [Multi-ecosystem mounts](architecture/web-layer.md#multi-ecosystem-mounts)).
 - Cloud IAM validation at the proxy edge (a gateway concern).
 - Local on-disk caching of artifacts (the mirror retry window is acceptable).
 - GCP backends (see [Cloud backends](architecture/cloud-backends.md#cloud-backends)).

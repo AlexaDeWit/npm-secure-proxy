@@ -16,7 +16,7 @@ both:
 | Endpoint | What it reports | When it answers `503` |
 |---|---|---|
 | `GET /livez` | Process liveness: `200` while the process is healthy. On a process that runs no mirror worker that is the listener alone. | When the process is not healthy. Where a mirror worker runs, a stalled consume loop fails it. |
-| `GET /readyz` | Config loaded and the listener serving. | In exactly two cases: the instance is draining, or it is still starting up. |
+| `GET /readyz` | Whether the role can accept its work. | During startup or drain, before configured ecosystems complete their first advisory sync, and while Dredger's cap halt is latched. |
 
 The `/livez` body is a JSON object with two keys, in no guaranteed order: `status`, the same
 verdict the status code carries, and `lastPoll`, the mirror worker's last successful poll as an
@@ -29,16 +29,20 @@ store configured, that startup gate also waits for each ecosystem's first adviso
 one-way flip that never flaps back. Give a cold pod room for that first database download: a
 Kubernetes `startupProbe`, or a readiness `failureThreshold` sized for it. Pilot publishes an
 artifact for every ecosystem the configuration mounts, and readiness waits for each one's first
-sync.
+sync. If acquisition fails, the process stays alive and keeps polling. Readiness does not itself
+block direct requests. Partial readiness for healthy mounts is planned in
+[#1223](https://github.com/AlexaDeWit/Ecluse/issues/1223), not implemented. A successful first sync
+also does not prove the data is still fresh later: source-age refusal is tracked in
+[#1221](https://github.com/AlexaDeWit/Ecluse/issues/1221).
 
 The npm liveness probe `GET /npm/-/ping` answers locally with `200 {}`. `GET /npm/-/v1/search`
 returns `501` by design, because search is a discovery convenience, not an install path.
 `GET /npm/-/package/{package}/dist-tags` and the `PUT` and `DELETE` of
 `/npm/-/package/{package}/dist-tags/{tag}` also return `501`, because Écluse implements no mutable
 named pointer. A package's tags are in the metadata document Écluse serves, and the publication
-target owns setting and removing them. The mirror and Pilot roles export the same
-`/livez` and `/readyz` on `ECLUSE_SERVER__PORT`, and nothing else. With telemetry on, every role
-also opens a metrics listener on a second port, which co-located roles must not share
+target owns setting and removing them. Mirror, Pilot, and Dredger expose their health probes on
+`ECLUSE_SERVER__PORT`. A separate metrics listener appears only when telemetry is on and
+`OTEL_METRICS_EXPORTER=prometheus`. Co-located Prometheus listeners need distinct ports
 ([Telemetry](@/docs/operations.md#telemetry-opt-in)).
 
 ## Graceful shutdown and pod drain
@@ -88,16 +92,19 @@ Four of those names matter to Datadog specifically: `timestamp`, `status`, `mess
 `service` are its reserved log attributes, and its JSON preprocessing reads them unmodified.
 `env` and `version` are ordinary attributes any backend indexes.
 
-Bearer tokens render as a redacted placeholder, and on every running path Écluse reduces a URL to
-its host and port, so neither token material nor a signed query string reaches a log field. The
-boot-time configuration echo is the exception: it prints each configured endpoint as you gave it.
-That is safe, because the boot refuses a URL that carries a credential (see
-[Secrets](@/docs/configuration.md#secrets)).
+Typed bearer-token fields render as redacted placeholders. URL strings do not all receive that
+protection: Pilot records its source URLs in advisory metadata, and sync logs that metadata at
+`info`. Do not embed credentials in Pilot source URLs. The boot configuration echo also prints
+configured endpoint values. Use the dedicated [secret settings](@/docs/configuration.md#secrets)
+rather than putting secrets into URLs.
+
+The advisory metadata/logging defect is tracked in
+[#1248](https://github.com/AlexaDeWit/Ecluse/issues/1248).
 
 ## Alerting on `ERROR`
 
-**Point a monitor at `status: error` and page on it.** An `ERROR` line is a condition Écluse
-cannot resolve on its own, so each one wants a person. Among them:
+**Point a monitor at `status: error` and page on it.** These failures need operator attention,
+even when a later retry can recover. They include:
 
 - A sweep cycle that halted, or a Dredger latched and running no cycle at all.
 - A store that refused a delete, or never received one.
@@ -106,12 +113,11 @@ cannot resolve on its own, so each one wants a person. Among them:
 - A mirror job nothing else can capture, and an artifact whose bytes failed their digest.
 - A background loop that failed up and took the process with it.
 
-Nothing routine, expected, or self-healing is written at that level, so the volume is a signal on
-its own. Écluse absorbs a great deal without needing you, and that traffic logs below `error`:
+Use the severity together with the event and its repetition:
 
 | Status | What it means | What to do with it |
 |---|---|---|
-| `error` | Écluse cannot resolve it, and the condition persists until someone acts. | Page. |
+| `error` | A failed operation, exhausted budget, or halted role needs attention. Some conditions can recover on retry. | Page and check the affected role. |
 | `warn` | Écluse absorbed it and carried on degraded. An upstream it could not reach, a mirror job left to redeliver, a store call it is retrying, a malformed advisory entry it dropped, a background loop backing off. | Chart it, and alert on a sustained rate rather than on a line. |
 | `info` | What the run did: a completed sweep cycle, a version deleted, a mirrored artifact, a served package. | Index it, and read it back during an incident. |
 | `debug` | Per-request and per-entry detail. Verbose under load, and off by default. | Turn it on while you investigate. |
@@ -119,10 +125,14 @@ its own. Écluse absorbs a great deal without needing you, and that traffic logs
 A loop that keeps failing warns on every attempt, so `error` alone does not catch a slow death.
 The mirror worker is covered: a stalled consume loop fails `GET /livez`
 ([Health probes](@/docs/operations.md#health-probes)). Every other background loop needs a rate
-alert on the warnings carrying its name.
+alert on the warnings carrying its name. In particular, current steady advisory-fetch failures
+and exhausted rule lookups log at `warn`, not `error`. Monitor those sustained failures too.
+[#1230](https://github.com/AlexaDeWit/Ecluse/issues/1230) tracks ERROR-level outage reporting and
+admission evidence without a log on every serve. The current logs do not identify every package
+admitted after a skipped check.
 
-One `error` line is a known false positive. `ecluse pilot compile` run beside a live Pilot cannot
-bind the metrics listener, and does its work anyway
+A one-shot `ecluse pilot compile` using the same Prometheus port as a live Pilot can log a bind
+failure and still complete its compilation. This applies only when the Prometheus exporter is selected
 ([Telemetry](@/docs/operations.md#telemetry-opt-in)). Any other failure to bind that listener wants
 a look.
 
@@ -151,7 +161,7 @@ it, and a scrape never enters the proxy's request path, so it adds nothing to th
 `http.server.*` series. The listener runs only while telemetry is on, and a port it cannot bind
 is an error in the log rather than a failed start.
 
-**Give every co-located role its own port.** Each role starts its own listener, and they all read
+**Give every co-located Prometheus exporter its own port.** These exporters all read
 the same variable, so two on one host race for 9464. The loser logs the bind failure and serves
 nothing. A scraper pointed at that port then collects one role's series and sees no sign the
 others are missing, which reads on a dashboard as quiet rather than broken. So set a distinct
@@ -197,43 +207,72 @@ production traffic. Once warm, request coalescing absorbs spikes.
 
 ## Revoking a mirrored version (internal yank)
 
-The mirror store deliberately resists upstream yanks, so a benign yank does not break your
-installs. The cost is that a version later found malicious stays too, because Écluse never
-re-gates trusted content. Usually the problem resolves itself: once the public registry yanks the
-bad version, re-mirroring cannot reproduce its bytes, and you purge the stale copy at leisure.
-When your own scanning is ahead of the public yank, revoke in this order:
+An upstream yank does not revoke a trusted private copy. A new deny stops public admission and
+worker re-admission when it wins under the configured precedence, but private hits continue until
+the serving copies are removed. Deletion can lose the only remaining bytes, so identify the exact
+version and stores before acting.
 
-1. **Deny the identity** with a `DenyByIdentity` rule. The serve path stops admitting the
-   version, and the worker stops re-mirroring it.
-2. **Purge that version** from the mirror. `ecluse dredger` does this for you: the deny in step 1
-   is what it sweeps on. See [Running the Dredger](@/docs/dredger.md).
+1. Add the identity denial to the intended policy and roll it to the proxy, mirror worker, and
+   Dredger. Verify that it wins over any deliberate allow. Older workers and in-flight transfers
+   can still publish during the rollout.
+2. Remove the mirrored version from the mirror repository. Current
+   [Dredger](@/docs/dredger.md) can do this for eligible named denials, subject to its guards.
+3. Identify and remove retained mirror-derived copies from private read repositories. CodeArtifact
+   retains them independently of the mirror, so deleting the mirror alone is insufficient.
+   Use `DeletePackageVersions`, not disposal, for the reviewed CodeArtifact copies. Automated
+   B+C cleanup is planned in [#1227](https://github.com/AlexaDeWit/Ecluse/issues/1227).
+4. Verify both store inventories and authorised metadata/artifact reads after earlier writes
+   settle. Do not treat a permission error as proof of absence. Use fresh client state so an
+   already-cached artifact does not stand in for a registry read.
 
-The order matters. Purge alone is a treadmill, because the next install re-admits and re-mirrors
-a version still live upstream.
+Keep denial before deletion, and remove the source copy before retained downstream copies.
+Otherwise a verification read or an old writer can refill the private repository. One successful
+deletion or negative read does not establish that no late writer remains. The CodeArtifact
+[retention contract](https://docs.aws.amazon.com/codeartifact/latest/ug/repo-upstream-behavior.html)
+explains why retained copies outlive upstream deletion.
+
+Removing an allow alone is not revocation. If that leaves only deny-by-default, Dredger keeps the
+mirrored version. If it exposes a winning named deny, normal eligible removal applies. Installed
+or client-cached bytes remain outside registry revocation.
+
+### Policy rollout order
+
+Use the same intended configuration across roles. When tightening policy, update admission and
+writer roles before Dredger. When relaxing a deny, update Dredger before writers can rely on the
+new permission. These are ordering recommendations, not an atomic cutover requirement.
+
+Dredger reconciles eligible late copies through later sweeps. The current mirror-only sweep
+does not clean retained private copies automatically. If an old Dredger deletes the only bytes
+during a rollout, later policy agreement cannot restore them. The
+[threat model](@/docs/threat-model.md) records that accepted residual.
 
 ## Poison mirror jobs
 
-Some mirror jobs can never succeed: an artifact past `ECLUSE_LIMITS__MAX_ARTIFACT_BYTES`, a
-payload that no longer decodes, or a publish target that refuses it every time. On SQS, **attach
-a redrive policy with a dead-letter queue** to the mirror queue. The worker leaves such a message
+Some decoded mirror jobs cannot succeed: an artifact past `ECLUSE_LIMITS__MAX_ARTIFACT_BYTES`
+or a publication that remains refused. On SQS, **attach a redrive policy with a dead-letter queue**
+to the mirror queue. The worker leaves such a message
 undeleted, your policy moves it to the dead-letter queue, and there you can read it and work out
 what happened. At boot, Écluse reads the queue's redrive configuration. A queue with no policy
 draws a loud start-up `WARNING` that poison messages have no terminus, and when the probe itself
 fails, that warning names the missing `sqs:GetQueueAttributes` permission. In both cases the
 process boots.
 
-Without a dead-letter queue, nothing captures such a message. SQS redelivers it, and the worker
-re-fetches the artifact each time, until the retention window (up to 14 days) drops it unseen. So
-Écluse retires the job itself after `ECLUSE_QUEUE__MAX_RECEIVE_COUNT` deliveries: it writes an
+For a message the adapter decodes and delivers to the worker, Écluse applies
+`ECLUSE_QUEUE__MAX_RECEIVE_COUNT` even without a dead-letter queue. At that budget it writes an
 error log naming the job and the reason, and the `ecluse.mirror.jobs.processed` counter records
 it at `result="discarded"`. **Alert on that series**, because every discard is a job nothing else
 caught. That count is a floor. With a redrive policy attached whose own `maxReceiveCount` Écluse
 can read, it runs one delivery above that count, so your dead-letter queue always captures first
 and the discard path stays dormant. When the policy's count is unreadable the configured floor
-stands alone. A poison job therefore always lands somewhere visible: the dead-letter queue when you
-have one, the error log and the discard metric when you do not. Mirroring is demand-driven, so the
-next client request
-for that artifact re-enqueues the job, and it fails the same way until you fix the cause.
+stands alone. Those decoded jobs have a visible terminal signal through redrive or worker
+retirement. Mirroring is demand-driven, so another client request can enqueue the artifact again
+until you fix the cause.
+
+An undecodable SQS payload is different. The adapter rejects it before the worker receives a
+`QueueMessage`, so the worker's delivery budget, error log, and discard counter do not apply.
+The adapter logs the decode failure at `debug`, below the default `info` threshold, without
+dumping the payload. Configure SQS redrive to capture it. Without redrive it can repeat until
+queue retention removes it, with none of the per-job worker signals described above.
 
 ## Appendix: runtime-sizing arithmetic
 

@@ -76,7 +76,7 @@ compilation and exits: it fetches an ecosystem's advisory export, writes
 failure. `--out DIR` is required. The rest are optional:
 
 - `--ecosystem` selects the export (default `npm`).
-- `--source URL` overrides the configured `advisories.osvExportBaseUrl`.
+- `--source URL` supplies the complete export URL, replacing the ecosystem URL derived from `advisories.osvExportBaseUrl`.
 - `--epss-source URL` overrides the configured `advisories.epssFeedUrl`.
 - `--upload` also publishes the artifact to the advisory store, a full sync cycle in one
   invocation. Without a configured store it aborts at once.
@@ -111,10 +111,10 @@ unless you have a specific reason to diverge.
 3. **Mint the mirror-write token from the container role.** Declare the mirror target under the
    `codeArtifact` tag (`ECLUSE_MOUNTS__NPM__MIRROR_TARGET__CODE_ARTIFACT__URL`), and the worker
    mints a short-lived token under the task or instance role instead of carrying a static secret.
-   Scope that role **write-only** to the mirror store, and keep
+   Grant mirror repository reads for the presence probe and package publication, and keep
    `ECLUSE_MOUNTS__NPM__MIRROR_TARGET__CODE_ARTIFACT__TOKEN_DURATION` short, because this is Écluse's only
    standing credential and it writes the trusted store. Scope the mirror queue the same way.
-   Anyone who can write the queue can force a write to the trusted store, so grant only the serve
+   Anyone who can write the queue can request a mirror write, subject to worker admission. Grant only the serve
    role `SendMessage`, and only the worker
    `ReceiveMessage`/`DeleteMessage`/`ChangeMessageVisibility`. `ChangeMessageVisibility` is
    load-bearing, not optional: the worker uses it to hold a long publish and to back a
@@ -127,7 +127,7 @@ unless you have a specific reason to diverge.
    reachable inside the cluster is a common vulnerability. See
    [Edge authentication](@/docs/deployment.md#edge-authentication-and-client-credentials).
 5. **Fence egress, keep metadata reachable.** Default-deny outbound, then allow only your
-   upstreams, the mirror target, the metadata endpoint, and the advisory store when
+   upstream metadata and artifact hosts, the mirror target, the queue, identity endpoints, and the advisory store when
    `ECLUSE_ADVISORIES__URL` is set (the proxy needs `s3:GetObject` to sync it). Require IMDSv2
    with hop limit 1, and do not block the metadata endpoint, because Écluse needs it to mint
    credentials. See [Network egress](@/docs/deployment.md#network-egress).
@@ -143,13 +143,15 @@ The reasoning behind each choice, and the residual risks it accepts, is in the
 
 ## What a deviation costs
 
-Écluse still runs if you diverge, but every deviation trades away a protection, and one of them is
-**silent**: Écluse cannot detect it, so nothing warns you.
+Some deviations warn, while others refuse startup. The
+[endpoint collision table](@/docs/configuration.md#endpoint-collisions) gives the current outcomes.
+Private registry upstream wiring is different: Écluse cannot inspect it, so a public uplink there
+can bypass public admission without a warning.
 
 | Deviation | What you lose | Does anything warn you? |
 |---|---|---|
-| One store for two roles: a `mirrorTarget` equal to the private upstream, or a `publicationTarget` onto either | Provenance separation and clean post-incident scoping. The perimeter holds, but first-party and public-derived packages share one store | Yes, for four pairs. The proxy logs a boot warning when the mirror target resolves to the same registry as the private upstream, the public upstream, or the publication target, and when the private upstream resolves to the same registry as the public upstream. A publication target equal to the private upstream is the documented publish arrangement, so it raises nothing |
-| A private upstream that itself draws from public, say a CodeArtifact repo with the stock `npm-store` upstream to npmjs | The rules, integrity floor, and freshness quarantine, all nullified. Raw ungated packages reach clients through the trusted read path, behind the gate instead of through it | **No. Écluse cannot detect this one.** |
+| One store for two roles | Provenance separation and per-store governance can be lost | Depending on the pair, startup warns or refuses. Use the [collision table](@/docs/configuration.md#endpoint-collisions) rather than assuming every collapse is allowed |
+| A private upstream that itself draws directly from public | Public rules, quarantine, and the public-admission integrity floor are bypassed. The trusted listing floor still applies, but conventional private npm artifact hits bypass metadata admission | **No. Écluse cannot detect this wiring.** |
 | An open edge: `ECLUSE_SERVER__AUTH_TOKEN` unset | Écluse's own authentication layer. Access control leans entirely on your network boundary | Nothing fires, but the posture is your own explicit setting |
 | A static publish credential without an edge token | Nothing at runtime, because it never boots | Yes. The boot fails closed |
 | A static mirror-write secret | The short-lived token minted from the container role | Nothing fires. The secret is visible in the configuration you wrote |
@@ -210,6 +212,10 @@ whatever per-registry auth configuration that client keeps. Écluse forwards it 
 upstream, which authorises the caller, so what someone reaches through the proxy is what your
 registry already grants them. A caller holding no credential still installs public packages through
 the gate. The private set is what the credential unlocks.
+
+Public success does not prove the private credential worked. For non-first-party packages, current
+private 401/403 handling can fall back to public content.
+[#1244](https://github.com/AlexaDeWit/Ecluse/issues/1244) will replace that fallback with refusal.
 
 Two rules hold whatever ecosystem the client speaks:
 
@@ -309,8 +315,9 @@ file by file. A release disappears when no file of it survives. No configuration
 naming the running build. An upstream, a WAF, or a forward proxy that filters on the agent has to
 allow it.
 
-Provide the second layer at the platform, default-denying egress and allowing only your registries,
-mirror target, and the metadata endpoint:
+Provide the second layer at the platform, default-denying egress and allowing only the
+role-specific destinations below. Permit DNS through your resolver and telemetry to the configured
+collector when enabled:
 
 - **AWS**: security-group egress rules or network ACLs to the upstream and mirror CIDRs. Reach
   CodeArtifact and S3 over VPC endpoints. **Require IMDSv2 with hop limit 1**
@@ -321,20 +328,38 @@ mirror target, and the metadata endpoint:
 - **Service mesh (Istio/Linkerd)**: sidecar outbound policy `REGISTRY_ONLY`, each upstream a
   `ServiceEntry`, constrained by a `Sidecar` egress listener and an egress `AuthorizationPolicy`.
 
-Each role needs a different slice of that allowance, and only the proxy needs ingress at all:
+Only the proxy serves package-client traffic. Other roles expose health probes, and Prometheus
+adds a separate metrics listener only when that exporter is selected.
 
-| Role | Ingress | Egress allowlist | Credentials held |
+| Role | Registry or feed egress | Configured queue and advisory egress | Role credentials |
 |---|---|---|---|
-| `ecluse proxy` | Client traffic, behind the edge you front it with | The upstreams, the mirror target, the metadata endpoint, and the advisory store when `ECLUSE_ADVISORIES__URL` is set | The mirror-write credential, plus the advisory-store read (`s3:GetObject`) when that store is set. Nothing more |
-| `ecluse mirror` | None public (health probes only, for the orchestrator) | The public upstream, the mirror target, the mirror queue, the metadata endpoint, and the advisory store when `ECLUSE_ADVISORIES__URL` is set | The same as the proxy: the mirror-write credential and the advisory-store read |
-| `ecluse pilot` | None public | The OSV export host in `ECLUSE_ADVISORIES__OSV_EXPORT_BASE_URL` (default `osv-vulnerabilities.storage.googleapis.com`), the EPSS feed host in `ECLUSE_ADVISORIES__EPSS_FEED_URL` (default `epss.empiricalsecurity.com`), the metadata endpoint, and your object store | `s3:PutObject` to upload the advisory database |
-| `ecluse dredger` | None | The mirror target, the metadata endpoint, the advisory store when `ECLUSE_ADVISORIES__URL` is set, and the STS endpoint where the identity comes from there | The mirror-write credential, minted the same way the proxy mints it, because the Dredger reads and deletes through it, plus the delete permission on the mirror repository and the advisory-store read. [Running the Dredger](@/docs/dredger.md) has the action list |
+| `ecluse proxy` with embedded worker | Public/private metadata and artifact hosts, mirror repository, optional publication target | Queue send/receive/ack/visibility and redrive probe, advisory S3 read | Caller passthrough, mirror token with read/publication rights, queue rights, `s3:GetObject` |
+| `ecluse proxy --no-worker` | Public/private metadata and artifact hosts, optional publication target | Queue send and redrive probe, advisory S3 read | Caller passthrough, configured mirror-token mint still runs at boot, queue producer rights, `s3:GetObject` |
+| `ecluse mirror` | Public metadata/artifact hosts and mirror repository | Queue receive/ack/visibility and redrive probe, advisory S3 read | Mirror token with read/publication rights, queue consumer rights, `s3:GetObject` |
+| `ecluse pilot` | OSV export host and EPSS feed host | Advisory S3 upload, no mirror queue | `s3:PutObject` and its AWS identity |
+| `ecluse dredger` | Mirror repository metadata and its maintenance API | Advisory S3 read, no mirror queue | Token mint, mirror read/deletion and maintenance rights, `s3:GetObject` |
 
-**Do not block the metadata endpoint or internal ranges for the proxy itself.** Écluse reaches
-metadata through the AWS SDK to mint its instance-role credentials, so denying it breaks those
-credentials. IMDSv2 with hop limit 1 keeps the minting working while stopping a neighbour or
-forwarded request from reaching metadata through extra hops. The trust assumptions behind the
-credential split are in
+For the default public endpoints, npm metadata and artifacts use `registry.npmjs.org`. PyPI
+metadata uses `pypi.org`, while distributions use `files.pythonhosted.org`. Private artifact
+hosts depend on the selected backend. Pilot uses `osv-vulnerabilities.storage.googleapis.com`
+and `epss.empiricalsecurity.com` by default. It attempts the EPSS feed even when no EPSS rule
+is enabled.
+
+For SQS, producers need `SendMessage`. Consumers need `ReceiveMessage`, `DeleteMessage`,
+and `ChangeMessageVisibility`. Both forms attempt `GetQueueAttributes` at boot to read the
+redrive policy. Failure of that probe warns and uses the configured delivery budget rather than
+refusing startup. An in-memory queue needs no queue network access.
+
+Allow CodeArtifact API access for configured token minting, even on `proxy --no-worker`.
+That role does not perform the worker's mirror presence probe or publication. Dredger also
+uses the CodeArtifact maintenance API. The
+[permission table](@/docs/dredger.md#permissions) distinguishes repository, package, and
+token-mint scopes. Omit destinations for features not configured on that role.
+
+**Permit the identity endpoints your deployment uses.** The AWS credential chain can need IMDS,
+an ECS credential endpoint, or STS for an assumed role. On EC2, require IMDSv2 with hop limit 1.
+Allow configured private registry destinations without opening every internal range. The trust
+assumptions behind the credential split are in
 [Security posture](https://github.com/AlexaDeWit/Ecluse/blob/main/docs/architecture/security.md#trust-assumptions--credential-posture).
 
 Two Pilot details matter to the platform. It names the uploaded object

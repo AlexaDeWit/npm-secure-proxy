@@ -9,6 +9,12 @@ versions the mount's own rules now deny. Run it when your mirror must not keep s
 new advisory condemns, and read this page before you point it at a store, because deletion is
 permanent.
 
+The current Dredger targets the mirror repository only. A CodeArtifact private read repository
+can retain another copy after mirror deletion. Follow
+[the revocation procedure](@/docs/operations.md#revoking-a-mirrored-version-internal-yank) to
+account for those retained copies. Automated cleanup of both locations is planned in
+[#1227](https://github.com/AlexaDeWit/Ecluse/issues/1227), not implemented.
+
 The Dredger takes no ingress. It exposes only `/livez` and `/readyz` on `ECLUSE_SERVER__PORT`.
 
 ## What one cycle does
@@ -33,9 +39,9 @@ Each cycle:
    evaluates every version the store holds against the mount's whole rule set.
 5. Deletes only what a named decisive deny condemns.
 
-A cycle is therefore bounded by the listing for store size, and by advisory hits for metadata
-reads. A restart re-runs a cheap listing, and every advisory reaches every affected mirrored
-version within one cycle of landing.
+A cycle reads listings page by page and metadata for candidate names. A newly covered package can
+wait until the next cycle if its name was absent from the current candidate set. Store failures,
+consent, metadata failures, and the cap can delay or prevent deletion.
 
 Set the pace with the `dredger` group in your configuration. `chunkSize` and `chunkPause` set how
 many packages one chunk examines and how long it waits between chunks. `cyclePause` sets the wait
@@ -64,6 +70,12 @@ registry has already removed.
 The first-party belt shields every version under a namespace your `firstParty` key names, and the
 Dredger never even reads their metadata.
 
+Removing an allow is not itself a deny. A version stays when no named rule condemns it, including
+during a full walk. If removing an override exposes an existing winning deny, normal pruning
+applies. Current manifest-read failures keep the version even for an exact identity denial.
+[#1232](https://github.com/AlexaDeWit/Ecluse/issues/1232) tracks using sufficient identity evidence
+without unrelated manifest fields.
+
 ## Consent, and what the store is
 
 The Dredger deletes from a store only when that store carries the operator's own consent marker,
@@ -79,14 +91,13 @@ through the store backend's own handle.
 The Dredger never writes a consent marker. Placing one and removing it are yours alone, and the
 full walk's resumption marker is a separate tag key so a marker write cannot reach your consent.
 
-A store that refills itself from an upstream is not swept: deleting from a pull-through cache
-changes nothing, and the cycle halts saying so. The halt line names the backend, so an operator
-running two of them reads which store refused.
+A store classified as able to refill from an upstream is not swept. Deleting its local copy does
+not prevent another upstream fetch from recreating it, and the current cycle halts on that
+classification. The halt line names the backend.
 
-The Dredger also refuses to boot on a collapsed endpoint pair. It compares a mount's `mirrorTarget`
-against every mount's `publicUpstream` and `privateUpstream`, and against its own mount's
-`publicationTarget`. Two mounts sharing one multi-format repository as their mirror target is a
-legitimate deployment and is not refused.
+The Dredger also applies the [endpoint collision checks](@/docs/configuration.md#endpoint-collisions).
+Their comparison scope differs by endpoint role. A shared host alone is not a registry collision,
+except for the explicit public-host safeguards.
 
 ## The deletion cap
 
@@ -134,7 +145,10 @@ indefinitely.
 carries the backend's own rehearsal where one exists, and a call-nothing stub where none does, so
 the run cannot delete because nothing it holds can.
 
-It reads consent and classification and reports them. The cap applies as logging only: passing it
+It still requires the current consent and classification checks to pass before enumeration.
+Without consent, CodeArtifact can halt the cycle and Verdaccio can refuse boot. A consent-free,
+read-only preview is planned in [#1237](https://github.com/AlexaDeWit/Ecluse/issues/1237).
+The cap applies as logging only: passing it
 writes one line naming where a real run would have halted, and the rehearsal counts on, so its
 closing tally reports the full reach. It writes no walk marker. Its counter is `would_delete`,
 never `deleted`.
@@ -145,7 +159,8 @@ Use it before the first real sweep of a store, and after any rule change you are
 
 `ecluse dredger --once` runs one cycle and exits. It exits `0` when the cycle completed and `1`
 when it halted, with the reason on the same line, so a scheduler reads the outcome from the status.
-It composes with `--dry-run`, where only a store fault can halt the cycle.
+It composes with `--dry-run`, which retains consent and classification refusals as well as store
+faults. A dry run does not prove that the credentials can perform real deletion.
 
 A **cycling** Dredger reports nothing through its exit status. It stops when it is asked to,
 whatever its last cycle did, so a restart-on-failure supervisor does not resume dredging on its
@@ -153,9 +168,10 @@ own after a halt.
 
 ## What the Dredger tells you
 
-Every deletion writes a line naming the package, the version, the rule that denied it, and the
-advisory generation it was decided under. A deletion decided without a loaded advisory database
-reads that generation as `none`.
+Every deletion writes a line naming the package, version, denying rule, and advisory generation
+marker. A decision without a loaded database records `none`. During a concurrent database swap,
+that marker can differ from the lookup used by the rule.
+[#1204](https://github.com/AlexaDeWit/Ecluse/issues/1204) tracks the attribution correction.
 
 Whatever stops a cycle repeats an error line at **each cycle interval** until it clears or an
 operator restarts the Dredger. Nothing halts silently. That covers a withheld consent marker, a
@@ -175,18 +191,27 @@ The `ecluse.dredger.versions` counter carries one label, `result`, one of `exami
 
 ## Permissions
 
-Grant the Dredger the mirror repository and nothing else. It reads a store's metadata and deletes
-from it through the same mirror-write credential the proxy mints, so a credential scoped to the
-mirror target already scopes the Dredger.
+Scope the Dredger to its configured mirror. Token minting does not grant repository access by
+itself. The CodeArtifact role needs these permissions for a default candidate cycle:
 
-On AWS CodeArtifact, scope the policy to the mirror repository:
+| Action | Resource scope | Purpose |
+|---|---|---|
+| `codeartifact:GetAuthorizationToken` | Domain ARN | Mint the repository token |
+| `sts:GetServiceBearerToken` | `*` in the role's identity policy, restricted by `sts:AWSServiceName = codeartifact.amazonaws.com` | Permit token minting |
+| `codeartifact:ListPackages` | Mirror repository ARN | Enumerate package names |
+| `codeartifact:ListPackageVersions` | Package ARNs within the mirror | Enumerate versions |
+| `codeartifact:DescribeRepository` | Mirror repository ARN | Read store classification |
+| `codeartifact:ListTagsForResource` | Mirror repository ARN | Read consent and cursor tags |
+| `codeartifact:ReadFromRepository` | Mirror repository ARN | Read package metadata for rule evaluation |
+| `codeartifact:DeletePackageVersions` | Package ARNs within the mirror | Delete selected versions |
 
-- the token mint, `codeartifact:ListPackages`, `ListPackageVersions`, `DescribeRepository`, and
-  `ListTagsForResource` for reading,
-- `codeartifact:DeletePackageVersions` for the deletion itself.
+The mirror worker needs the same token-mint permissions, repository reads for its presence probe, and
+`codeartifact:PublishPackageVersion` on package ARNs. It does not need Dredger's deletion grant.
+On CodeArtifact, Dredger does not need publication permission. See the
+[action/resource reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_codeartifact.html)
+and [token requirements](https://docs.aws.amazon.com/codeartifact/latest/ug/tokens-authentication.html).
 
-A deployment that runs only the default cycle needs nothing more. **The full walk needs one extra
-permission**, because it writes the resumption marker:
+The full walk also needs cursor-write permissions:
 
 - `codeartifact:TagResource` and `codeartifact:UntagResource` on the mirror repository ARN,
   conditioned on the key family the Dredger writes:
@@ -214,19 +239,21 @@ package when its last version is removed. Otherwise it edits the package documen
 the version's tarball. Verdaccio does not enforce the document revision on these writes, so
 either path can lose a concurrent publish of another version of the same package.
 
-**A public version that entered the mirror before you declared its namespace is unreachable.** The
-first-party belt shields every version under a declared namespace, so such a version stays and your
-private upstream keeps serving it. When you declare a namespace, check the mirror for existing
-versions under it and remove them by hand.
+**Pre-declaration public copies remain served and protected from Dredger.** Before declaring a
+namespace first-party, review its existing copies in both the mirror and the private read
+repository. Distinguish public-derived copies from genuine private releases and remove only the
+unwanted versions you identify. Apply the declaration to every role, then verify both stores again
+after older writes settle. Dredger cannot remove shielded leftovers for you, even under an identity
+deny. Do not delete the whole namespace merely because it now has first-party status.
 
 **A store that answers a metadata read with an error keeps the package for that cycle.** The read
 does not distinguish a package the store no longer holds from a server-side failure, and both keep
 every version of that package. A transient failure is re-read on the next cycle rather than retried
 within the same one.
 
-**An advisory database that is swapped part way through a bucket defers one cycle.** A package the
-new generation newly covers is picked up by the next cycle. Every other difference between the two
-generations keeps the version.
+**An advisory swap does not give the whole bucket one immutable rule snapshot.** Candidate names
+come from the bucket's acquired database, while each version's rule evaluation can see a newer
+generation. A newly covered name absent from the candidate set waits for a later cycle.
 
 **A cycle needs no advisory database.** With an advisory rule active and no generation loaded, the
 advisory half of the candidate set is empty, the identity half still sweeps, and the cycle writes

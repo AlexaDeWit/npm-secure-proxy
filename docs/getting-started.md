@@ -26,13 +26,12 @@ exact Nix-store closure (GHC and C libraries from `flake.lock`), use the Nix out
 | Task | Command |
 |------|---------|
 | Build the `ecluse` binary | `task nix-build` (`nix build`) → `./result/bin/ecluse` |
-| Evaluate the flake, build the Haddock check | `task nix-check` (`nix flake check`) |
+| Evaluate the flake and build its checks | `task nix-check` (`nix flake check`) |
 
-`nix flake check` builds the one flake check, `checks.docs`: the library Haddock, so a broken doc
-comment fails it. The CI `docs` job builds the same check. The tests, formatting, and linting are
-not flake checks. They run through `task` against the incremental cabal build, which is what gates
-in CI. Three could not be flake checks even in principle: `ecluse-integration` (needs Docker),
-`ecluse-smoke` (live network), and Semgrep (`--config auto` fetches rules over the network).
+`nix flake check` builds the `docs`, `freeze-sync`, and `amazonka-lockstep` checks. The first
+builds library Haddock. The others verify the dependency locks described below. Test suites,
+formatting, and linting run through separate `task` targets. The authoritative CI tiers and their
+external-service requirements are in [Testing Strategy](testing.md#what-gates-and-what-doesnt).
 
 > **Flakes only see git-tracked files.** `git add` new sources before `nix build` /
 > `nix flake check`. Otherwise they're invisible, and a build that references them (via the cabal
@@ -71,11 +70,13 @@ can parse. Versions themselves move only through the flake.
 functions, one `Ecluse.<Area>` namespace per area, and when a `.Types` split is justified. This
 section records the current layout and one project-specific pattern.
 
-- **Two libraries behind one `ecluse.cabal`.** `ecluse-core` (`core/src`, `Ecluse.Core.*`) is the
-  pure capability core. `ecluse` (`src`, `Ecluse.*`) is the application shell that composes it into a
-  running proxy: config, the `Env` composition root, logging, the WAI app, and telemetry.
-  `app/Main.hs` is the executable. The build enforces the boundary: the core's unit suite cannot
-  depend on the app library. See
+- **Three application libraries behind one `ecluse.cabal`.** `ecluse-core` (`core/src`,
+  `Ecluse.Core.*`) owns the capability core. `ecluse-runtime` (`runtime/src`, `Ecluse.Runtime.*`)
+  owns runtime adapters such as cloud clients, telemetry, logging, and server hosting.
+  `ecluse` (`src`, `Ecluse.*`) owns configuration and composes those capabilities into executable
+  roles. `app/Main.hs` is the executable entry point. Tool and test-support libraries are separate
+  from these three application libraries. The core unit suite cannot depend on the application
+  library. See
   [README, Project structure](../README.md#project-structure).
 - **Handles are records of functions, selected at one composition root.** A swappable backend
   (registry protocol, mirror queue, credential provider) is a record whose fields are functions: the

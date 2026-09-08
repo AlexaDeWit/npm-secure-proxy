@@ -17,8 +17,8 @@
 server:
   # TCP port, 0 to 65535. 0 binds an OS-assigned ephemeral port. Every role listens
   # here: the proxy serves its mounts and its probes, and the worker roles (mirror,
-  # pilot) serve /livez and /readyz alone. OTEL_METRICS_EXPORTER=prometheus
-  # selects the scrape transport and adds a second listener on its own port, addressed
+  # pilot, dredger) serve /livez and /readyz alone. With telemetry enabled,
+  # OTEL_METRICS_EXPORTER=prometheus adds a scrape listener on its own port, addressed
   # by OTEL_EXPORTER_PROMETHEUS_HOST and OTEL_EXPORTER_PROMETHEUS_PORT rather than by a
   # key here.
   port: 8080

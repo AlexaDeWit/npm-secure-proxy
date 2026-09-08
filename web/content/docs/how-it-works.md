@@ -6,9 +6,9 @@ weight = 1
 
 Écluse is a proxy you put in front of public package registries to protect the builds that install
 from them. Point your CI and developer tooling at Écluse instead of at a public registry. Écluse
-fetches from that registry on their behalf and decides which versions a build may install. The npm
-registry is the first one supported, and any client that speaks its protocol works, such as npm,
-pnpm, yarn, or bun.
+fetches from that registry on their behalf and decides which versions a build may install. npm
+supports reads, mirroring, and first-party publication. PyPI supports project-index and distribution
+reads, but not mirroring or publication.
 
 A new public version waits in a quarantine, seven days by default, before a build can install it.
 Most malicious publishes are found and pulled within days, so the wait alone sidesteps them, with
@@ -37,14 +37,14 @@ other tags take a static token you supply. Écluse hosts no packages itself.
 
 ### The registry roles
 
-Écluse sees registries by role, and each role is a URL on a mount. A mount is one ecosystem
-(`npm` today), served under its own path prefix (`/npm/`).
+Écluse sees registries by role, and each role is a URL on a mount. Each ecosystem gets its own
+path prefix: `/npm/` or `/pypi/`.
 
 | Role | What it does | Trust | Required? |
 |------|--------------|-------|-----------|
-| Public upstream | The registry Écluse gates | Never trusted blindly | Defaults to `registry.npmjs.org` |
-| Private upstream | Serves your own packages first | Trusted | No; without it, a pure public gate |
-| Mirror target | Receives admitted public versions | Write-only | No; declaring it makes the mount a mirror |
+| Public upstream | The registry Écluse gates | Subject to admission | Defaults to `registry.npmjs.org` for npm and `pypi.org` for PyPI |
+| Private upstream | Serves your own packages first | Trusted | No. Without it, a pure public gate |
+| Mirror target | Receives admitted npm versions and answers presence probes | Operator-controlled | No. Declaring it makes the npm mount a mirror |
 | Publication target | Receives your `publish` requests | Trusted | Opt-in |
 
 These are roles, not necessarily separate servers. The
@@ -53,7 +53,8 @@ and explains what you lose when two share one.
 
 ### A request, step by step
 
-A client asks for a package's version listing, then for a tarball.
+For npm, a client requests a version listing and then a tarball. PyPI reads use project indexes
+and distribution files instead, with no mirror or publication step.
 
 {{ diagram(name="request-flow", alt="A client talks only to Écluse, which fetches the private upstream and the public registry in parallel and queues a background mirror job to the mirror target.") }}
 
@@ -68,8 +69,15 @@ A client asks for a package's version listing, then for a tarball.
 3. **A publish.** Publishing stays off until you configure a publication target. With one, Écluse
    refuses any name outside the mount's first-party namespaces before it writes upstream.
 
-No rule ever re-gates a version your private registry already holds: only the trusted integrity
-floor applies to it.
+Private versions do not re-enter public admission. Private metadata passes the trusted integrity
+floor, but a conventional private npm artifact hit bypasses that metadata path.
+Those reads rely on the client's integrity checks. Removing an allow does not revoke a mirrored
+version unless a named deny becomes decisive. See
+[Revoking a mirrored version](@/docs/operations.md#revoking-a-mirrored-version-internal-yank).
+
+The current npm mirror writer omits dependency and executable fields from its published manifest.
+[#1205](https://github.com/AlexaDeWit/Ecluse/issues/1205) tracks that defect. Until corrected,
+do not assume a fresh install from the mirror reproduces the public package's dependency metadata.
 
 ### The policy
 

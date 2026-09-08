@@ -254,9 +254,10 @@ reader ([`Ecluse.Core.Osv.Schema`](../../core/src/Ecluse/Core/Osv/Schema.hs)), s
 the artifact as SQLite's `user_version`. A mismatch keeps the last-good database and alarms.
 
 The artifact is **immutable and rebuilt from scratch** on every compilation, so there are no
-migrations, only a read-compatibility contract. The epoch moves only for a breaking change. An
-additive change (a new column or table) does not bump it, because readers select explicit
-columns. What the reader requires is a separate question from what the epoch names: within epoch 3
+migrations, only a read-compatibility contract. Advance the epoch for an incompatible table shape
+or an incompatible meaning of stored values, even if the columns remain unchanged. A compatible
+addition does not bump it, because readers select explicit columns. What the reader requires is a
+separate question from what the epoch names: within epoch 3
 the reader requires `severity` and `epss_score` on `package_vulnerability_ranges`, so an artifact
 missing a required column, or carrying it under a different declared type, fails schema
 conformance (`CveDbSchemaNonConformant`) and the last-good database keeps serving.

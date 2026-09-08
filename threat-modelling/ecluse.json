@@ -1267,7 +1267,7 @@
                   "title": "Undetected artifact substitution across upstreams",
                   "type": "Tampering",
                   "description": "The merge flags an integrity divergence when the private and public copies of a version contradict on a shared digest algorithm. A weak-only or absent digest could let a substituted artifact pass undetected and reach the client as the trusted copy. So could a flaw in the divergence key.",
-                  "mitigation": "\u00c9cluse admits a public version only if it carries a digest that meets the integrity floor: a uniform SHA-256 default, hard-floored. Divergence compares each digest's asserted algorithm, not a bucketed tag. The merge detects a real same-version contradiction on a shared algorithm, and the serve path consumes it. \u00c9cluse logs it at WARNING, naming the package, the contradicting versions, and their digests, and meters it as ecluse.registry.merge.divergence. A substitution therefore surfaces, and the merge never silently reconciles it. The trusted copy always wins the served bytes. The operator's ECLUSE_INTEGRITY__DIVERGENCE_POLICY then decides whether \u00c9cluse also withholds the contested version from the listing (fail-closed) or serves it with the alarm (warn, the default). Residual: warn detects without withholding, so an operator who wants prevention rather than detection must set fail-closed. The trusted-floor path is deliberately operator-loosenable, trading strictness for availability, and that is the remaining way a weak digest is accepted. A serve-only mount with no private upstream, the pure public gate, has a single origin, so cross-upstream divergence detection is structurally absent. That is an accepted residual of that sub-shape. A serve-only mount that reads a private upstream keeps the detection unchanged.",
+                  "mitigation": "Public admission requires the configured integrity floor, hard-floored at SHA-256. Divergence compares shared asserted algorithms and logs detected conflicts at WARNING with a bounded-cardinality metric. The private copy wins served bytes. Current fail-closed handling removes versions from listings but does not stop direct private artifact reads. The owner chose removal of that listing-only option in #1226, retaining private preference and alarms. It is not implemented. A disagreement proves neither copy correct, and a damaged private copy can remain served. No conflict quarantine or divergence-only deletion is required. #1220 fixes public-policy filtering that can discard conflict evidence before comparison. Private 401/403 can also cause independently gated public fallback. #1244 will refuse that substitution while preserving genuine 404 fallback. Those fixes remain unimplemented. Keep independent integrity verification, the operator-loosenable trusted floor, and first-party private-only routing. A single-origin mount has no cross-origin divergence comparison.",
                   "modelType": "STRIDE",
                   "id": "0ec10e5e-0000-4000-8000-00000000010b"
                 },
@@ -1277,7 +1277,7 @@
                   "severity": "High",
                   "title": "Private-upstream aggregation admits the public registry, bypassing the gate",
                   "type": "Tampering",
-                  "description": "The recommended topology unions the trusted stores, first-party A and the sanitised mirror B, into the pull-through read endpoint C at the registry level. CodeArtifact upstream relationships are one such mechanism. If that aggregation also holds a direct connection to the upstream registry, raw public packages reach clients through C as a trusted source. They skip \u00c9cluse's gate entirely: the rules, the integrity floor, and the freshness quarantine. The same upstream-merger mechanism that makes the ideal topology work makes this the natural misconfiguration. A CodeArtifact repository's default npm-store upstream to npmjs is exactly this shape.",
+                  "description": "The recommended topology unions the trusted stores, first-party A and the sanitised mirror B, into the pull-through read endpoint C at the registry level. CodeArtifact upstream relationships are one such mechanism. If that aggregation also holds a direct connection to the upstream registry, raw public packages reach clients through C as a trusted source. They skip \u00c9cluse's gate entirely: the public admission rules, public integrity floor, and freshness quarantine. Private metadata still passes the trusted integrity floor. Conventional private npm artifact hits do not apply a serve-time floor. The same upstream-merger mechanism that makes the ideal topology work makes this the natural misconfiguration. A CodeArtifact repository's default npm-store upstream to npmjs is exactly this shape.",
                   "mitigation": "The control is an operator-architecture invariant, documented in the registry model and the Golden Path. The aggregating private upstream composes trusted stores only, first-party plus \u00c9cluse's sanitised mirror, and never carries a direct public upstream. Public content enters only through \u00c9cluse's gate. \u00c9cluse cannot detect a violation: the private upstream is trusted by construction, and its upstream wiring sits outside the proxy. The control is therefore operator discipline and this documented invariant, not a structural check.",
                   "modelType": "STRIDE",
                   "id": "0ec10e5e-0000-4000-8000-00000000010f"
@@ -1546,10 +1546,10 @@
                   "number": 13,
                   "status": "Open",
                   "severity": "Medium",
-                  "title": "Malicious mirrored version persists and is served as trusted (no automatic post-ingestion revocation)",
+                  "title": "Mirrored versions remain trusted until eligible pruning succeeds",
                   "type": "Tampering",
-                  "description": "\u00c9cluse mirrors approved public versions into Registry B and, by design, resists upstream yanks so a benign yank does not break installs. The cost is that a version later found malicious persists in B and is served as trusted. The merge serves the private origin unfiltered by the rules. Nothing removes it automatically: neither an upstream yank nor a rules change reaches an already-mirrored artifact.",
-                  "mitigation": "The freshness quarantine (`AllowIfOlderThan`) is the primary defence. It delays serving a new version until advisories have time to surface, so the rules deny most malicious versions at admission, before any mirroring. This threat is the residual for a version found bad after it cleared the quarantine and was mirrored. Detection is delegated: operator scanning of Registry B, upstream advisories, and security-holding signals decide what to revoke. Enforcement is layered across the version's lifecycle. The hard deny-by-identity rule (DenyByIdentity) halts re-admission on the serve path and re-mirroring at the worker's ingest re-check. That is the immediate, surgical stop, and it also breaks the re-mirror treadmill. An automated reaper, the \u00c9cluse Dredger, must continually prune already-mirrored versions that the shared rules engine now denies, on a named decisive deny that is advisory-driven or identity-driven and never an age condition, so recovery follows a public alert without an operator step. It is required to run as a separate service that shares the core rules engine and exposes only its liveness and readiness probes. The operator can also purge a version from Registry B directly. The rules never run on trusted content, so a purge is what removes the already-mirrored copy. Order the two as deny then purge, so demand does not re-mirror during the purge. A purge alone is a treadmill while the version is still live upstream. The typical pattern is the inverse. An upstream yank or security hold removes or changes the bytes first. Re-mirroring then cannot reproduce them, and a purge clears the stale copy. Irreducible residual: a malicious version with no public advisory cannot be reaped, because there is nothing to detect on. That is the bound the freshness quarantine exists to provide. Retained pull-through copies in the private upstream can outlive removal from the mirror, and their safe removal is future work pending verification against a real deployment. A serve-only mount has no trusted store of mirrored versions at all. Every serve re-gates under current policy, so a rules change or a fresh advisory takes effect immediately. This threat's surface exists only where a mirrorTarget is declared.",
+                  "description": "Private reads trust previously mirrored versions without repeating public admission. Later advisory changes, removal of an allow, or an upstream yank do not themselves remove those copies. Current Dredger can prune named-denied versions from B. CodeArtifact can retain a serving copy in C after B removal.",
+                  "mitigation": "Public admission and the worker's re-evaluation apply configured rules before mirroring, and the worker verifies bytes before publication. A winning named deny prevents new admission when its required evidence is available. Current Dredger deletes eligible B versions on a named decisive denial, subject to consent, first-party protection, and caps. #1227 extends actual-inventory scans and deletion to approved retained copies in C, using DeletePackageVersions on both B and C, never disposal. That extension is not implemented. Removing an allow alone does not revoke prior admission (#1245). If removal exposes a winning existing deny, normal eligible pruning applies. Explicit onUnavailable: skip may permit mirroring through another allow, and recovery alone does not revoke the copy (#1231). #1230 adds admission evidence and ERROR-level outage reporting without per-serve duplication. Planned #1221 staleness refusal is separate and cannot be bypassed by an advisory rule's skip setting. Late-transfer and rollout residuals are accepted in threats 110 and 109. Repeated successful scans provide eventual cleanup once roles agree and old writes finish, not immediate revocation. Without functioning, authorised pruning, retained content can remain indefinitely. A serve-only mount can still read trusted private copies even without its own mirror target.",
                   "modelType": "STRIDE",
                   "id": "0ec10e5e-0000-4000-8000-00000000010d"
                 }
@@ -1781,7 +1781,7 @@
                   "title": "Caller credential leak to the public upstream",
                   "type": "Information disclosure",
                   "description": "The upstream registry is attacker-influenceable and must never receive a caller's credential. A failure to strip the caller token on the public fetch would disclose a live CodeArtifact token to public npm. So would following a cross-host 3xx with the bearer still attached, to an attacker-chosen redirect target, over the unguarded private manager.",
-                  "mitigation": "\u00c9cluse strips the caller credential before every public fetch and queries the registry anonymously. A credential-bearing request never follows a redirect: the shared parse entry seals every request it hands back with redirectCount=0, and the credential attach re-applies that seal, so no adapter can obtain an unpinned request. That matters because the http-client in use does not drop Authorization on a cross-host redirect.",
+                  "mitigation": "\u00c9cluse strips caller credentials from public fetches. Credential-bearing requests do not follow redirects: the shared parse entry and credential attachment seal redirectCount=0. The private path still forwards caller credentials. A same-mount private/public repository collision currently warns rather than refusing, so the private path can reach the endpoint also declared public. #1243 will turn the existing SameMount/ByRegistry warning into refusal. That change is not implemented. Distinct repositories sharing a host remain valid.",
                   "modelType": "STRIDE",
                   "id": "0ec10e5e-0000-4000-8000-000000000104"
                 },
@@ -1814,7 +1814,7 @@
                   "title": "Dependency confusion through a first-party namespace on the public upstream",
                   "type": "Spoofing",
                   "description": "A mount declares the namespaces the deployment owns. An attacker registers a package on the public upstream under a name, scope, or prefix inside one of them, choosing a name the private store does not carry, or a version of one it does. Without the privilege the public leg would answer for that name: the packument merge would fold the public document in, the artifact path would stream its bytes after a private miss, and the mirror would write the admitted version into the deployment's own store. A build resolving a first-party dependency would install the attacker's package. That is dependency confusion, and the public leg is where it enters.",
-                  "mitigation": "A first-party name has one authority, the private upstream. The composition root derives one predicate from the mount's declaration and hands the same value to every consumer, so no two of them can disagree about which names are privileged. The packument pipeline fetches the private origin alone for such a name, so no public document is fetched and none can be merged. The artifact pipeline ends a private miss there rather than falling through to the public leg. Nothing first-party is mirrored, because the mirror only enqueues a version the public leg admitted. A private miss is a 404, so no public package stands in for one the deployment owns. The declaration is parsed once at load into a closed per-ecosystem sum: npm matches a scope exactly, so @acme-evil does not satisfy @acme, and PyPI matches a PEP 503 canonical name exactly or a canonical prefix that stops at the separator, so acme-* covers acme-tools and not acmeco. An empty list is refused at load. Residual: a namespace the deployment has not declared carries no privilege, and a name the deployment owns but does not publish privately is unreachable rather than served from public.",
+                  "mitigation": "A declared first-party name resolves only through the private upstream. Metadata does not fetch or merge the public origin, and artifact reads do not fall back publicly after a private miss. The worker rejects queued public jobs under its current first-party predicate. npm scopes match exactly, and PyPI canonical names or separator-bounded prefixes define the privilege. Empty declarations are refused. Each role derives this from its own loaded configuration, so rollouts can leave old workers using the earlier predicate. Public-derived copies retained before declaration remain privately served and protected from Dredger, including against identity denial. The owner retained this behaviour in #1229. Operator guidance covers review of B and C copies, explicit removal of reviewed unwanted content, and verification after older writes settle. See https://ecluse-proxy.com/docs/dredger/#known-limits . No automatic namespace quarantine, cleanup, or override of the first-party guard is selected. Undeclared namespaces receive no first-party protection.",
                   "modelType": "STRIDE",
                   "id": "0ec10e5e-0000-4000-8000-000000000126"
                 }
@@ -2231,9 +2231,20 @@
                   "title": "Mirror-write credential is a standing privilege over the trusted store",
                   "type": "Elevation of privilege",
                   "description": "The mirror worker holds \u00c9cluse's only standing self-minted credential. It carries write access to the mirror store (Registry B), which feeds the trusted read path. A worker compromise, or any bypass of the admission gate, could write attacker-chosen bytes into the trusted store and poison future reads.",
-                  "mitigation": "Containment of this standing privilege rests on least privilege at the store. Under the `codeArtifact` tag the write token is minted from the container or task role and bears that role's own permissions, so containment is an access policy scoped write-only to the mirror store rather than a token-level scope, and the lifetime is short, capped by CodeArtifact at 12h. Under `registry` and `verdaccio` the write is the operator's static token, so containment is an account of the store's own: a dedicated user whose package rights cover the mirror store and nothing else. A store whose only control plane is the ecosystem protocol offers no split between writing and deleting, so on such a store this one credential also removes versions, and a compromise of the worker can empty the mirror as well as poison it. The publish runs with redirectCount=0, because the shared transport seals every request an adapter's codec returns, whether or not that codec routes through the credential attach. The mirror queue sits inside the same trust boundary and is isolated and managed at the infrastructure level. A job is unauthenticated data that directs the worker to fetch and publish, so queue-send access is equivalent to trusted-write access. Scope the queue's IAM so only the serve role enqueues (SendMessage) and only the worker receives and acks. \u00c9cluse relies on access control for message authenticity, deliberately, rather than on signatures. That is the standard pattern for an internal single-producer, single-consumer queue. The worker's own attack surface is small. It hashes the fetched bytes and forwards them unchanged, with no decompression and no tarball parsing. A malicious artifact is therefore a poor code-execution vector. The dist.integrity check is anti-tamper-in-transit and anti-downgrade. It fails closed when the strongest present digest is in an uncomputable algorithm, and never downgrades to a forgeable weaker one. It proves the bytes match the upstream's asserted digest, so it catches back-fill corruption but not a hostile upstream or a worker compromise. Admission-gate soundness therefore bounds the poisoning of future reads, together with the role's blast radius and queue access control, not the integrity check. The trusted store is only as clean as what the gate admits, and only the gate may enqueue. A serve-only mount, with no mirrorTarget declared, removes this surface entirely. It holds and mints no write credential, and with zero mirrored mounts the process builds no mirror queue and starts no worker.",
+                  "mitigation": "Containment of this standing privilege rests on least privilege at the store. Under the `codeArtifact` tag the write token is minted from the container or task role and bears that role's own permissions, so containment is an access policy granting mirror repository reads and package publication rather than a token-level scope, and the lifetime is short, capped by CodeArtifact at 12h. Under `registry` and `verdaccio` the write is the operator's static token, so containment is an account of the store's own: a dedicated user whose package rights cover the mirror store and nothing else. A store whose only control plane is the ecosystem protocol offers no split between writing and deleting, so on such a store this one credential also removes versions, and a compromise of the worker can empty the mirror as well as poison it. The publish runs with redirectCount=0, because the shared transport seals every request an adapter's codec returns, whether or not that codec routes through the credential attach. The mirror queue sits inside the same trust boundary and is isolated and managed at the infrastructure level. A job is unauthenticated data that directs the worker to fetch and publish, so queue-send access is equivalent to trusted-write access. Scope the queue's IAM so only the serve role enqueues (SendMessage) and only the worker receives and acks. \u00c9cluse relies on access control for message authenticity, deliberately, rather than on signatures. That is the standard pattern for an internal single-producer, single-consumer queue. The worker's own attack surface is small. It hashes the fetched bytes and forwards them unchanged, with no decompression and no tarball parsing. A malicious artifact is therefore a poor code-execution vector. The dist.integrity check is anti-tamper-in-transit and anti-downgrade. It fails closed when the strongest present digest is in an uncomputable algorithm, and never downgrades to a forgeable weaker one. It proves the bytes match the upstream's asserted digest, so it catches back-fill corruption but not a hostile upstream or a worker compromise. Admission-gate soundness therefore bounds the poisoning of future reads, together with the role's blast radius and queue access control, not the integrity check. The trusted store is only as clean as what the gate admits, and only the gate may enqueue. A serve-only mount, with no mirrorTarget declared, removes this surface entirely. It holds and mints no write credential, and with zero mirrored mounts the process builds no mirror queue and starts no worker.",
                   "modelType": "STRIDE",
                   "id": "0ec10e5e-0000-4000-8000-000000000107"
+                },
+                {
+                  "number": 110,
+                  "status": "Accepted",
+                  "severity": "Low",
+                  "title": "An admitted mirror transfer can finish after an advisory changes",
+                  "type": "Tampering",
+                  "description": "The worker re-evaluates queued work before downloading the artifact and verifies its bytes before publishing. An advisory can change after that check. The pending transfer can then publish a version the new evidence denies, including after Dredger removes an earlier copy, if the backend permits recreation. A later private read trusts the resulting copy until eligible cleanup succeeds.",
+                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07 in #1235. Retain the existing worker re-evaluation and byte verification. Do not add another last-moment rule check, cancellation barrier, or distributed write coordination for this timing window. The owner considers the transfer a seconds-scale operation relative to advisory propagation, which can take hours before new evidence reaches the proxy. These are operational expectations, not measured latency bounds from the audit. Admission before advisory evidence is available is already an accepted limit of the model. Subsequent Dredger cycles reconcile eligible late publications under current evidence and existing guards. Current pruning targets B only. The proposed B+C cleanup in #1227 is required for retained downstream copies and remains unimplemented. This acceptance does not promise immediate revocation or waive integrity verification, intentional rule precedence, consent, or first-party protection. The local probe established publication-callback ordering, not production frequency or physical registry refill. See https://github.com/AlexaDeWit/Ecluse/issues/1235 .",
+                  "modelType": "STRIDE",
+                  "id": "bd6136ad-e767-424b-bda4-53144a8a7f10"
                 },
                 {
                   "number": 22,
@@ -2667,11 +2678,11 @@
             "data": {
               "type": "tm.Process",
               "name": "\u00c9cluse Pilot\n(Ingestion Pipeline)",
-              "description": "Pilot is an unopinionated data ingestion pipeline. It fetches vulnerability data and delivers an optimised osv.db to S3. The proxy therefore never queries osv.dev on the critical path and never meets its rate limits. Pilot makes no security or blocking decision. The proxy's rules engine is the sole opinionated enforcement point. Only the rules engine evaluates that data, for example to block on CVE severity or an EPSS score, or to fast-lane a remediation package.",
+              "description": "Pilot fetches configured OSV exports and the independent EPSS score feed, compiles per-ecosystem SQLite artifacts, and publishes them to S3. It produces advisory evidence rather than package-admission decisions. Proxy, mirror-worker, and Dredger roles use the shared rules engine against their loaded artifacts. Current Pilot compilation requires a successful EPSS feed. Configuration-dependent optional EPSS failure is planned in #1224.",
               "outOfScope": false,
               "isTrustBoundary": false,
               "reasonOutOfScope": "",
-              "hasOpenThreats": false,
+              "hasOpenThreats": true,
               "handlesCardPayment": false,
               "handlesGoodsOrServices": false,
               "isWebApplication": false,
@@ -2711,17 +2722,197 @@
                   "id": "c87367bd-fc3f-4792-94b6-8db459011823"
                 },
                 {
+                  "number": 111,
+                  "status": "Accepted",
+                  "severity": "High",
+                  "title": "Incorrect EPSS source scores become authoritative policy evidence",
+                  "type": "Spoofing",
+                  "description": "Pilot trusts the configured EPSS feed as the authority for its scores, separately from OSV vulnerability records. A compromised or incorrect source can supply plausible scores that pass validation. An overstated score can cause an EPSS denial and eligible Dredger deletion. An understated score can fail to trigger an EPSS denial. Other configured rules still apply. Transport and schema validity do not establish the accuracy of a predictive score.",
+                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07 in #1238, following the separate-entry requirement in #539. Rely on the configured EPSS source without adding independent verification of score truth. HTTPS, bounded fetching, parsing, and score validation constrain transport and malformed-input failures, not plausible source errors. This acceptance does not waive completeness, availability, or freshness handling. #1224 specifies unconditional enrichment attempts with configuration-dependent failure. #1225 restores abstention for an individual absent EPSS score, rather than a positive denial. #1234 guards empty or shrinking compiled output. #1221 addresses advisory age. Those runtime changes remain unimplemented. Keep the OSV source assumption in threat 101 separate and preserve all existing admission and deletion guards. See https://github.com/AlexaDeWit/Ecluse/issues/1238 .",
+                  "modelType": "STRIDE",
+                  "id": "4d309275-cc3c-43d0-a1a2-f024789e9f17"
+                },
+                {
+                  "number": 113,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "title": "Advisory source URL credentials enter artifacts and sync logs",
+                  "type": "Information disclosure",
+                  "description": "An operator can supply a custom advisory source URL containing query credentials. Pilot stores its original OSV and EPSS source strings in SQLite metadata, and consumer sync includes that metadata in an INFO log. This copies source credentials into the artifact and the consumers' log systems. The default public feed URLs carry no such credentials. A local fixture probe confirmed both fake query tokens survived compilation, acceptance, and sync logging.",
+                  "mitigation": "Required fix, not implemented: #1248 keeps credentials out of ordinary source provenance and replaces raw metadata logging with a bounded non-secret projection. Reuse existing authority rendering and preserve useful source-snapshot identity/time without authentication material. Consumer logging must also handle older artifacts that already contain unsafe values. Until fixed, do not embed credentials in Pilot source URLs. The probe used local fixtures and fake query tokens, not live credentials or a production deployment. CLI parsing and userinfo were traced but not executed in that probe. See https://github.com/AlexaDeWit/Ecluse/issues/1248 .",
+                  "modelType": "STRIDE",
+                  "id": "9d92a448-e04d-46b6-8b8d-bc353dacdb97"
+                },
+                {
                   "number": 20,
                   "status": "Mitigated",
                   "severity": "Medium",
                   "title": "Pathological OSV Payload (DoS)",
                   "type": "Denial of service",
                   "description": "OSV.dev, or a compromised upstream, could serve an oversized, deeply nested, or malformed JSON file. Parsing it could exhaust CPU or memory and crash Pilot.",
-                  "mitigation": "Pilot streams the archive and bounds each advisory as it unzips. It drains an entry past the per-advisory byte cap (8 MiB) to its boundary and drops it before it reaches the decoder. It also drops an entry whose JSON does not decode. Pilot logs and tallies both, so a few poisoned records never halt ingestion. Pilot logs an advisory that fans out into an anomalous number of ranges, and still ingests it. Deep nesting is bounded implicitly. The per-entry byte cap holds decode cost to a constant multiple of the input. Pilot also runs under the boot-resolved process heap ceiling (ECLUSE_RUNTIME__MAX_HEAP_BYTES, else cgroup memory.max). A small but deep payload therefore fails as a bounded, clean process exit rather than exhausting the machine. A systemic drop rate aborts the compile without publishing, so the proxy keeps its last-good osv.db instead of adopting a hole-ridden one. That guard reads the run's own drop tally. It fires only once at least 16 entries dropped and those drops are at least a tenth of the run, which marks a mostly unusable feed, the shape of a compromised or truncated export. Residual: an isolated depth bomb is a bounded Pilot crash rather than a per-record soft drop. A well-formed but empty or near-empty export drops nothing, so the guard passes it, and the run's row count is never read back on accept. Volumetric abuse of the fetch itself stays an operator-edge concern.",
+                  "mitigation": "Pilot streams the archive and bounds each advisory as it unzips. It drains an entry past the per-advisory byte cap (8 MiB) to its boundary and drops it before it reaches the decoder. It also drops an entry whose JSON does not decode. Pilot logs and tallies both, so a few poisoned records never halt ingestion. Pilot logs an advisory that fans out into an anomalous number of ranges, and still ingests it. Deep nesting is bounded implicitly. The per-entry byte cap holds decode cost to a constant multiple of the input. Pilot also runs under the boot-resolved process heap ceiling (ECLUSE_RUNTIME__MAX_HEAP_BYTES, else cgroup memory.max). A small but deep payload therefore fails as a bounded, clean process exit rather than exhausting the machine. A systemic drop rate aborts the compile without publishing, so the proxy keeps its last-good osv.db instead of adopting a hole-ridden one. That guard reads the run's own drop tally. It fires only once at least 16 entries dropped and those drops are at least a tenth of the run, which marks a mostly unusable feed, the shape of a compromised or truncated export. Residual: an isolated depth bomb is a bounded Pilot crash rather than a per-record soft drop. A well-formed but empty or near-empty export drops nothing, so the guard passes it, and the run's row count is never read back on accept. Volumetric abuse of the fetch itself stays an operator-edge concern. Planned output-coverage and freshness controls are recorded separately in threat 112 and #1234. They do not replace the existing parser/resource limits.",
                   "modelType": "STRIDE",
                   "id": "3735906e-a06a-4e0f-ba45-894ba5400ce8"
                 }
               ]
+            }
+          },
+          {
+            "position": {
+              "x": 1477,
+              "y": 1090
+            },
+            "size": {
+              "width": 170,
+              "height": 110
+            },
+            "attrs": {
+              "text": {
+                "text": "EPSS feed"
+              },
+              "body": {
+                "stroke": "#333333",
+                "strokeWidth": 1.5,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "actor",
+            "zIndex": 12,
+            "ports": {
+              "groups": {
+                "top": {
+                  "position": "top",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "position": "right",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "bottom": {
+                  "position": "bottom",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "left": {
+                  "position": "left",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                }
+              },
+              "items": [
+                {
+                  "group": "top",
+                  "id": "68dc407f-373e-4e26-a2ee-b79d7a3290a0"
+                },
+                {
+                  "group": "right",
+                  "id": "68dc407f-373e-4e26-a2ee-b79d7a3290a1"
+                },
+                {
+                  "group": "bottom",
+                  "id": "68dc407f-373e-4e26-a2ee-b79d7a3290a2"
+                },
+                {
+                  "group": "left",
+                  "id": "68dc407f-373e-4e26-a2ee-b79d7a3290a3"
+                }
+              ]
+            },
+            "id": "7ecb4bda-c005-4c1c-8eb6-868168c304db",
+            "data": {
+              "type": "tm.Actor",
+              "name": "EPSS feed",
+              "description": "The configured EPSS score source, defaulting to FIRST.org's daily CSV feed. Its score authority is independent of OSV vulnerability records.",
+              "isTrustBoundary": false,
+              "outOfScope": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": false,
+              "providesAuthentication": false,
+              "threats": []
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "#333333",
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": ""
+                },
+                "strokeDasharray": null
+              }
+            },
+            "zIndex": 10,
+            "connector": "smooth",
+            "id": "c02b5948-c82c-419b-a240-cf223204dba4",
+            "source": {
+              "cell": "7ecb4bda-c005-4c1c-8eb6-868168c304db",
+              "port": "68dc407f-373e-4e26-a2ee-b79d7a3290a3"
+            },
+            "target": {
+              "cell": "f1646094-9885-422a-b7e7-7888c72905ef",
+              "port": "a1d34122-d242-4d6e-9801-9ef96ef00f95"
+            },
+            "data": {
+              "type": "tm.Flow",
+              "name": "EPSS scores by CVE identity",
+              "description": "Pilot fetches the configured gzip CSV feed over HTTPS and joins scores onto OSV advisory ranges through CVE identifiers and aliases. This fetch is independent of the OSV export.",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": false,
+              "isBidirectional": false,
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "protocol": "HTTPS",
+              "threats": [],
+              "trustBoundaryIds": []
             }
           },
           {
@@ -2952,11 +3143,11 @@
             "data": {
               "type": "tm.Store",
               "name": "S3 (OSV Datasets)",
-              "description": "Pre-compiled SQLite data files for querying against live CVEs.",
+              "description": "Per-ecosystem SQLite snapshots of OSV advisory ranges and EPSS enrichment. Consumers validate and load these artifacts, but current source-age and coverage controls have the gaps recorded in threat 112.",
               "outOfScope": false,
               "isTrustBoundary": false,
               "reasonOutOfScope": "",
-              "hasOpenThreats": false,
+              "hasOpenThreats": true,
               "isALog": false,
               "isEncrypted": false,
               "isSigned": false,
@@ -2970,9 +3161,20 @@
                   "title": "Cold-start advisory availability depends on S3",
                   "type": "Denial of service",
                   "description": "A proxy configured to sync advisories from S3 starts without a loaded advisory generation. An S3 outage, missing object, or denied read can prevent its first sync. A replaced Kubernetes Pod loses its emptyDir data. A container restart within the same Pod can retain that data, but the current proxy does not load the retained database at boot. A warm process instead keeps using its last good generation during a fetch failure.",
-                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07. The deployment may depend on S3 at cold start rather than require durable local advisory storage or recovery from a retained file. Under #1233, advisory acquisition failure leaves the process alive to retry. Exhausting the bounded initial retry budget reports ERROR, and readiness is false when no mount is ready. The earlier proposal to exit the process is superseded. Current code already keeps polling and logs the exhausted boot budget at ERROR, but readiness waits for every configured ecosystem's first sync. #1223 requires healthy mounts to remain routable despite another ecosystem's missing artifact. That partial-readiness change is not implemented. Readiness alone does not block direct requests. Requests retain configured trusted-read, allow, skip, and refusal semantics. When evaluation reaches a FailDeny advisory rule, an absent database prevents public admission. #1230 requires ERROR-level outage reporting without per-serve log duplication. Exact readiness interfaces and retry configuration remain design details. #1221 separately governs maximum advisory age and #1222 governs publication ordering and operator rollback. Kubernetes storage semantics: https://kubernetes.io/docs/concepts/storage/volumes/#emptydir .",
+                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07. The deployment may depend on S3 at cold start rather than require durable local advisory storage or recovery from a retained file. Under #1233, advisory acquisition failure leaves the process alive to retry. Exhausting the bounded initial retry budget reports ERROR, and readiness is false when no mount is ready. The earlier proposal to exit the process is superseded. Current code already keeps polling and logs the exhausted boot budget at ERROR, but readiness waits for every configured ecosystem's first sync. #1223 requires healthy mounts to remain routable despite another ecosystem's missing artifact. That partial-readiness change is not implemented. Readiness alone does not block direct requests. Requests retain configured trusted-read, allow, skip, and refusal semantics. When evaluation reaches a FailDeny advisory rule, an absent database prevents public admission. #1230 requires ERROR-level outage reporting without per-serve log duplication. Exact readiness interfaces and retry configuration remain design details. #1221 separately governs maximum advisory age and #1222 governs publication ordering and operator rollback. Kubernetes storage semantics: https://kubernetes.io/docs/concepts/storage/volumes/#emptydir . Cold-start availability acceptance does not accept indefinitely stale OSV use. #1221 requires refusal on the CVE-blocking path even with onUnavailable: skip. That age control is unimplemented and tracked in threat 112.",
                   "modelType": "STRIDE",
                   "id": "6a368fa6-e4c8-446e-8e24-0685bb0980ef"
+                },
+                {
+                  "number": 112,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "title": "Stale or incomplete advisory snapshots remain usable policy evidence",
+                  "type": "Tampering",
+                  "description": "Current consumers retain loaded advisory snapshots without a maximum source age. Structural acceptance does not order source generations or reject zero relevant rows. Pilot can compile an empty or wrong-ecosystem export into a valid empty database. These states can remove effective denial evidence, permit mirroring, or leave outdated advisory facts available to pruning. Compilation and consumer-load timestamps do not establish source freshness.",
+                  "mitigation": "Agreed controls, not implemented: #1221 uses the most accurate available source-snapshot provenance. Explicit maximum age overrides the default max(quarantine minus 24 hours, 3 days), with 3 days when quarantine is inactive. Stale OSV refuses on the CVE-blocking path even with onUnavailable: skip. Staleness itself cannot authorise Dredger deletion. A seven-day quarantine yields a six-day default to surface failure before the next cohort becomes eligible. #1222 prevents older-data Pilot overwrites using metadata-only ordering and concurrency protection. Direct operator restoration remains accepted rollback authority. #1234 rejects zero relevant output and adds a configurable size guard per ecosystem and filename schema epoch, with durable high-water where supported. Starting defaults are 2% ordinary shrink plus 12 bytes per prior scored range row, capped at an extra 5%, on optional EPSS-loss transitions. Approved adjustments rebase explicitly. Size is a heuristic, not proof of complete coverage. #1224 keeps unconditional EPSS attempts but makes failure optional only without EPSS-dependent rules, recording availability accurately. #1230 requires ERROR-level outage signals and admission evidence without per-serve duplication. Preserve independent source timestamps and existing intentional rule precedence. Source accuracy risks remain separate in threats 101 and 111.",
+                  "modelType": "STRIDE",
+                  "id": "b74d9df0-8947-4e67-bf50-1c5e688a09f1"
                 }
               ]
             }
@@ -3084,7 +3286,7 @@
             "id": "f66e2ffa-c6bf-4b45-8aad-a23ced3a97ff",
             "data": {
               "name": "\u00c9cluse Dredger",
-              "description": "The pruning role of the multicall binary, run as `ecluse dredger`. Current code deletes named-denied versions from the mirror store (Registry B) only. It exposes health probes and uses the shared rules engine with its own boot configuration. Issue #1227 proposes explicit cleanup of retained mirror-derived copies in the private read repository (Registry C), using DeletePackageVersions and never DisposePackageVersions there. That extension is not implemented. The proposed C flow records its additional authority and completion risks.",
+              "description": "The pruning role, run as `ecluse dredger`, exposes health probes and uses the shared rules engine with its own boot configuration. Current code deletes eligible named-denied versions from B only. #1227 extends cleanup to approved retained mirror-derived copies in C, using DeletePackageVersions on both B and C and never DisposePackageVersions. That extension is unimplemented. Its proposed C flow records additional authority and completion risks.",
               "type": "tm.Process",
               "isTrustBoundary": false,
               "outOfScope": false,
@@ -3098,7 +3300,7 @@
                   "title": "Dredger inappropriately purges valid packages",
                   "type": "Denial of service",
                   "description": "A misconfiguration in Dredger, or poisoned OSV data, could delete legitimate, needed packages from Registry B. That causes cache misses or upstream fetch failures.",
-                  "mitigation": "Dredger must delete only from the mirror. It must delete a version only on a named decisive deny from the shared rules engine, never on deny-by-default and never while the advisory database is unavailable, because fail closed for a reaper means refusing to delete. A per-cycle deletion cap halts the cycle when a mass denial appears, which is the breaker against a poisoned advisory database. The cap's default is computed at boot as a conservative allowance per sweepable mirror store, and the configuration key raises it deliberately. The pause between sweep chunks carries a hardcoded floor the boot refuses beneath, so a mistaken sweep stays interruptible. A dry-run mode rehearses a sweep and reports what it would remove without removing it. Deletion is the backend's plain delete rather than a tombstone, so a culled version whose deny later lifts is re-admissible through the normal admission gate and the mirror behaves as a cache. A serve-only mount declares no mirrorTarget, so it holds no mirror to delete from and this surface does not exist there.",
+                  "mitigation": "Current Dredger deletes only from vetted mirror targets and on a named decisive denial. Deny-by-default and unvettable results keep the version. The deletion counter resets each cycle. Reaching the cap latches a halt for the process lifetime, until restart. Dry-run has no real delete capability. Plain deletion permits later publication, but recovery needs a remaining source of bytes. #1227 extends cleanup to approved retained mirror-derived copies in C while preserving first-party/provenance/consent guards. Both B and C remain delete-only. #1232 will permit an exact identity denial from sufficient authenticated listing evidence when unrelated manifest fields are unavailable, preserving precedence and all guards. #1225 will make an individual missing EPSS score abstain instead of supplying a denial. #1221 will prevent expired advisory evidence from authorising deletion. These changes remain unimplemented. Stale-policy loss of the only bytes during rollout is separately accepted in threat 109, not a waiver for general deletion bugs or poisoned data.",
                   "modelType": "STRIDE",
                   "id": "43f60aec-7a7c-4450-8992-ae2b42d20b0f"
                 },
@@ -3109,7 +3311,7 @@
                   "title": "An outdated Dredger policy deletes the only remaining package copy",
                   "type": "Denial of service",
                   "description": "The owner assesses this rollout residual as unlikely. No deployment frequency was measured. Loss requires a retained version, disagreement that lets an old Dredger deny what the intended policy permits, a deletion during that disagreement, and no remaining usable source of the bytes. The public source can disappear before the rollout. No new admission during the rollout is required. Later policy agreement cannot restore the lost bytes. Current Dredger deletes from mirror B only. The proposed B+C cleanup in #1227 extends the locations affected by this residual.",
-                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07 in #1228. The ecosystem uses eventual consistency, with recommended operator rollout ordering rather than a mandatory coordinated pause or shared policy authority. Planned operator guidance must explain stricter and looser policy transitions and the risk of leaving an old Dredger active during a relaxation. Existing consent, first-party protection, named-deny requirements, and deletion caps remain applicable. Both B and the proposed C cleanup use plain deletion, never disposal. Deletion permits later publication but does not recover unavailable bytes. Once roles adopt the intended policy and older writes finish, repeated scans can remove eligible denied copies, subject to backend availability and consent. They cannot undo loss of the only bytes or guarantee convergence while roles indefinitely apply conflicting policies. This acceptance is limited to rollout disagreement, not general deletion bugs, poisoned advisories, or unauthorised targets. B+C cleanup and its convergence tests remain unimplemented. See https://github.com/AlexaDeWit/Ecluse/issues/1228 .",
+                  "mitigation": "Risk treatment: accepted by the repository owner on 2026-09-07 in #1228. The ecosystem uses eventual consistency, with recommended operator rollout ordering rather than a mandatory coordinated pause or shared policy authority. Operator guidance explains stricter and looser policy transitions and the risk of leaving an old Dredger active during a relaxation. See https://ecluse-proxy.com/docs/operations/#policy-rollout-order . Existing consent, first-party protection, named-deny requirements, and deletion caps remain applicable. Both B and the proposed C cleanup use plain deletion, never disposal. Deletion permits later publication but does not recover unavailable bytes. Once roles adopt the intended policy and older writes finish, repeated scans can remove eligible denied copies, subject to backend availability and consent. They cannot undo loss of the only bytes or guarantee convergence while roles indefinitely apply conflicting policies. This acceptance is limited to rollout disagreement, not general deletion bugs, poisoned advisories, or unauthorised targets. B+C cleanup and its convergence tests remain unimplemented. See https://github.com/AlexaDeWit/Ecluse/issues/1228 .",
                   "modelType": "STRIDE",
                   "id": "f2e4bd60-86cc-4a3d-b94a-5e971c29ae08"
                 },
@@ -3142,7 +3344,7 @@
                   "title": "Accidental permanent deletion of registry data",
                   "type": "Elevation of privilege",
                   "description": "Dredger issues permanent hard deletions against the mirror registry. Misconfigured, or pointed at the wrong registry, it destroys data permanently.",
-                  "mitigation": "Dredger verifies explicit operator consent before any destructive action, and again at the start of every cycle. Consent is read through the store backend's own maintenance handle, never through the ecosystem adapter, because the marker is a fact of the store and not of the protocol it speaks. Its form is fixed per tag. A `codeArtifact` store carries a resource tag on the repository, key `ecluse-dredger-consent`, value `true`, read with a read-only permission. A `verdaccio` store carries `permitDeletion: true` under the tag in the mount's own configuration. Withdrawing the `codeArtifact` tag halts the next cycle without a restart. The `verdaccio` key is read at boot, so withdrawing that one takes a restart. A `registry` store has no consent form and no control plane, so the Dredger refuses it at boot and names the tag. Consent fails closed. An absent, unreadable, or errored marker refuses that store, and the refusal logs the backend's own descriptor telling the operator how to attach consent. Consent is deliberately distinct from the credential's capability, so holding a credential that can delete is not by itself permission to delete. The dredger role also refuses to boot when a mount's mirrorTarget matches any mount's privateUpstream, or its own mount's publicationTarget, by full registry URL. Every role refuses a mirror target on another mount's publicationTarget. The per-cycle deletion cap latches: reaching it stops the Dredger for the life of the process, so a poisoned advisory generation cannot be swept again by a supervisor restart. A dry run builds the role with no real delete in it, so a rehearsal cannot delete because nothing it holds can. A version is deleted only on a named decisive deny; deny by default, a version the store's own metadata no longer carries, and a version that could not be vetted all keep.",
+                  "mitigation": "Dredger verifies explicit target consent at the start of each sweep cycle. CodeArtifact uses the repository tag ecluse-dredger-consent=true, read through maintenance permissions. Removing it affects the next cycle. Verdaccio uses permitDeletion in boot configuration, so changing it takes a restart. Consent is distinct from credentials permitting deletion. A registry backend without a consent form is refused. Current collision guards separate ordinary mirror targets from private/publication targets. Proposed C cleanup in #1227 requires a distinct authorised capability and per-target consent, not global removal of those guards. The deletion counter is per cycle. Reaching the cap latches a halt for the process lifetime, makes readiness false, and keeps liveness healthy. The cap itself therefore does not request a restart. Restart clears that state, so it is not a durable or multi-process limit. Current dry-run removes real deletion and cursor writes but still requires consent. #1237 will allow a read-only preview before consent, reporting unmet real-sweep prerequisites and incomplete counts separately. It must not grant consent or acquire a usable delete capability. #1232 will let only a provably winning exact identity deny use partial listing evidence. Both changes remain unimplemented. Recovery after deletion depends on remaining bytes.",
                   "modelType": "STRIDE",
                   "id": "0b32b3e5-74f1-421c-8c9b-92a24fd2a00b"
                 },
@@ -3153,7 +3355,7 @@
                   "title": "Massive Purge DoS",
                   "type": "Denial of service",
                   "description": "A bug in Dredger, or a malicious rule configuration, could fire thousands of deletion requests at once. That exhausts the registry API limits and denies service to the private mirror.",
-                  "mitigation": "The default cycle carries only the package names the advisory database covers or an identity-deny rule pins, so the destructive calls one cycle can make are bounded by advisory hits rather than by store size. It sweeps in chunks, with a configured pause between them. A store fault is retried once after the delay the fault itself advises, and a fault that survives that retry halts the cycle. A per-cycle deletion cap halts the sweep for the life of the process, which bounds any single runaway sweep.",
+                  "mitigation": "Candidate-driven sweeps consider advisory-covered names and configured identity-deny names, rather than every stored package. Full walk is an explicit alternative. Work is chunked and paced, and a store failure that survives its bounded retry halts the cycle. The deletion counter starts fresh for each cycle. Reaching the cap latches a halt until process restart, rather than merely starting another cycle with a fresh counter. This is not a cumulative lifetime quota or a durable store-wide cap, and separate processes have independent state. Under the agreed #1227 extension, one logical version consumes one cap unit across its associated B+C copies within the cycle. Per-target operations and retries remain separately observable. Operators do not need to estimate copy multiplicity when setting the cap. That extension is unimplemented.",
                   "modelType": "STRIDE",
                   "id": "0c922ee5-3ac6-4a85-89de-91feecf0f9f7"
                 },
@@ -3218,7 +3420,7 @@
             },
             "data": {
               "name": "delete retained mirror versions (proposed)",
-              "description": "Proposed in #1227, not implemented: Dredger reads candidates from both mirror B and private upstream C, preserving per-location presence and provenance. It uses DeletePackageVersions on explicitly authorised C targets. DisposePackageVersions is forbidden there. Operator guidance must state the package-scoped permission, per-target consent, first-party exclusions, and recovery limits. Repeated scans rediscover residual copies. An optional queue or journal cannot replace actual repository state.",
+              "description": "Proposed in #1227, not implemented: Dredger reads actual B and C inventories, preserving per-location presence and provenance. Both targets use DeletePackageVersions only, never DisposePackageVersions. Guidance must state package-scoped permissions, per-target consent, first-party exclusions, and recovery limits. Repeated scans rediscover residual copies under the accepted eventual-consistency contract. An optional queue or journal cannot replace actual repository state.",
               "type": "tm.Flow",
               "isTrustBoundary": false,
               "outOfScope": false,
@@ -3232,7 +3434,7 @@
                   "title": "Downstream cleanup gains authority over unrelated private versions",
                   "type": "Elevation of privilege",
                   "description": "Registry C can retain both mirror-derived and first-party versions. Granting Dredger deletion permission there extends its authority beyond Registry B. A misdirected cleanup or compromised process can remove a private version outside the intended mirrored set. A package-level IAM grant covers that package's versions and does not prove their provenance. Plain deletion permits later publication, but cannot recover bytes when no source remains.",
-                  "mitigation": "Proposed controls, not implemented: bind cleanup to explicit account, region, domain, repository, ecosystem, package, and version identities. Require consent for each target and enough evidence to identify retained mirror-derived content. Keep first-party and unknown provenance outside automatic deletion. Preserve caps and dry-run. Use DeletePackageVersions only on Registry C, never DisposePackageVersions, DeletePackage, or repository deletion. Document package-ARN permission scope and the separate read and consent permissions. Do not globally relax the existing mirror collision refusals. CodeArtifact INTERNAL origin alone does not prove retention from the mirror. Its domain entry point records original publication, not the last upstream hop. Application checks cannot constrain a compromised process beyond its IAM grant. See https://github.com/AlexaDeWit/Ecluse/issues/1227 .",
+                  "mitigation": "Proposed controls, not implemented: bind cleanup to explicit account, region, domain, repository, ecosystem, package, and version identities. Require consent for each target and enough evidence to identify retained mirror-derived content. Keep first-party and unknown provenance outside automatic deletion. Preserve caps and dry-run. Use DeletePackageVersions only on both B and C, never DisposePackageVersions, DeletePackage, or repository deletion. Document package-ARN permission scope and separate read/consent permissions. Do not globally relax mirror collision refusals. CodeArtifact INTERNAL origin alone does not prove retention from the mirror. Its domain entry point records original publication, not the last upstream hop. Application checks cannot constrain a compromised process beyond its IAM grant. The agreed cap counts one logical version across associated B+C copies within a cycle, with separate target outcomes. Exact capability construction remains implementation work under #1227. See https://github.com/AlexaDeWit/Ecluse/issues/1227 .",
                   "modelType": "STRIDE",
                   "id": "987569ac-0a3a-4b7f-8b0a-7b67ee234097"
                 },
@@ -3243,7 +3445,7 @@
                   "title": "Partial downstream cleanup leaves revoked content available",
                   "type": "Tampering",
                   "description": "Cleanup can remove a version from Registry B and fail before removing Registry C's retained copy. A restart can lose the remaining work, and later B listings no longer name the version. A successful private read then continues serving it. An available upstream or pending writer can also recreate content after a downstream delete. A pre-read or one successful delete cannot establish final removal across the configured targets.",
-                  "mitigation": "Proposed controls, not implemented: derive candidates from actual inventories in both mirror B and private upstream C, then repeat both scans after failures and restarts. Preserve per-location presence and provenance when deduplicating identities. A retained C copy remains discoverable after B removes its copy, and a B version remains discoverable before C retains it. Re-evaluate current policy, provenance, and consent before later writes. Record per-target outcomes and retry transient failures under bounded backoff. Optional scheduling or audit records cannot replace repository truth or authorise stale decisions. CodeArtifact listing APIs show local inventory, so neither listing alone covers both states. First-party and unrelated upstream content remain outside cleanup authority. Verify the private read result after cleanup and consider delayed checks for refill. Coordinate source removal and pending publications. Count every target operation against the chosen cap. Report incomplete work explicitly. See https://github.com/AlexaDeWit/Ecluse/issues/1227 and https://github.com/AlexaDeWit/Ecluse/issues/1235 .",
+                  "mitigation": "Proposed controls, not implemented: derive candidates from actual B and C inventories and repeat both scans after failure or restart. Preserve per-location presence and provenance. C-only residuals remain discoverable after B removal, and B-only versions before C retention. Re-evaluate current policy, provenance, and consent, record per-target outcomes, and retry transient failures with bounded backoff. Optional scheduling/audit records cannot replace repository truth or authorise stale decisions. CodeArtifact listings are local, so neither alone covers both states. First-party and unrelated content remain excluded. Verify resulting private-read state and report incomplete cleanup. The owner chose eventual consistency in #1228 and accepted the pending-transfer window in #1235. No extra last-moment worker check or distributed publication barrier is required. Once roles converge and old writes finish, eligible scans must reconcile late copies. One negative read does not prove no writer can refill later. The agreed cap charges one logical version once across its associated B+C cleanup within the cycle, not once per repository copy. Track partial target results separately so one charged version is not mistaken for complete cleanup. See https://github.com/AlexaDeWit/Ecluse/issues/1227 .",
                   "modelType": "STRIDE",
                   "id": "1780db57-6b2f-456c-a393-e4e6b8b532f3"
                 }
@@ -3303,6 +3505,6 @@
     ],
     "diagramTop": 1,
     "reviewer": "",
-    "threatTop": 105
+    "threatTop": 113
   }
 }

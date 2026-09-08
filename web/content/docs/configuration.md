@@ -32,10 +32,8 @@ Mounts are off until you declare them. Mentioning one anywhere, whether through 
 `ECLUSE_MOUNTS__<ECOSYSTEM>__*` variable or a key under `mounts.<ecosystem>` in the document,
 switches it on. Declaring `mirrorTarget` then makes the active mount **mirror**, and a mirrored
 mount requires its private upstream, so the mirror reads back. Omit `mirrorTarget` and the mount is
-serve-only. Each boot logs one posture line per mount. It warns when a mount's mirror target
-resolves to the same registry as its private upstream, its public upstream, or its publication
-target, and when its private upstream resolves to the same registry as its public upstream. The
-design rationale is in
+serve-only. Each boot logs one posture line per mount. Endpoint collisions can warn or refuse
+startup, as listed below. The design rationale is in
 [Configuration and authentication](https://github.com/AlexaDeWit/Ecluse/blob/main/docs/architecture/configuration.md#configuration).
 
 Écluse also reads three ordinary AWS-SDK variables from the process environment. They are not
@@ -50,6 +48,27 @@ document keys, and each one has a deliberately narrow reach:
 Both endpoint values get the same hygiene as every other URL: whitespace is trimmed, and a value
 with userinfo, a query, a fragment, or a malformed port fails the boot. The error names the
 variable but never the value, because the value can carry a credential.
+
+## Endpoint collisions
+
+This table describes the implemented checks. Registry comparisons use the configured repository
+URLs. Host comparisons also match distinct repository paths on the same host. Any refusal wins
+when more than one row applies.
+
+| Compared endpoints | Scope | Comparison | Proxy and mirror | Dredger |
+|---|---|---|---|---|
+| Mirror target and public upstream | Any mount pair | Host | Refuse | Refuse |
+| Publication target and public upstream | Any mount pair | Host | Refuse | Refuse |
+| Mirror target and private upstream | Any mount pair | Registry | Warn | Refuse |
+| Mirror target and publication target | Same mount | Registry | Warn | Refuse |
+| Publication target and another mount's private, mirror, or publication target | Other mounts | Registry | Refuse | Refuse |
+| Private and public upstream | Same mount | Registry | Warn | Warn |
+| One registry declared under different backend tags | Any endpoints | Registry | Refuse | Refuse |
+
+A publication target may equal its own mount's private upstream unless another refusal applies.
+Distinct repositories sharing a CodeArtifact host are not otherwise collapsed by the registry
+comparison. The private/public warning is planned to become a refusal in
+[#1243](https://github.com/AlexaDeWit/Ecluse/issues/1243), but that change is not implemented.
 
 ## The configuration reference
 
@@ -235,7 +254,7 @@ type's knobs, and a knob written under a type that does not read it fails the lo
 | `min-age` | `AllowIfOlderThan` | Yes | Admits public versions older than the quarantine window, the core defence against race-to-publish typosquatting and dependency confusion. | `ageSeconds` (7 days by default) |
 | `remediation-fast-track` | `AllowIfRemediatesCve` | Yes | Admits a release a synced advisory names as its exact fixed version ahead of the quarantine, provided no other advisory still affects it. Abstains until a first advisory database syncs (set `ECLUSE_ADVISORIES__URL` and run Pilot), so without one only the quarantine governs. | (none) |
 | yours to add | `AllowScope` | No | Admits every version under an npm scope you already trust, past the quarantine and without reaching the advisory database. Sits above `min-age` and below every deny. | `scope` (the scope without its leading `@`) |
-| yours to add | `AllowByIdentity` | No | Admits a specific package or `package@version` past the quarantine. Sits above the two advisory denies, so an identity pin overrides either, and below `DenyInstallTimeExecution` and `DenyByIdentity`. | `identity` |
+| yours to add | `AllowByIdentity` | No | Explicit rules-engine escape hatch for a package or `package@version`. A bare name matches all versions. Sits above both advisory denies and below `DenyInstallTimeExecution` and `DenyByIdentity` by default. | `identity` |
 | yours to add | `DenyByIdentity` | No | Hard-denies a specific package or `package@version` (the `revoke` shape). | `identity` |
 | yours to add | `DenyInstallTimeExecution` | No, because many legitimate packages ship install scripts | Denies install-time code execution. | (none) |
 | yours to add | `DenyIfCve` | No | Blocks a version a synced advisory records as affected at or above the CVSS threshold. The npm malware feed carries no score and counts as above every threshold, so enabling it also blocks known-malicious packages. Sits just below `AllowByIdentity`, so an identity pin overrides it. | `minCvss` (0-10). `onUnavailable` (`deny` by default, or `skip`) decides what happens when the advisory database cannot answer. |
@@ -291,11 +310,22 @@ covered them. Enable them *after* you warm your private mirror:
 3. If Écluse then denies a specific version you must keep, pin it with an `AllowByIdentity` rule,
    which outranks both. That covers a false positive or a risk you accept.
 
-Add `DenyIfEpss` alongside `DenyIfCve`, not instead of it. It reads the same advisory
-database and denies on exploitability rather than severity, so it catches a merely moderate CVE
-that attackers are actually using. Because an advisory with no EPSS score counts as above every
-threshold, and most npm advisories carry no CVE alias for EPSS to key on, a low `minEpss` is not a
-gentler gate than `DenyIfCve`: expect it to deny about as much.
+Add `DenyIfEpss` alongside `DenyIfCve`, not instead of it. EPSS estimates exploitation probability,
+not severity or proof of exploitation. Missing scores currently count as above every threshold,
+so sparse EPSS coverage can make this rule restrictive even when known scores are low.
 
-Set `onUnavailable: skip` if you would rather a gate fail open (skip itself, logging loudly) than
-refuse traffic when the advisory database is briefly unavailable. The default `deny` fails closed.
+Set `onUnavailable: skip` to let another allow decide when an advisory lookup is unavailable.
+The default `deny` refuses instead. This also applies to mirror admission: a skipped check can
+precede an admission that remains trusted after the lookup recovers. Removing the allow later
+does not revoke that copy unless a named deny becomes decisive. See
+[Revoking a mirrored version](@/docs/operations.md#revoking-a-mirrored-version-internal-yank).
+
+Do not rely on a per-package warning for every skipped check. Some unavailable results do not
+reach the fault logger. [Operational monitoring](@/docs/operations.md#alerting-on-error) describes
+the current signals and their limits. Admission evidence and ERROR-level outage reporting are
+tracked in [#1230](https://github.com/AlexaDeWit/Ecluse/issues/1230).
+
+Maximum source-age enforcement is not implemented. The agreed change in
+[#1221](https://github.com/AlexaDeWit/Ecluse/issues/1221) will refuse stale OSV evidence even with
+`onUnavailable: skip`. Individual missing EPSS scores currently deny, as the table states.
+[#1225](https://github.com/AlexaDeWit/Ecluse/issues/1225) will change those cases to abstention.
